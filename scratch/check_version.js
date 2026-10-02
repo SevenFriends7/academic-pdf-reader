@@ -56,15 +56,29 @@ const tags = (git(['tag', '--list', 'v*']) || '')
   .map(t => t.replace(/^v/, ''))
   .filter(v => /^\d+\.\d+\.\d+/.test(v));
 
-// ---- 3. 不能重复已发布的版本号 ----
-if (tags.includes(version)) {
-  problems.push(`版本 ${version} 已经打过 tag（v${version}）——商店不允许复用版本号，请先 npm version patch/minor/major`);
+/**
+ * 当前构建是否就是 v<version> 这个 tag 的发布构建。
+ *
+ * 必须区分，否则是循环逻辑：发布工作流只在打 tag 时触发，
+ * 而"版本不能已打过 tag"在 tag 构建里永远为真 → 发布必然失败。
+ * 语义上：tag 构建时，v<version> 这个 tag 属于**本次发布**（匹配）；
+ * 本地 / main 分支构建时出现同名 tag 才是"已发布过、必须递增"。
+ */
+const tagName = `v${version}`;
+const isTagBuild = process.env.GITHUB_REF_TYPE === 'tag' && process.env.GITHUB_REF_NAME === tagName;
+
+// ---- 3. 不能重复已发布的版本号（tag 构建自身除外）----
+if (tags.includes(version) && !isTagBuild) {
+  problems.push(`版本 ${version} 已经打过 tag（${tagName}）——商店不允许复用版本号，请先 npm version patch/minor/major`);
+} else if (isTagBuild) {
+  notes.push(`本次就是 ${tagName} 的 tag 发布构建`);
 } else {
   notes.push(`版本 ${version} 尚未打过 tag`);
 }
 
-// ---- 4. 必须比最大 tag 更大 ----
-if (tags.length > 0) {
+// ---- 4. 必须比其它 tag 更大（排除本次发布自身的 tag）----
+const others = tags.filter(t => t !== version);
+if (others.length > 0) {
   const cmp = (a, b) => {
     const pa = a.split('.').map(Number);
     const pb = b.split('.').map(Number);
@@ -73,14 +87,14 @@ if (tags.length > 0) {
     }
     return 0;
   };
-  const maxTag = tags.reduce((m, t) => (cmp(t, m) > 0 ? t : m), tags[0]);
+  const maxTag = others.reduce((m, t) => (cmp(t, m) > 0 ? t : m), others[0]);
   if (cmp(version, maxTag) <= 0) {
     problems.push(`版本 ${version} 不大于已有 tag v${maxTag}——版本号必须递增`);
   } else {
     notes.push(`版本递增正常（上一个 tag：v${maxTag}）`);
   }
 } else {
-  notes.push('仓库里还没有版本 tag');
+  notes.push('没有更早的版本 tag');
 }
 
 // ---- 输出 ----
