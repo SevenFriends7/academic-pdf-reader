@@ -80,7 +80,7 @@
 > code --install-extension academic-pdf-reader-x.y.z.vsix --force
 > ```
 
-安装后**需要重启 IDE（或执行 `Developer: Reload Window`）**才会生效。
+**安装后需要重启 IDE 才会生效**（或执行 `Developer: Reload Window`）。
 
 ---
 
@@ -165,7 +165,7 @@ npm run package
 > （市场的 manifest 校验更严格，要求 `<Properties>` 引擎声明、图标/许可证 `<Asset>` 等字段）。
 > 上传商店、Open VSX、以及 CI 产物，一律用 `npm run vsix`（即官方 `vsce package`）。
 
-修改 `media/viewer.js` / `media/viewer.css` 不需要编译，但**需要重启 IDE（或 `Developer: Reload Window`）**才生效。
+修改 `media/viewer.js` / `media/viewer.css` 不需要编译，但**需要重启 IDE 才会生效**（或 `Developer: Reload Window`）。
 
 ### 测试
 
