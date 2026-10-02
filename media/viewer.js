@@ -1393,6 +1393,13 @@
       }
 
       if (para.cleanText.length > 0) {
+        // 纯数字（页码、脚注编号、"8"）不构成可翻译段落：
+        // 它们在界面上只会变成一块没意义的噪声卡片（实测 AOT p8 出现了孤立的 "8"）。
+        if (/^\d{1,4}$/.test(para.cleanText.trim())) {
+          curParaLines = [];
+          curParaType = 'body';
+          return;
+        }
         para.sentencesEn = splitEnglishSentencesSmart(para.cleanText);
         paras.push(para);
       }
@@ -1462,18 +1469,35 @@
           const sh = s._pdfH !== undefined ? s._pdfH : 9;
           return sh > 18 && (s.textContent || '').trim().length === 1;
         });
-        const isHeading =
-          !hasDropCap &&
-          ((line.h > normalLineHeight * 1.28 && line.spans.length <= 5) ||
-            /^[0-9]+(\.[0-9]+)*\.?\s+[A-Z]/.test(text) ||
-            /^(abstract|introduction|related work|background|method|methods|methodology|approach|experiments?|results?|discussion|conclusions?|references|acknowledg(e)?ments?|appendix)\b/i.test(
-              text
-            ));
 
         const isIndented = prevLine && (line.minX > prevLine.minX + 6);
         const prevEnded = curParaLines.length > 0 && /[.!?。！？]["'”)]?\s*$/.test(curParaLines[curParaLines.length - 1].spans.map(s => s.textContent || '').join(' ').trim());
         const isSameColumn = prevLine && prevLine.section === line.section;
         const largeVGap = isSameColumn && Math.abs(prevLine.y - line.y) > normalLineHeight * 1.45;
+
+        // 【关键】标题必须同时满足两个条件，缺一不可：
+        //   ① 上方是"段落边界"：本栏第一行，或上一行与本行之间有明显的段间空行；
+        //   ② 上一行确实结束了一个句子（否则本行只是承接上一行的正文中段）。
+        //
+        // 为什么必须这么严：双栏排版里"一行的开头"根本不是句子/段落的开头——正文行经常以
+        // method / methods / results / 数字+大写 这类词开头（因为它们承接上一行）。
+        // 旧规则只看行首文本，于是把这类正文行判成章节标题 → 每行强行另起一段 →
+        // 逐行翻译、译文碎片化（实测 STM 第 6 页右栏被切成 6 个单行"标题"、译文断成 7 截）。
+        // 只加条件②还不够："2018 DAVIS challenge winner [20]. Our results…" 的上一行确实以句号结尾，
+        // 但它与上一行行距正常（12pt，无段间空行）→ 靠条件① 才能挡住。
+        const atParagraphBoundary = !isSameColumn || largeVGap;
+        const prevEndedSentence = curParaLines.length > 0 && /[.!?。！？]["'”)]?\s*$/.test(curParaLines[curParaLines.length - 1].spans.map(s => s.textContent || '').join(' ').trim());
+
+        const isHeading =
+          atParagraphBoundary &&
+          (curParaLines.length === 0 || prevEndedSentence) &&
+          !hasDropCap &&
+          ((line.h > normalLineHeight * 1.28 && line.spans.length <= 5) ||
+            (/^[0-9]+(\.[0-9]+)*\.?\s+[A-Z]/.test(text) && text.length <= 60) ||
+            (/^(abstract|introduction|related work|background|method|methods|methodology|approach|experiments?|results?|discussion|conclusions?|references|acknowledg(e)?ments?|appendix)\b/i.test(
+              text
+            ) &&
+              text.length <= 60));
 
         if (isAbstractStart) {
           shouldStartNew = true; nextType = 'abstract';

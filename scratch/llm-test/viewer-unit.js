@@ -1090,5 +1090,102 @@ console.log('\n===== T16 设置流程（模型列表） =====');
   checkTrue('流程顺序为先选模型、再填 API Key', iModel > 0 && iKey > 0 && iModel < iKey, `model@${iModel} key@${iKey}`);
 })();
 
+// ---------- 17. 标题判定必须以"段落起点"为前提（真实第 6 页场景） ----------
+console.log('\n===== T17 标题判定不吞正文（真实数据） =====');
+(function headingMustStartParagraphTest() {
+  const start = code.indexOf('    function commitParagraph() {');
+  const end = code.indexOf('    let bodyCount = 0;', start);
+  if (start < 0 || end < 0) {
+    checkTrue('从产物中抽出段落聚合代码', false, '未找到 commitParagraph / bodyCount');
+    return;
+  }
+  // eslint-disable-next-line no-new-func
+  const run = new Function(
+    'orderedLines',
+    'captionLabelRegex',
+    'pageNum',
+    'splitEnglishSentencesSmart',
+    'isSingleColumnPage',
+    'gutterX',
+    'console',
+    `let paras = [];
+     let curParaLines = [];
+     let curParaType = 'body';
+     ${code.slice(start, end)}
+     return paras;`
+  );
+  const labelRe = /^(?:Fig(?:\.|ure)?|Tab(?:\.|le)?)\s*\.?\s*\d+/i;
+  const mk = (y, x0, x1, text, section) => ({
+    y,
+    minX: x0,
+    maxX: x1,
+    h: 9.5,
+    section,
+    spans: [{ textContent: text, _pdfH: 9.5, setAttribute() {} }]
+  });
+  const split = t => (t || '').split(/(?<=[.!?])\s+(?=[A-Z(“"'])/).filter(Boolean);
+
+  // 真实第 6 页右栏：这些行行首是 method / methods / results / 2018+大写，
+  // 但都是**承接上一行的正文中段**，绝不能被判成章节标题。
+  const lines = [
+    mk(422, 309, 545, 'target object. We compare our method with state-of-the-art', 'col2'),
+    mk(410, 309, 545, 'methods in Table 2. In the table, we indicate the use of', 'col2'),
+    mk(398, 309, 545, 'online learning and provide approximate runtimes of each', 'col2'),
+    mk(386, 309, 545, 'method. Most of the previous top-performing methods rely', 'col2'),
+    mk(374, 309, 545, 'on online learning that severely harms the running speed.', 'col2'),
+    mk(362, 309, 545, 'Our method achieves the best accuracy among all compet-', 'col2'),
+    mk(350, 309, 545, 'ing methods without online learning, and shows competitive', 'col2'),
+    mk(338, 309, 545, 'results with the top-performing online learning based meth-', 'col2'),
+    mk(326, 309, 545, 'ods while running in a fraction of time. Our method trained', 'col2'),
+    mk(314, 309, 545, 'with additional data from Youtube-VOS outperforms all the', 'col2'),
+    mk(302, 309, 417, 'methods by a large margin.', 'col2'),
+    // ↓ 这一段是同一栏里紧随其后的新段落（真实第 6 页有这 8 行，不能省略，
+    //   否则会给下面的行造出 100pt 的假空行，把"段间空行"判据喂错）
+    mk(286, 309, 545, 'Multiple objects (DAVIS-2017). DAVIS-2017 [ 28 ] is a', 'col2'),
+    mk(274, 309, 545, 'multi-object extension of DAVIS-2016. The validation set', 'col2'),
+    mk(262, 309, 545, 'consists of 59 objects in 30 videos. In Table Table 3 , we', 'col2'),
+    mk(250, 309, 545, 'report the results of multi-object video segmentation on the', 'col2'),
+    mk(238, 309, 545, 'validation set. Again, our method shows the best perfor-', 'col2'),
+    mk(226, 309, 545, 'mance among fast methods without online learning. With', 'col2'),
+    mk(214, 309, 545, 'additional Youtube-VOS data, our method largely outper-', 'col2'),
+    mk(202, 309, 545, 'forms all the previous state-of-the-art methods including the', 'col2'),
+    mk(190, 309, 545, '2018 DAVIS challenge winner [ 20 ]. Our results on the test-', 'col2'),
+    mk(178, 309, 510, 'dev set is included in the supplementary materials.', 'col2')
+  ];
+  const paras = run(lines, labelRe, 6, split, false, 293, { log() {} });
+
+  const headingCount = paras.filter(p => p.type === 'heading').length;
+  checkTrue('行首出现 method/methods/results/数字大写 时**不产生标题**', headingCount === 0, `产生了 ${headingCount} 个标题`);
+  // 拆成 2 段是**正确**的："Multiple objects (DAVIS-2017)…" 本来就是新段落
+  //（行距 16pt 超过 1.45×行高，且以大写开头）
+  checkTrue('正文按真实段落边界切成 2 段（不是逐行碎片）', paras.length === 2, `实际 ${paras.length} 段`);
+  checkTrue(
+    '第一段是完整的"Single object"论述',
+    paras.length === 2 && /target object\. We compare/.test(paras[0].cleanText) && /large margin\./.test(paras[0].cleanText)
+  );
+  checkTrue(
+    '第二段是完整的"Multiple objects"论述',
+    paras.length === 2 && /Multiple objects \(DAVIS-2017\)/.test(paras[1].cleanText) && /supplementary materials\./.test(paras[1].cleanText)
+  );
+  checkTrue(
+    '不再出现"一行一段"的碎片',
+    paras.every(p => (p.cleanText || '').length > 90),
+    paras.map(p => (p.cleanText || '').length).join(',')
+  );
+
+  // 反例：真正的章节标题（上一行已结束句子）仍必须被识别
+  const real = [
+    mk(139, 50, 101, '4.2. DAVIS', 'col1'),
+    mk(117, 50, 286, 'Single object (DAVIS-2016). DAVIS-2016 [ 27 ] is one of', 'col1'),
+    mk(105, 50, 286, 'the most popular benchmark datasets for video object seg-', 'col1')
+  ];
+  const paras2 = run(real, labelRe, 6, split, false, 293, { log() {} });
+  checkTrue(
+    '真标题仍被识别为 heading',
+    paras2.length >= 2 && paras2[0].type === 'heading',
+    paras2.map(p => p.type).join(',')
+  );
+})();
+
 console.log(`\n===== 结果: ${pass} 通过 / ${fail} 失败 =====`);
 process.exit(fail > 0 || loadError ? 1 : 0);
