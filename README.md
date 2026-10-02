@@ -143,9 +143,14 @@ npm run package
 | --- | --- |
 | `npm run compile` | 编译 `src/*.ts` → `dist/extension.js` |
 | `npm run watch` | 监听改动自动重编译（改 `src/` 时用） |
-| `npm run package` | 打包 vsix 并安装到本机两个 IDE |
-| `npm run ls:pack` | 列出 `vsce` 实际会打包的文件（发布前自查） |
-| `npm run vsix` | 只打包不安装 |
+| `npm run package` | **仅供本机安装**：打包 `*-local.vsix` 并装到本机两个 IDE |
+| `npm run vsix` | **用于上传商店**：用官方 `vsce` 打包标准 `.vsix` |
+| `npm run ls:pack` | 列出 `vsce` 实际会打包的文件（上传前自查） |
+
+> ⚠️ **两个产物不要混用。** `npm run package` 的 `*-local.vsix` 是本脚本手写 manifest 打出来的，
+> 本机 IDE 安装没问题，但**上传扩展市场会报 `Error occurred while parsing the manifest file`**
+> （市场的 manifest 校验更严格，要求 `<Properties>` 引擎声明、图标/许可证 `<Asset>` 等字段）。
+> 上传商店、Open VSX、以及 CI 产物，一律用 `npm run vsix`（即官方 `vsce package`）。
 
 修改 `media/viewer.js` / `media/viewer.css` 不需要编译，但**需要重启 IDE（或 `Developer: Reload Window`）**才生效。
 

@@ -75,7 +75,11 @@ function buildVsix() {
 </PackageManifest>`;
   fs.writeFileSync(path.join(tempVsixDir, 'extension.vsixmanifest'), vsixManifest, 'utf-8');
 
-  const vsixOutput = path.join(__dirname, `${pkg.name}-${pkg.version}.vsix`);
+  // 【重要】产物刻意命名成 -local.vsix：
+  // 本脚本手写 extension.vsixmanifest，本机 IDE 安装不校验，但**扩展市场会严格校验
+  // 并报 "Error occurred while parsing the manifest file"**。
+  // 要上传到扩展市场/Open VSX，请用官方工具：npm run vsix（vsce package）。
+  const vsixOutput = path.join(__dirname, `${pkg.name}-${pkg.version}-local.vsix`);
   if (fs.existsSync(vsixOutput)) {
     fs.unlinkSync(vsixOutput);
   }
@@ -87,7 +91,8 @@ function buildVsix() {
   // 清理暂存目录
   fs.rmSync(tempVsixDir, { recursive: true, force: true });
 
-  console.log(`[vsix] Successfully generated: ${vsixOutput}`);
+  console.log(`[vsix] 已生成本机安装包: ${vsixOutput}`);
+  console.log('[vsix] 注意：仅用于本机安装；上传扩展市场请用 `npm run vsix`');
 
   // 自动同步安装到当前系统的 Antigravity 与 VS Code 扩展目录
   const os = require('os');
