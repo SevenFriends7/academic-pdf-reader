@@ -1,6 +1,13 @@
 # 学术文献双栏翻译阅读器 (Academic Literature Reader)
 
+[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/paper-reader.academic-pdf-reader?label=Marketplace&color=0b578a)](https://marketplace.visualstudio.com/items?itemName=paper-reader.academic-pdf-reader)
+[![Installs](https://img.shields.io/visual-studio-marketplace/i/paper-reader.academic-pdf-reader?label=安装量)](https://marketplace.visualstudio.com/items?itemName=paper-reader.academic-pdf-reader)
+[![CI](https://github.com/SevenFriends7/academic-pdf-reader/actions/workflows/ci.yml/badge.svg)](https://github.com/SevenFriends7/academic-pdf-reader/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 专为学术论文研读设计的 VS Code / 反重力 IDE (Antigravity IDE) 扩展插件：**左栏文献原文、右栏译文对照、鼠标划词实时双向高光联动、划线高亮与便签批注、一键导出 Markdown 笔记**。
+
+**在扩展市场安装**：[paper-reader.academic-pdf-reader](https://marketplace.visualstudio.com/items?itemName=paper-reader.academic-pdf-reader)
 
 ---
 
@@ -27,9 +34,11 @@
 - 点击顶部【导出笔记】，自动生成结构化、美观的 Markdown 笔记文件（含原文字句、对照翻译、页码、高亮分类、个人批注与思考），无缝导入 **Obsidian**、**Notion** 或个人知识库。
 
 ### 5. 🌐 灵活强大的翻译引擎
-- **Google Gemini 官方 API（强烈推荐）**：专为学术论文研读调优的学术 Prompt，术语地道严谨，公式与引用规范完整保留，Google AI Studio 提供充裕免费额度。
-- **自定义大模型 (DeepSeek / OpenAI / Kimi 等)**：兼容 OpenAI 标准接口，国内直连、性价比极高。
+- **Google Gemini 官方 API**：专为学术论文研读调优的学术 Prompt，术语地道严谨，公式与引用规范完整保留，Google AI Studio 提供免费额度。
+- **自定义大模型 (DeepSeek / Kimi / 通义 / 智谱 / OpenAI / 本地模型)**：兼容 OpenAI 标准接口，国内直连、性价比高。设置里直接选常用模型，端点自动带出，只需填 API Key。
 - **开箱即用 (内置免费翻译)**：无需申请任何 API Key，安装即可直接使用基础翻译。
+
+> 翻译与 AI 问答共用所选引擎；问答会在提问界面标明"论文内容"与"通用背景知识"的来源区别。
 
 ---
 
@@ -37,7 +46,9 @@
 
 ### 方式一：扩展市场安装（推荐）
 
-打开 IDE 的扩展面板（`Ctrl+Shift+X`），搜索 **`文献对照翻译阅读器`** 或 **`academic-pdf-reader`**，点击安装即可；后续版本会自动更新。
+在扩展面板（`Ctrl+Shift+X`）搜索 **`文献对照翻译阅读器`** 或 **`academic-pdf-reader`**，点击安装即可；后续版本会自动更新。
+
+或直接打开商店页面：[paper-reader.academic-pdf-reader](https://marketplace.visualstudio.com/items?itemName=paper-reader.academic-pdf-reader)
 
 ### 方式二：从 VSIX 安装（离线 / 内网环境）
 
