@@ -16,8 +16,12 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # 两个令牌都从仓库 Secrets 读取。缺哪个就跳过对应的发布步骤。
+      # 两个令牌都从仓库 Secrets 读取。缺哪个就跳过对应的发布步骤（只打包、不报错），
+      # 所以没配令牌时这个工作流依然是绿色可用的。
+      #
       #   VSCE_PAT —— VS Code Marketplace 的 Personal Access Token
+      #     注意：新建 Azure DevOps 组织现在要求 Azure 订阅，且全局 PAT 于 2026-12-01 退役。
+      #     拿不到 PAT 时不必用它——先在 publisher 页面手动上传 vsix 上架（见 README）。
       #   OVSX_PAT —— Open VSX 的访问令牌（可选；VS Code 分支/开源发行版用它）
       VSCE_PAT: ${{ secrets.VSCE_PAT }}
       OVSX_PAT: ${{ secrets.OVSX_PAT }}

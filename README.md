@@ -171,13 +171,53 @@ PAPERS_DIR=/path/to/papers node scratch/layout_truth.js 3      # 打印某页真
 
 ### 1. 首次准备（只做一次）
 
-1. **注册发布者**：用 Microsoft 账号登录 <https://marketplace.visualstudio.com/manage> → Create publisher，
-   ID 填 `paper-reader`（必须与 `package.json` 的 `publisher` 完全一致）。
-2. **生成 PAT**：到 <https://dev.azure.com> 建组织 → User settings → Personal Access Tokens →
-   新建令牌，Scope 选 **Marketplace → Manage**（只勾这一项）。PAT 最长 1 年，到期需重新生成。
-3. **登录**（本机发布时）：`npm run login`，把 PAT 粘进去。
-4. （可选）**Open VSX**：如果用户群体里有 VS Code 的分支发行版（VSCodium、各类国产 IDE 等），
-   它们用的是 Open VSX，需要另外注册并在仓库 Secrets 里配置 `OVSX_PAT`。
+**第 1 步：注册发布者**（必做）
+
+1. 用 Microsoft 账号登录 <https://marketplace.visualstudio.com/manage>
+2. 点 **Create publisher**：
+   - **ID** 填 `paper-reader`（必须与 `package.json` 的 `publisher` 完全一致，创建后不可改）
+   - **Name** 任意（商店页显示的名字）
+
+**第 2 步：上架第一个版本**
+
+有两条路，**优先走 A**——它不需要 PAT，也不需要 Azure 订阅：
+
+| 路线 | 需要什么 | 适合 |
+| --- | --- | --- |
+| **A. 手动上传（推荐先走这条）** | 只要 Microsoft 账号 | 首次上架、偶尔发版 |
+| **B. `vsce publish` 自动发布** | Azure DevOps 的 PAT | 频繁发版、想用 CI 全自动 |
+
+**路线 A**：从 [GitHub Releases](https://github.com/SevenFriends7/academic-pdf-reader/releases) 或本机 `npm run vsix` 拿到 `.vsix`，
+在 publisher 页面点 **New extension → Visual Studio Code** 上传即可。商店几分钟后可见。
+
+**路线 B**：需要一个 PAT（见下方"关于 PAT"），然后：
+
+```bash
+npm run login          # 粘贴 PAT
+npm run publish:patch  # 或 minor / major
+```
+
+**第 3 步（可选）：让 CI 全自动发布**
+
+在仓库 **Settings → Secrets and variables → Actions** 添加 `VSCE_PAT`（路线 B 的 PAT）。
+配好之后，`git push --follow-tags` 推 tag 就会自动发版；**没配也不会失败**，CI 只打包并上传 vsix 产物。
+
+（可选）如果用户群体里有 VS Code 的**分支发行版**（VSCodium、各类国产 IDE 等），它们用的是 Open VSX，
+需要另外在 <https://open-vsx.org> 注册并配置 `OVSX_PAT`。
+
+#### 关于 PAT（路线 B 的前提，务必先读）
+
+- **新建 Azure DevOps 组织现在要求「有效的 Azure 订阅」**
+  （见 [Create an organization](https://learn.microsoft.com/azure/devops/organizations/accounts/create-organization)），
+  没有订阅时这一步会卡住；可行替代是被加入一个已有的 Azure DevOps 组织再建 PAT。
+- **全局 PAT 将于 2026-12-01 退役**，微软官方建议改用 Entra ID 方式发布。
+- PAT 的 Scope 只需勾 **Marketplace → Manage**（Organization 选 "All accessible organizations"）。
+- 生成入口有两处，哪个有就用哪个：
+  1. Azure DevOps → User settings → Personal access tokens；
+  2. Visual Studio Marketplace 的 publisher 页面 → **Security / PAT** 分区（部分账号直接提供）。
+- 备选方案（都不成熟/有前提，暂时不推荐踩）：
+  `vsce publish --oidc`（Trusted Publishing，无需任何 Azure 资源，但社区尚无成功验证）与
+  `vsce publish --azure-credential`（需 Azure 托管标识，有成功先例但要 Azure 资源）。
 
 ### 2. 发布（二选一）
 
