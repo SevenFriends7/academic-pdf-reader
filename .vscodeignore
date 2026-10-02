@@ -1,12 +1,19 @@
-# 发布打包白名单
-# vsce / vsce publish 会按本文件排除内容。**必须保留**：
-#   漏掉 dist 或 media 会产出一个装了也打不开的扩展。
+# 发布打包排除清单
 #
-# 注意：本仓库的本地打包脚本 package-vsix.js 使用自己的白名单（只复制
-# package.json / README.md / dist / media），本文件是为 `vsce publish` 准备的。
+# vsce / vsce publish 按本文件过滤内容。语义与 .gitignore 相同：
+#   ** 后面的规则可以覆盖前面的规则（这与 .gitignore 一致）。
+#
+# 曾经踩过的坑：末尾写了 `!media/**` 作为"保留"规则，结果它把
+# `media/screenshots/**`（本该排除的截图）又收了回来，包体积从 524 KB 涨到 1.38 MB。
+# 现在不再使用 ! 取反规则——只排除不该进包的东西，其余默认保留。
+#
+# 注意：本地打包脚本 package-vsix.js 用的是自己的白名单（只复制
+# package.json / README / CHANGELOG / LICENSE / 第三方声明 / dist / media），与本文件无关。
 
-# ---- 开发/测试资料（绝不能进商店）----
+# ---- 开发与测试资料 ----
 scratch/**
+docs/**
+.github/**
 .vscode/**
 node_modules/**
 src/**
@@ -15,29 +22,26 @@ package-vsix.js
 package-all.js
 package-lock.json
 tsconfig.json
+.gitignore
+.gitattributes
+.vscodeignore
 
 # ---- 本地产物与备份 ----
 *.vsix
 *.log
 *.tmp
 *.bak
+*.orig
 
-# ---- 源码映射（体积大且会暴露源码；发布版不需要）----
+# ---- 源码映射（体积大且会暴露源码）----
 dist/*.map
 
-# ---- 密钥与个人数据（若曾误放于仓库根目录）----
+# ---- 商店展示用截图：README 里引用，市场从 GitHub 加载，无需进包 ----
+media/screenshots/**
+
+# ---- 密钥与个人数据（万一误放于仓库根目录）----
 *.key
 .gemini-key
 .env
 .env.*
 paper_*.json
-
-# ---- 保留（不要排除）----
-!dist/extension.js
-!media/**
-!README.md
-!CHANGELOG.md
-!package.json
-!LICENSE
-!THIRD-PARTY-NOTICES.md
-!media/icon.png
