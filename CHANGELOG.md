@@ -5,6 +5,23 @@
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-02
+
+### 变更
+- 已上架 VS Code 扩展市场（`paper-reader.academic-pdf-reader`）。
+- **显示名改为 `Bilingual Paper Reader`**，与 README 大标题、仓库名统一；
+  中文搜索词（论文 / 文献 / 翻译 / 对照 / 双语 / 批注 / 笔记 / 学术）加入 `keywords`，中文用户仍能搜到。
+- README 补充商店安装直链、版本/安装量/CI/许可证徽章。
+- 翻译引擎章节改为平级介绍（不再突出单一引擎），说明设置里可选常用模型。
+
+### 修复
+- 本机打包产物改名为 `*-local.vsix`：原手写 manifest 缺少扩展市场要求的字段，
+  误传会报 `Error occurred while parsing the manifest file`。上传商店请用 `npm run vsix`（官方 vsce）。
+
+### 工程
+- CI 每次运行都会打包并上传 vsix 产物（Actions 运行页可直接下载）。
+- 密钥扫描改为只扫 git 已跟踪文件，并修复"跳过点目录导致漏检 `.vscode/settings.json`"的漏洞。
+
 ## [0.4.1] - 2026-10-02
 
 ### 变更

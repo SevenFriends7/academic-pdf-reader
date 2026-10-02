@@ -1,4 +1,6 @@
-# 学术文献双栏翻译阅读器 (Academic Literature Reader)
+# Bilingual Paper Reader
+
+> 学术论文双语对照阅读器（文献对照翻译阅读器）
 
 [![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/paper-reader.academic-pdf-reader?label=Marketplace&color=0b578a)](https://marketplace.visualstudio.com/items?itemName=paper-reader.academic-pdf-reader)
 [![Installs](https://img.shields.io/visual-studio-marketplace/i/paper-reader.academic-pdf-reader?label=安装量)](https://marketplace.visualstudio.com/items?itemName=paper-reader.academic-pdf-reader)
