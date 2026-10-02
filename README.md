@@ -2,10 +2,17 @@
 
 > 学术论文双语对照阅读器
 
-[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/paper-reader.academic-pdf-reader?label=Marketplace&color=0b578a)](https://marketplace.visualstudio.com/items?itemName=paper-reader.academic-pdf-reader)
-[![Installs](https://img.shields.io/visual-studio-marketplace/i/paper-reader.academic-pdf-reader?label=安装量)](https://marketplace.visualstudio.com/items?itemName=paper-reader.academic-pdf-reader)
+[![VS Marketplace](https://vsmarketplacebadges.dev/version-short/paper-reader.academic-pdf-reader.svg)](https://marketplace.visualstudio.com/items?itemName=paper-reader.academic-pdf-reader)
 [![CI](https://github.com/SevenFriends7/academic-pdf-reader/actions/workflows/ci.yml/badge.svg)](https://github.com/SevenFriends7/academic-pdf-reader/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+<!--
+徽章说明（避免以后又踩坑）：
+- 市场版本/安装量徽章**不要**再用 img.shields.io/visual-studio-marketplace/*，
+  该服务已停用，会渲染成一张写着 "retired badge" 的灰图。
+  现在用 vsmarketplacebadges.dev（/version-short|/installs-short|/rating-short/<publisher>.<name>.svg）。
+- 安装量还是 0 时先不放安装量徽章，等有数据再加。
+-->
 
 专为学术论文研读设计的 VS Code / 反重力 IDE (Antigravity IDE) 扩展插件：**左栏文献原文、右栏译文对照、鼠标划词实时双向高光联动、划线高亮与便签批注、一键导出 Markdown 笔记**。
 

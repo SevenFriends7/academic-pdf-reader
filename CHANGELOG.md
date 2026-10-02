@@ -5,16 +5,18 @@
 
 ## [Unreleased]
 
-## [0.4.3] - 2026-10-02
+## [0.4.4] - 2026-10-02
 
 ### 变更
 - **商店页加入界面截图**（阅读与高亮、批注库、AI 问答）。截图放在 `media/screenshots/`，
   市场通过 README 里的 GitHub 绝对地址加载，因此**不打进安装包**。
 - **README 拆分为用户向与维护者向**：发布流程移到 `CONTRIBUTING.md`，
-  历次问题复盘移到 `docs/design-notes.md`，README 从 510 行精简到 94 行。
+  历次问题复盘移到 `docs/design-notes.md`，README 从 510 行精简到 170 行。
 - README 的 API Key 配置章节按实际菜单与默认值重写（去掉了已不存在的"推荐 Gemini"表述与过期模型名）。
 
 ### 修复
+- **商店页徽章显示为 "retired badge"**：`img.shields.io/visual-studio-marketplace/*` 已停用，
+  换成 `vsmarketplacebadges.dev`；安装量为 0 时暂不展示安装量徽章。
 - `.vscodeignore` 末尾的 `!media/**` 取反规则会把本该排除的截图又收回来，
   导致安装包从 510 KB 涨到 1.38 MB；已去掉全部取反规则并补充 `docs/**` 等排除项。
 
