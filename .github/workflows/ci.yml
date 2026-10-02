@@ -29,6 +29,9 @@ jobs:
       - name: 密钥泄露扫描
         run: node scratch/scan_secrets.js
 
+      - name: 版本纪律校验（CHANGELOG 章节 / 版本是否已发布）
+        run: node scratch/check_version.js
+
       - name: 打包预检（确认发布清单里没有多余文件）
         run: npx --yes @vscode/vsce ls
 

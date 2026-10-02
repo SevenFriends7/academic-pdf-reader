@@ -49,6 +49,9 @@ jobs:
       - name: 密钥泄露扫描
         run: node scratch/scan_secrets.js
 
+      - name: 版本纪律校验（CHANGELOG 章节 / 版本是否已发布）
+        run: node scratch/check_version.js
+
       # ---- 版本一致性：tag 必须与 package.json 的 version 相同 ----
       - name: 校验 tag 与 package.json 版本一致
         if: startsWith(github.ref, 'refs/tags/v')

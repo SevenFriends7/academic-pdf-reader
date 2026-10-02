@@ -101,13 +101,18 @@ const CASES = [
     dump.push(`## [${c.id}] ${c.kind}\n\n**问**：${c.question}\n\n**答**（${body} 字）：\n\n${answer}\n\n---\n`);
 
     if (c.expect === 'positive') {
-      // 判据：必须给出实质内容（不能被一句"论文里没有"打发）
-      const substantive = body >= 250;
+      // 判据：既要正面回答，又不能把篇幅写爆（篇幅是 token 花销的直接来源）。
+      // 默认风格为 concise → 预算 60~800 字；旧默认 standard 动辄 1600+ 字。
+      const substantive = body >= 60;
+      const withinBudget = body <= 800;
       if (!substantive) {
         console.log(`  ❌ 回答过短（${body} 字）——疑似仍在拒答`);
         fail++;
+      } else if (!withinBudget) {
+        console.log(`  ❌ 超出篇幅预算（${body} 字 > 800 字）——回答又开始膨胀了`);
+        fail++;
       } else {
-        console.log(`  ✅ 正面回答（${body} 字）${notesGap ? '；同时如实标注了论文里没有该内容' : ''}`);
+        console.log(`  ✅ 正面回答（${body} 字，在预算内）${notesGap ? '；并如实标注了论文里没有该内容' : ''}`);
         pass++;
       }
     } else {

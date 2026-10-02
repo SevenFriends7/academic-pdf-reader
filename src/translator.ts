@@ -1409,7 +1409,25 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
     const picked = scored.slice(0, limit);
     if (picked.length === 0) return '';
 
-    return picked.map(s => `[第 ${s.page} 页·第 ${s.idx + 1} 段] ${s.text}`).join('\n\n');
+    // 每段截断：超长段落整段塞进去会让输入 token 迅速膨胀，而提问往往只关心其中一两句
+    const MAX_PER_PARA = 700;
+    return picked
+      .map(s => {
+        const text = s.text.length > MAX_PER_PARA ? `${s.text.slice(0, MAX_PER_PARA)}…（后略）` : s.text;
+        return `[第 ${s.page} 页·第 ${s.idx + 1} 段] ${text}`;
+      })
+      .join('\n\n');
+  }
+
+  /**
+   * AI 回答的输出上限（token）——控制花销最硬的闸门。
+   * 旧版把上限给到 8192 / 16384，模型基本会写满：单次问答输出动辄几千 token，
+   * 又慢又费。这里按回答风格设硬上限，配合提示词里的篇幅要求一起压。
+   */
+  private assistantMaxTokens(style: string): number {
+    if (style === 'concise') return 1024;
+    if (style === 'reviewer') return 4096;
+    return 2048;
   }
 
   private buildAssistantPrompt(options: {
@@ -1452,20 +1470,16 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
       );
     } else {
       parts.push(
-        `【回答要求】\n直接回答读者的疑问，使用 Markdown。要求：
-1. **先分清问题类型，再决定依据什么回答**：
-   - 问**本论文的具体内容**（作者做了什么、数据、某段论述的含义）→ 只依据上面提供的论文上下文；
-     上下文不足以回答时，明说"当前上下文未提供"，并指出该看论文哪一部分，
-     **严禁编造论文中不存在的内容、数据或结论**；
-   - 问**通用概念 / 术语 / 背景知识**，或者只是看到一个陌生说法、临时起意想问问
-     → 直接用你的通用知识回答，把概念讲清楚、讲透，该举例就举例，
-     **不要因为"论文里没提到"就拒答或反复声明"上下文未提供"**；
-     但要标一句这是通用背景知识、不是本论文的结论（例如「以下是一般背景知识，非本论文内容」）。
-2. 先给出直接结论，再展开分析；
-3. 问题与论文相关时，结合上面提供的上下文说明依据，不要泛泛而谈；
-4. 涉及术语/缩写/公式时解释清楚（这是读者最常卡住的地方）；
-5. 引用本论文原文时标注它来自哪一段（如「第 3 页·第 2 段」），
-   引用通用知识时不要伪装成论文里的引用。`
+        `【回答要求】\n直接回答，Markdown。要求：
+1. **篇幅**：正文控制在 300 字内。先给直接结论，再给必要依据；
+   只有问题本身需要推导、对比或举例时才展开，**不要为了显得全面而罗列无关背景**，不要复述原文。
+2. **先分清问题类型**：
+   - 问**本论文的具体内容** → 只依据上面提供的上下文；不足以回答时明说"当前上下文未提供"，
+     并指出该看论文哪一部分，**严禁编造论文中不存在的内容、数据或结论**；
+   - 问**通用概念 / 术语 / 背景知识**，或临时起意想问问 → 用通用知识正面回答，
+     **不要因为"论文里没提到"就拒答**；但要标一句这是通用背景知识、不是本论文的结论。
+3. 涉及术语/缩写/公式时解释清楚（读者最常卡在这里）。
+4. 引用本论文原文时标注来自哪一段（如「第 3 页·第 2 段」）；引用通用知识不要伪装成论文引用。`
       );
     }
     return parts.join('\n\n');
@@ -1505,15 +1519,20 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
     const ctrl = new AbortController();
     this.aiRequests.set(options.requestId, ctrl);
 
+    const answerStyle = options.answerStyle || cfg.get<string>('aiAnswerStyle', 'concise');
+
+    // 检索上下文：段数与每段长度都收紧。
+    // 旧版最多挂 6 段、每段可上千字符，一次提问光是输入就有好几千 token。
     const retrieved = this.retrieveContext(
       `${options.question} ${options.selectedText || ''}`.slice(0, 800),
-      options.page || 1
+      options.page || 1,
+      answerStyle === 'concise' ? 3 : 4
     );
 
     const prompt = this.buildAssistantPrompt({
       ...options,
       retrieved,
-      answerStyle: options.answerStyle
+      answerStyle
     });
 
     const systemInstruction = `你是一名学术论文研究助手。读者既可能问论文里的内容，也可能只是看到了一个陌生概念、或者突然想问点别的——两类都要好好回答。
@@ -1529,11 +1548,15 @@ B. **通用概念 / 术语 / 背景知识**，或读者的发散思考、联想�
    → 但不要把自己的通用知识说成是"本论文指出/发现"；也不要替作者补充论文里不存在的实验、数据或结论。
    → 涉及本论文时，两边的信息要分清来源。
 
-共同要求：直接输出 Markdown 正文，不要输出客套话、不要重复问题。`;
+共同要求：
+- 直接输出 Markdown 正文，不要客套话、不要重复问题、不要在结尾写"小结/希望这能帮到你"这类空话。
+- **篇幅要给得住**：默认短答（结论 + 必要依据），只有问题本身需要推导或对比时才展开；不要为了显得全面而罗列无关背景。`;
 
-    // 多轮：历史对话 + 本轮提问
+    // 多轮：只带最近 4 轮，且每轮内容截断——否则上一轮的长回答会被反复重发，输入 token 越滚越大
     const turns: LlmTurn[] = [];
-    (options.history || []).slice(-8).forEach(h => turns.push(h));
+    (options.history || [])
+      .slice(-4)
+      .forEach(h => turns.push({ role: h.role, text: (h.text || '').slice(0, 1200) }));
     turns.push({ role: 'user', text: prompt });
 
     try {
@@ -1553,7 +1576,7 @@ B. **通用概念 / 术语 / 背景知识**，或读者的发散思考、联想�
           systemInstruction,
           turns,
           temperature: cfg.get<number>('aiTemperature', 0.4),
-          maxOutputTokens: 8192,
+          maxOutputTokens: this.assistantMaxTokens(answerStyle),
           signal: ctrl.signal,
           onDelta,
           idleTimeoutMs: 90000,
@@ -1581,7 +1604,7 @@ B. **通用概念 / 术语 / 背景知识**，或读者的发散思考、联想�
           systemInstruction,
           turns,
           temperature: cfg.get<number>('aiTemperature', 0.4),
-          maxOutputTokens: 16384,
+          maxOutputTokens: this.assistantMaxTokens(answerStyle),
           thinkingConfig: this.assistantThinkingConfig(),
           signal: ctrl.signal,
           onDelta,

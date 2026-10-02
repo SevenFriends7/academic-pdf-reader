@@ -7,7 +7,7 @@
     "color": "#0b578a",
     "theme": "dark"
   },
-  "version": "0.4.4",
+  "version": "0.5.0",
   "publisher": "paper-reader",
   "license": "MIT",
   "repository": {
@@ -167,8 +167,8 @@
         },
         "academicReader.aiThinkingBudget": {
           "type": "number",
-          "default": -1,
-          "description": "AI 问答时的思考预算。默认 -1 = 交给模型决定（问答需要推理，答案质量更好）。设为 0 可关闭思考以换取最快响应。"
+          "default": 0,
+          "description": "AI 问答的思考预算（仅 Gemini 引擎有效）。默认 0 = 关闭思考：思考 token 计入账单且会显著拉长等待，日常问答收益有限。遇到需要深度推理的问题可临时设为 -1 交给模型决定。"
         },
         "academicReader.aiTemperature": {
           "type": "number",
@@ -182,18 +182,19 @@
         },
         "academicReader.aiAnswerStyle": {
           "type": "string",
-          "default": "standard",
+          "default": "concise",
           "enum": [
             "standard",
             "concise",
             "reviewer"
           ],
           "enumDescriptions": [
-            "标准导师：先结论后分析，结合上下文展开",
-            "极简速读：200 字内直接回答，不套模板",
+            "标准导师：结论 + 必要依据，需要推导时才展开",
+            "极简速读（默认）：结论优先，200 字内讲清",
             "审稿人视角：质疑论证与实验设计，给出追问"
           ],
-          "description": "AI 问答的回答风格"
+          "description": "AI 问答的回答风格",
+          "markdownDescription": "AI 问答的回答风格。**默认 concise**（最省 token）：只说结论与必要依据；需要长分析时再切 standard 或 reviewer。输出有硬上限（concise 1024 / standard 2048 / reviewer 4096 token）。"
         },
         "academicReader.apiEndpoint": {
           "type": "string",
@@ -228,7 +229,8 @@
     "login": "npx --yes @vscode/vsce login paper-reader",
     "publish:patch": "npx --yes @vscode/vsce publish patch --no-dependencies",
     "publish:minor": "npx --yes @vscode/vsce publish minor --no-dependencies",
-    "publish:major": "npx --yes @vscode/vsce publish major --no-dependencies"
+    "publish:major": "npx --yes @vscode/vsce publish major --no-dependencies",
+    "prevsix": "node scratch/check_version.js"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
