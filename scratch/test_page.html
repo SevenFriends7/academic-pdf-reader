@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  
+  <title>双栏文献阅读器</title>
+  <link rel="stylesheet" href="../media/viewer.css">
+</head>
+<body>
+  <!-- 顶部工具栏 -->
+  <header class="app-header">
+    <div class="header-left">
+      <span class="paper-title" id="paperTitle" title="文献标题">加载中...</span>
+    </div>
+
+    <div class="header-center">
+      <div class="toolbar-group">
+        <button id="prevPageBtn" class="btn-tool" title="上一页 (PageUp)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg>
+        </button>
+        <span class="page-indicator">
+          第 <input type="number" id="pageNumberInput" value="1" min="1" /> / <span id="pageCount">--</span> 页
+        </span>
+        <button id="nextPageBtn" class="btn-tool" title="下一页 (PageDown)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
+        </button>
+      </div>
+
+      <div class="toolbar-divider"></div>
+
+      <div class="toolbar-group">
+        <button id="zoomOutBtn" class="btn-tool" title="缩小 (-)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+        </button>
+        <span id="zoomPercent" class="zoom-label">125%</span>
+        <button id="zoomInBtn" class="btn-tool" title="放大 (+)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+        </button>
+        <button id="zoomFitBtn" class="btn-tool" title="适合宽度">适合宽度</button>
+      </div>
+
+      <div class="toolbar-divider"></div>
+
+      <div class="theme-pill-group" title="切换文献纸张护眼底色">
+        <span class="theme-pill-title">护眼纸张:</span>
+        <button class="btn-theme-pill active" data-theme="default" title="学术原卷 (默认白纸)">☀️ 白纸</button>
+        <button class="btn-theme-pill" data-theme="sepia" title="羊皮暖阳 (经典护眼暖色)">📜 羊皮</button>
+        <button class="btn-theme-pill" data-theme="green" title="若竹绿意 (冷色防眩光)">🌿 竹青</button>
+        <button class="btn-theme-pill" data-theme="dark" title="深邃暗夜 (夜读黑底模式)">🌙 暗夜</button>
+      </div>
+    </div>
+
+    <div class="header-right">
+      <div class="tab-switch">
+        <button id="tabTransBtn" class="tab-btn active" title="段落双语对照">对照翻译</button>
+        <button id="tabNotesBtn" class="tab-btn" title="查看文献高亮与批注">
+          批注笔记 (<span id="notesCount">0</span>)
+        </button>
+      </div>
+      <button id="translateAllBtn" class="btn-gemini" title="使用大模型整页翻译">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/></svg>
+        整页翻译
+      </button>
+      <button id="exportNotesBtn" class="btn-secondary" title="导出文献笔记为 Markdown 文件">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        导出笔记
+      </button>
+      <button id="openSettingsBtn" class="btn-secondary" title="配置学术翻译大模型 (Gemini / DeepSeek / 内置引擎) 与 API Key">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+        ⚙️ 翻译设置
+      </button>
+    </div>
+    <div id="readingProgressBar" class="reading-progress-bar" style="width: 0%;"></div>
+  </header>
+
+  <!-- 主双栏工作区 -->
+  <main class="main-container">
+    <!-- 左栏：PDF 原文阅读区 -->
+    <section class="left-pane" id="pdfPane">
+      <div id="pdfViewerContainer" class="pdf-viewer-container">
+        <div id="loadingOverlay" class="loading-overlay">
+          <div class="spinner"></div>
+          <p>正在解析文献 PDF，请稍候...</p>
+        </div>
+      </div>
+
+
+    </section>
+
+    <!-- 可拖动分割线 (Splitter) -->
+    <div class="pane-splitter" id="splitter">
+      <div class="splitter-handle"></div>
+    </div>
+
+    <!-- 右栏：双语对照翻译 & 批注笔记区 -->
+    <section class="right-pane" id="rightPane">
+      <!-- 视图 1: 双语段落对照 -->
+      <div id="transView" class="pane-view active">
+        <div class="pane-view-header">
+          <div class="header-info">
+            <span class="badge badge-gemini">双栏学术对照</span>
+            <span class="subtitle">支持划选即译与沉浸阅读</span>
+          </div>
+          <div class="view-switch-tools">
+            <button id="btnViewCards" class="view-toggle-btn active" title="段落卡片对照视图">卡片对照</button>
+            <button id="btnViewArticle" class="view-toggle-btn" title="沉浸式全文双语排版视图">全文精读</button>
+          </div>
+          <div style="display: flex; align-items: center; gap: 4px;">
+            <button id="refreshTransBtn" class="icon-btn" title="重新获取当前页翻译">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- 视图 A: 卡片对照容器 -->
+        <div id="transListContainer" class="trans-list-container">
+          <div class="empty-state">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+            <p>正在解析文献段落与学术排版...</p>
+          </div>
+        </div>
+
+        <!-- 视图 B: 沉浸全文对照容器 -->
+        <div id="articleFlowContainer" class="article-flow-container" style="display: none;">
+        </div>
+      </div>
+
+      <!-- 视图 2: 文献批注与笔记列表 -->
+      <div id="notesView" class="pane-view">
+        <div class="pane-view-header">
+          <div class="header-info">
+            <span class="badge badge-accent">文献批注库</span>
+            <span class="subtitle">点击批注卡片即可跳回左侧原段落</span>
+          </div>
+        </div>
+
+        <!-- 批注搜索与筛选栏 -->
+        <div class="notes-filter-bar">
+          <div class="notes-search-box">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input type="text" id="notesSearchInput" placeholder="搜索批注心得或原文摘录..." />
+            <button id="clearNotesSearch" class="btn-clear-search" style="display: none;" title="清空搜索">&times;</button>
+          </div>
+          <div class="notes-filter-row">
+            <div class="notes-filter-chips">
+              <button class="filter-chip active" data-color="all">全部 (<span id="filterCountAll">0</span>)</button>
+              <button class="filter-chip chip-yellow" data-color="yellow">🟨 要点</button>
+              <button class="filter-chip chip-green" data-color="green">🟩 数据</button>
+              <button class="filter-chip chip-blue" data-color="blue">🟦 方法</button>
+              <button class="filter-chip chip-pink" data-color="pink">🟥 疑难</button>
+            </div>
+            <button id="btnAddPageNoteQuick" class="btn-mini-add-note" title="记录当前页面的阅读心得或总结">✍️ 记本页心得</button>
+          </div>
+        </div>
+
+        <div id="notesListContainer" class="notes-list-container">
+          <div class="empty-state">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+            <p>还没有添加批注哦。<br>在左侧 PDF 划选文字后点击【高亮】或【批注】即可保存！</p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- 鼠标划词快捷悬浮菜单 (Floating Action Bar - 顶层视口固定定位) -->
+  <div id="selectionToolbar" class="selection-floating-bar" style="display: none;">
+    <div class="color-picker" title="选择高亮荧光笔颜色">
+      <span class="color-dot yellow active" data-color="yellow" title="核心要点 (黄色)"></span>
+      <span class="color-dot green" data-color="green" title="论据数据 (绿色)"></span>
+      <span class="color-dot blue" data-color="blue" title="公式方法 (蓝色)"></span>
+      <span class="color-dot pink" data-color="pink" title="疑难待查 (粉色)"></span>
+    </div>
+    <button id="btnHighlight" class="action-btn" title="划线高亮 (快捷键: H)">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 11-6 6v3h3l6-6"/><path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L15 4a2 2 0 0 1 2.8 0l4.2 4.2a2 2 0 0 1 0 2.8z"/></svg>
+      高亮
+      <kbd class="kbd-badge">H</kbd>
+    </button>
+    <button id="btnAddNote" class="action-btn" title="添加批注便签 (快捷键: N)">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+      批注
+      <kbd class="kbd-badge">N</kbd>
+    </button>
+    <button id="btnQuickTranslate" class="action-btn" title="精细划词翻译 (快捷键: T)">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
+      译句
+      <kbd class="kbd-badge">T</kbd>
+    </button>
+    <button id="btnQuickCopy" class="action-btn" title="复制选中文本 (快捷键: C)">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+      复制
+      <kbd class="kbd-badge">C</kbd>
+    </button>
+  </div>
+
+  <!-- 核心：段落/句子点击聚焦快捷工具条 (无需手动拖选，点击段落即可操作) -->
+  <div id="paraFocusBar" class="para-focus-bar" style="display: none;">
+    <span class="focus-bar-label" id="focusBarLabel">当前段落</span>
+    <button id="btnFocusHighlight" class="focus-action-btn" title="为此段落/句子添加高亮 (快捷键: H)">
+      🖍️ 高亮
+    </button>
+    <button id="btnFocusNote" class="focus-action-btn" title="为此段落添加批注心得 (快捷键: N)">
+      ✍️ 批注
+    </button>
+    <button id="btnFocusTranslate" class="focus-action-btn" title="查看对应中文译文 (快捷键: T)">
+      🌐 翻译
+    </button>
+    <button id="btnFocusCopy" class="focus-action-btn" title="复制当前段落文本 (快捷键: C)">
+      📋 复制
+    </button>
+    <button id="btnFocusAi" class="focus-action-btn focus-ai-btn" title="向 AI 咨询此句疑点与深度解析 (快捷键: Q)">
+      🤖 问AI
+    </button>
+    <button id="btnCloseFocusBar" class="focus-close-btn" title="关闭">&times;</button>
+  </div>
+
+  <!-- 核心：就近批注便签编辑气泡 (Inline Annotation Editor Popover) -->
+  <div id="annotationPopover" class="annotation-editor-popover" style="display: none;">
+    <div class="annot-popover-header">
+      <div class="annot-popover-title">
+        <span class="annot-title-icon">✍️</span>
+        <span id="annotPopoverTitle">文献研读批注</span>
+        <span class="annot-page-badge" id="annotPopoverPageBadge">第 1 页</span>
+      </div>
+      <div class="annot-color-picker">
+        <span class="annot-color-btn yellow active" data-color="yellow" title="核心要点 (黄色)"></span>
+        <span class="annot-color-btn green" data-color="green" title="论据数据 (绿色)"></span>
+        <span class="annot-color-btn blue" data-color="blue" title="公式方法 (蓝色)"></span>
+        <span class="annot-color-btn pink" data-color="pink" title="疑难待查 (粉色)"></span>
+      </div>
+      <button id="closeAnnotPopoverBtn" class="btn-close-mini" title="关闭 (Esc)">&times;</button>
+    </div>
+    <div class="annot-popover-quote">
+      <span class="quote-tag">原文摘录</span>
+      <p id="annotQuoteText"></p>
+    </div>
+    <div class="annot-quick-tags">
+      <span class="quick-tag-label">快捷标签:</span>
+      <button type="button" class="quick-tag-chip" data-tag="#核心结论">#核心结论</button>
+      <button type="button" class="quick-tag-chip" data-tag="#实验数据">#实验数据</button>
+      <button type="button" class="quick-tag-chip" data-tag="#研究方法">#研究方法</button>
+      <button type="button" class="quick-tag-chip" data-tag="#疑点待查">#疑点待查</button>
+      <button type="button" class="quick-tag-chip" data-tag="#灵感启发">#灵感启发</button>
+    </div>
+    <div class="annot-input-wrapper">
+      <textarea id="annotTextInput" placeholder="记录你的文献理解、公式推导、实验疑点或创新灵感..." rows="4"></textarea>
+    </div>
+    <div class="annot-ai-bar">
+      <button id="btnAskAiPopover" class="btn-ask-ai" type="button" title="结合选句与论文上下文，向 AI 导师请教解答疑难">
+        🤖 疑点向 AI 提问解答
+      </button>
+      <span id="annotAiStatusHint" class="ai-status-hint"></span>
+    </div>
+    <div id="annotAiAnswerBox" class="annot-ai-answer-box" style="display: none;">
+      <div class="ai-answer-header">
+        <span class="ai-answer-badge">🤖 AI 导师深度解答</span>
+        <div class="ai-answer-actions">
+          <button id="btnAdoptAiToNote" class="btn-mini-adopt" type="button" title="一键将 AI 解答追加进批注输入框中">📥 采纳进批注</button>
+          <button id="btnCloseAiAnswer" class="btn-mini-close" type="button" title="收起解答">&times;</button>
+        </div>
+      </div>
+      <div id="annotAiAnswerContent" class="ai-answer-content markdown-body"></div>
+    </div>
+    <div class="annot-popover-footer">
+      <div class="annot-footer-hints">
+        <span class="shortcut-tip">Ctrl+Enter 保存</span>
+      </div>
+      <div class="annot-footer-actions">
+        <button id="deleteAnnotBtn" class="btn-mini-danger" style="display: none;" title="删除这条批注">🗑️ 删除</button>
+        <button id="cancelAnnotBtn" class="btn-mini-secondary">取消</button>
+        <button id="saveAnnotBtn" class="btn-mini-primary">💾 保存批注</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 核心：AI 学术文献导师深度问答弹窗 (AI Academic Assistant Dialog) -->
+  <div id="aiAssistantModal" class="ai-assistant-modal" style="display: none;">
+    <div class="ai-modal-card">
+      <div class="ai-modal-header">
+        <div class="ai-modal-title">
+          <span class="ai-icon">🤖</span>
+          <span>AI 学术文献导师 · 深度答疑</span>
+          <span class="ai-model-tag" id="aiModalModelTag">Gemini / DeepSeek</span>
+        </div>
+        <button id="btnCloseAiModal" class="btn-close-mini" title="关闭 (Esc)">&times;</button>
+      </div>
+      <div class="ai-modal-body">
+        <div class="ai-modal-context">
+          <div class="ai-context-label">📌 聚焦论文原句 / 上下文：</div>
+          <div class="ai-context-text" id="aiModalQuote"></div>
+        </div>
+        <div class="ai-prompt-chips">
+          <span class="chips-label">快捷提问:</span>
+          <button type="button" class="ai-chip" data-q="这句话的真实技术意图与核心动机是什么？请用通俗中文讲透。">💡 讲透核心动机</button>
+          <button type="button" class="ai-chip" data-q="作者在此处与以往前人方法有何本质区别？优势在哪里？">⚔️ 与前人本质区别</button>
+          <button type="button" class="ai-chip" data-q="这句话里涉及的术语、公式或方法背后的数学原理是什么？">📐 公式术语原理</button>
+          <button type="button" class="ai-chip" data-q="我对这里的结论存有疑难，请结合上下文帮我深度剖析推导过程。">❓ 深度解惑疑难</button>
+        </div>
+        <div class="ai-question-input-wrapper">
+          <textarea id="aiModalQuestionInput" placeholder="输入你的学术疑问，AI 将结合论文全文上下文为你深度剖析解答... (支持回车直接发送)" rows="2"></textarea>
+          <button id="btnSendAiModalQuestion" class="btn-send-ai">发送咨询 🚀</button>
+        </div>
+        <div id="aiModalLoading" class="ai-modal-loading" style="display: none;">
+          <div class="ai-loading-spinner"></div>
+          <span>AI 导师正在结合论文全文与段落上下文深度分析中，请稍候...</span>
+        </div>
+        <div id="aiModalResponseWrapper" class="ai-response-wrapper" style="display: none;">
+          <div class="ai-response-header">
+            <span class="ai-res-title">📝 深度导师解答：</span>
+            <div class="ai-res-actions">
+              <button id="btnCopyAiAnswer" class="btn-mini-act" title="复制解答">📋 复制解答</button>
+              <button id="btnSaveAiAsNote" class="btn-mini-act btn-highlight-act" title="直接保存为本句批注笔记">✍️ 存为批注笔记</button>
+            </div>
+          </div>
+          <div id="aiModalAnswer" class="ai-response-content markdown-body"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 原文高亮批注悬停预览卡片 (Note Hover Tooltip) -->
+  <div id="noteHoverTooltip" class="note-hover-tooltip" style="display: none;">
+    <div class="tooltip-header">
+      <span class="tooltip-badge" id="tooltipBadge">🟨 核心要点</span>
+      <span class="tooltip-time" id="tooltipTime">刚刚</span>
+    </div>
+    <div class="tooltip-quote" id="tooltipQuote"></div>
+    <div class="tooltip-content" id="tooltipContent"></div>
+    <div class="tooltip-actions">
+      <button id="tooltipBtnEdit" class="btn-tooltip-act">✏️ 编辑批注</button>
+      <button id="tooltipBtnJump" class="btn-tooltip-act">🔍 笔记库</button>
+      <button id="tooltipBtnDelete" class="btn-tooltip-act text-danger">🗑️ 删除</button>
+    </div>
+  </div>
+
+  <!-- 快速划词翻译弹出气泡 -->
+  <div id="quickTranslatePopover" class="popover-card" style="display: none;">
+    <div class="popover-header">
+      <span class="popover-tag">即时译文</span>
+      <button id="closePopoverBtn" class="btn-close">&times;</button>
+    </div>
+    <div class="popover-source" id="popoverSourceText"></div>
+    <div class="popover-result" id="popoverResultText">
+      <div class="mini-spinner"></div> 正在翻译中...
+    </div>
+  </div>
+
+  <!-- 自定义学术 PDF 右键快捷上下文菜单 (Custom Context Menu) -->
+  <div id="pdfContextMenu" class="pdf-context-menu" style="display: none;">
+    <!-- 针对已有批注/高亮的操作区域 -->
+    <div id="ctxAnnotSection" style="display: none;">
+      <div class="context-menu-header">
+        <span class="context-menu-label">已有批注操作</span>
+        <div class="color-picker-mini" id="ctxAnnotColorPicker">
+          <span class="ctx-color-dot yellow" data-color="yellow" title="修改为核心要点 (黄色)"></span>
+          <span class="ctx-color-dot green" data-color="green" title="修改为论据数据 (绿色)"></span>
+          <span class="ctx-color-dot blue" data-color="blue" title="修改为公式方法 (蓝色)"></span>
+          <span class="ctx-color-dot pink" data-color="pink" title="修改为疑难待查 (粉色)"></span>
+        </div>
+      </div>
+      <div class="context-menu-divider"></div>
+      <div class="context-menu-item" id="ctxBtnEditAnnot">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        <span>✍️ 编辑此条批注</span>
+        <span class="context-shortcut">E</span>
+      </div>
+      <div class="context-menu-item" id="ctxBtnCopyAnnot">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+        <span>📋 复制批注与引文</span>
+      </div>
+      <div class="context-menu-item" id="ctxBtnFocusAnnot">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></svg>
+        <span>🔍 在右侧笔记列表中定位</span>
+      </div>
+      <div class="context-menu-item" id="ctxBtnDeleteAnnot">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+        <span style="color: #ff6b6b;">🗑️ 删除此条批注/高亮</span>
+        <span class="context-shortcut">Del</span>
+      </div>
+      <div class="context-menu-divider"></div>
+    </div>
+
+    <!-- 针对选区/段落文本的操作区域 -->
+    <div id="ctxTextSection">
+      <div class="context-menu-header">
+        <span class="context-menu-label">高亮荧光笔</span>
+        <div class="color-picker-mini">
+          <span class="ctx-color-dot yellow active" data-color="yellow" title="核心要点 (黄色)"></span>
+          <span class="ctx-color-dot green" data-color="green" title="论据数据 (绿色)"></span>
+          <span class="ctx-color-dot blue" data-color="blue" title="公式方法 (蓝色)"></span>
+          <span class="ctx-color-dot pink" data-color="pink" title="疑难待查 (粉色)"></span>
+        </div>
+      </div>
+      <div class="context-menu-divider"></div>
+      <div class="context-menu-item" id="ctxBtnHighlight">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 11-6 6v3h3l6-6"/><path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L15 4a2 2 0 0 1 2.8 0l4.2 4.2a2 2 0 0 1 0 2.8z"/></svg>
+        <span>🖍️ 荧光笔高亮</span>
+        <span class="context-shortcut">H</span>
+      </div>
+      <div class="context-menu-item" id="ctxBtnAddNote">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        <span id="ctxBtnAddNoteLabel">✍️ 添加批注便签</span>
+        <span class="context-shortcut">N</span>
+      </div>
+      <div class="context-menu-item" id="ctxBtnAskAi">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2 2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z"/><rect width="18" height="12" x="3" y="6" rx="2"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><path d="M9 15h6"/></svg>
+        <span style="color: #6366f1; font-weight: 500;">🤖 呼叫AI学术导师答疑</span>
+        <span class="context-shortcut">Q</span>
+      </div>
+      <div class="context-menu-item" id="ctxBtnTranslate">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
+        <span>⚡ 即时学术精译</span>
+        <span class="context-shortcut">T</span>
+      </div>
+      <div class="context-menu-item" id="ctxBtnCopy">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+        <span>📋 复制英文原文</span>
+        <span class="context-shortcut">Ctrl+C</span>
+      </div>
+      <div class="context-menu-item" id="ctxBtnLocate">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M22 12h-4"/><path d="M6 12H2"/><path d="M12 6V2"/><path d="M12 22v-4"/></svg>
+        <span>🎯 定位对应翻译卡片</span>
+      </div>
+      <div class="context-menu-divider"></div>
+    </div>
+
+    <!-- 全局快捷操作 (无论是否有选区均可使用) -->
+    <div class="context-menu-item" id="ctxBtnAddPageNote">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+      <span>✍️ 记录本页研读心得</span>
+    </div>
+    <div class="context-menu-item" id="ctxBtnTranslatePage">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/></svg>
+      <span>⚡ 整页大模型精译</span>
+    </div>
+    <div class="context-menu-item" id="ctxBtnFitWidth">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+      <span>🔍 适合页面宽度</span>
+    </div>
+    <div class="context-menu-item" id="ctxBtnPrevPage">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg>
+      <span>📄 上一页</span>
+      <span class="context-shortcut">PgUp</span>
+    </div>
+    <div class="context-menu-item" id="ctxBtnNextPage">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
+      <span>📄 下一页</span>
+      <span class="context-shortcut">PgDn</span>
+    </div>
+    <div class="context-menu-divider"></div>
+    <div class="context-menu-item" id="ctxBtnExportNotes">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      <span>📝 导出文献研读笔记</span>
+    </div>
+  </div>
+
+  <!-- 便签编辑弹窗 (Modal 备用/全屏模式) -->
+  <div id="noteModal" class="modal-overlay" style="display: none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>✍️ 添加文献研读批注</h3>
+        <button id="closeModalBtn" class="btn-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-quote">
+          <span class="quote-label">原文摘录:</span>
+          <p id="modalQuoteText"></p>
+        </div>
+        <textarea id="modalNoteInput" placeholder="写下你的理解、推导、疑问或与其它论文的关联思考..." rows="5"></textarea>
+      </div>
+      <div class="modal-footer">
+        <button id="cancelNoteBtn" class="btn-secondary">取消</button>
+        <button id="saveNoteBtn" class="btn-primary">保存批注</button>
+      </div>
+    </div>
+  </div>
+
+  <script >
+    window.PDF_WORKER_URL = "../media/pdfjs/pdf.worker.min.js";
+  </script>
+  <script  src="../media/pdfjs/pdf.min.js"></script>
+  <script  src="../media/viewer.js"></script>
+
+<script>
+window.addEventListener('load', () => {
+  setTimeout(() => {
+    try {
+      console.log('Testing AI button clicks...');
+      const modal = document.getElementById('aiAssistantModal');
+      console.log('Modal exists:', !!modal);
+      console.log('Modal display initially:', modal ? modal.style.display : null);
+
+      // Check if we can trigger openAiAssistantModal
+      const testBtn = document.createElement('button');
+      testBtn.className = 'btn-row-ai';
+      testBtn.setAttribute('data-sent-idx', '0');
+      document.body.appendChild(testBtn);
+
+      // Check all AI buttons in DOM
+      console.log('btnFocusAi exists:', !!document.getElementById('btnFocusAi'));
+      console.log('btnAskAiPopover exists:', !!document.getElementById('btnAskAiPopover'));
+      console.log('btnSelectionAi exists:', !!document.getElementById('btnSelectionAi'));
+      console.log('ctxBtnAskAi exists:', !!document.getElementById('ctxBtnAskAi'));
+
+      // Test clicking btnFocusAi directly
+      const btnFocusAi = document.getElementById('btnFocusAi');
+      if (btnFocusAi) {
+        console.log('Clicking btnFocusAi directly...');
+        btnFocusAi.click();
+        console.log('After btnFocusAi click, modal display:', modal.style.display);
+      }
+    } catch(err) {
+      console.error('Test error:', err);
+    }
+  }, 500);
+});
+</script>
+</body>
+</html>

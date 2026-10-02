@@ -1,0 +1,21 @@
+﻿# 统一行尾为 LF，避免 Windows/CI 之间反复产生"整个文件都改了"的噪音
+* text=auto eol=lf
+
+# 二进制文件不要做行尾转换
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.vsix binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
+
+# GitHub Actions 与脚本必须是 LF
+*.yml text eol=lf
+*.yaml text eol=lf
+*.sh text eol=lf
+*.js text eol=lf
+*.ts text eol=lf
+*.json text eol=lf
+*.md text eol=lf

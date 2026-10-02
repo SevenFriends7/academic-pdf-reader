@@ -1,0 +1,33 @@
+name: CI
+
+# 每次推送到主分支或提 PR 时跑一遍：类型检查、单元测试、打包预检。
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+
+      - name: 类型检查
+        run: npx tsc --noEmit
+
+      - name: 单元测试（webview 侧）
+        run: node scratch/llm-test/viewer-unit.js
+
+      - name: 密钥泄露扫描
+        run: node scratch/scan_secrets.js
+
+      - name: 打包预检（确认发布清单里没有多余文件）
+        run: npx --yes @vscode/vsce ls

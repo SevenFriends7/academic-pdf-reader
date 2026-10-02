@@ -1,0 +1,37 @@
+# ---- 依赖与构建产物 ----
+node_modules/
+dist/
+*.vsix
+
+# ---- 编辑器与系统 ----
+.vscode-test/
+.DS_Store
+Thumbs.db
+
+# ---- 本地开发/测试临时产物（测试脚本本身要提交，但产物不提交）----
+scratch/dstest/build/
+scratch/_pipeline_snip.js
+scratch/installed_viewer.js
+scratch/vsce-test.vsix
+scratch/*_out.md
+scratch/*.log
+
+# ---- 密钥与个人数据（绝不提交）----
+# .vscode/settings.json 存着本机 API Key 与个人偏好：只提交 launch/tasks，别提交它
+.vscode/settings.json
+.env
+.env.*
+*.key
+.gemini-key
+paper_*.json
+
+# ---- 备份文件 ----
+*.bak
+*.orig
+
+# ---- 编译产物副本 ----
+scratch/llm-test/out/
+
+scratch/dstest/out/
+scratch/llm-test/*.js.map
+

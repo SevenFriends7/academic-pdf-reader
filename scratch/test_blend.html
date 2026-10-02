@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+.wrapper {
+  position: relative;
+  width: 400px;
+  height: 200px;
+  background: white;
+}
+.canvas-mock {
+  position: absolute;
+  top: 0; left: 0; width: 400px; height: 200px;
+  background: white;
+  color: black;
+  font-size: 20px;
+  padding: 20px;
+}
+/* Stacking context on textLayer because of position: absolute and z-index: 3 */
+.textLayer {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  overflow: hidden;
+  opacity: 1.0;
+  z-index: 3;
+}
+.textLayer span {
+  position: absolute;
+  top: 20px; left: 20px;
+  font-size: 20px;
+  color: transparent;
+}
+.textLayer span.highlight-multiply {
+  background-color: rgba(255, 235, 59, 0.42);
+  mix-blend-mode: multiply;
+}
+.textLayer span.highlight-normal {
+  background-color: rgba(255, 235, 59, 0.42);
+}
+</style>
+</head>
+<body>
+<div class="wrapper">
+  <div class="canvas-mock">This is black text on canvas</div>
+  <div class="textLayer">
+    <span class="highlight-multiply">This is black text on canvas</span>
+  </div>
+</div>
+</body>
+</html>

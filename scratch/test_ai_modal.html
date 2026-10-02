@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="../media/viewer.css">
+</head>
+<body>
+  <!-- Include the HTML from pdfEditorProvider.ts -->
+  <div id="test-output"></div>
+  <script>
+    window.PDF_WORKER_URL = '';
+    window.acquireVsCodeApi = () => ({
+      postMessage: (msg) => console.log('postMessage:', JSON.stringify(msg)),
+      getState: () => ({}),
+      setState: () => ({})
+    });
+  </script>
+</body>
+</html>

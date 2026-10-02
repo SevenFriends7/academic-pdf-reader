@@ -1,0 +1,91 @@
+name: Release
+
+# 打 tag（形如 v0.4.1）时自动发布。
+# 也可以在 Actions 页面手动触发（workflow_dispatch），用于补发某个版本。
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write # 创建 GitHub Release 需要
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    env:
+      # 两个令牌都从仓库 Secrets 读取。缺哪个就跳过对应的发布步骤。
+      #   VSCE_PAT —— VS Code Marketplace 的 Personal Access Token
+      #   OVSX_PAT —— Open VSX 的访问令牌（可选；VS Code 分支/开源发行版用它）
+      VSCE_PAT: ${{ secrets.VSCE_PAT }}
+      OVSX_PAT: ${{ secrets.OVSX_PAT }}
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      # ---- 质量门禁：类型检查 + 单元测试，不通过就不发布 ----
+      - name: 类型检查
+        run: npx tsc --noEmit
+
+      - name: 单元测试（webview 侧）
+        run: node scratch/llm-test/viewer-unit.js
+
+      - name: 密钥泄露扫描
+        run: node scratch/scan_secrets.js
+
+      # ---- 版本一致性：tag 必须与 package.json 的 version 相同 ----
+      - name: 校验 tag 与 package.json 版本一致
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          echo "package.json: $PKG_VERSION / tag: $TAG_VERSION"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::tag ($TAG_VERSION) 与 package.json 版本 ($PKG_VERSION) 不一致，已中止发布"
+            exit 1
+          fi
+
+      # ---- 打包（vscode:prepublish 会自动先编译）----
+      - name: 打包 VSIX
+        run: npx --yes @vscode/vsce package --no-dependencies --allow-missing-repository
+
+      - name: 收集产物名
+        id: vsix
+        run: echo "file=$(ls *.vsix | head -n 1)" >> "$GITHUB_OUTPUT"
+
+      # ---- 发布到 VS Code Marketplace ----
+      - name: 发布到 VS Code Marketplace
+        if: env.VSCE_PAT != ''
+        run: npx --yes @vscode/vsce publish --no-dependencies --allow-missing-repository --packagePath "${{ steps.vsix.outputs.file }}"
+
+      # ---- 发布到 Open VSX（VS Code 分支/开源发行版）----
+      - name: 发布到 Open VSX
+        if: env.OVSX_PAT != ''
+        run: npx --yes ovsx publish "${{ steps.vsix.outputs.file }}" -p "$OVSX_PAT"
+
+      # ---- 把 VSIX 挂到 GitHub Release，方便离线安装 ----
+      - name: 创建 GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: '*.vsix'
+          generate_release_notes: true
+
+      - name: 上传 VSIX 作为构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: vsix
+          path: '*.vsix'
+          if-no-files-found: error
