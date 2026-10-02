@@ -31,3 +31,16 @@ jobs:
 
       - name: 打包预检（确认发布清单里没有多余文件）
         run: npx --yes @vscode/vsce ls
+
+      # 每次 CI 都产出一个可下载的 vsix：这样不用发布到商店也能让别人拿到安装包，
+      # 也方便在别的机器上下载安装（Actions 运行页面底部 → Artifacts）。
+      - name: 打包 VSIX
+        run: npx --yes @vscode/vsce package --no-dependencies
+
+      - name: 上传 VSIX 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: academic-pdf-reader-vsix
+          path: '*.vsix'
+          if-no-files-found: error
+          retention-days: 90
