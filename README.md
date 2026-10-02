@@ -48,7 +48,7 @@
 
 ### 方式一：扩展市场安装（推荐）
 
-在扩展面板（`Ctrl+Shift+X`）搜索 **`文献对照翻译阅读器`** 或 **`academic-pdf-reader`**，点击安装即可；后续版本会自动更新。
+在扩展面板（`Ctrl+Shift+X`）搜索 **`Bilingual Paper Reader`**（中文可搜「论文 翻译」「文献 对照」等关键词），点击安装即可；后续版本会自动更新。
 
 或直接打开商店页面：[paper-reader.academic-pdf-reader](https://marketplace.visualstudio.com/items?itemName=paper-reader.academic-pdf-reader)
 
