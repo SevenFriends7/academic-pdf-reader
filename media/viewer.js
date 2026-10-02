@@ -1488,10 +1488,16 @@
         const atParagraphBoundary = !isSameColumn || largeVGap;
         const prevEndedSentence = curParaLines.length > 0 && /[.!?。！？]["'”)]?\s*$/.test(curParaLines[curParaLines.length - 1].spans.map(s => s.textContent || '').join(' ').trim());
 
+        // 以连字符结尾 = 这个词被折到下一行，说明本行是**换行后的正文**，不可能是标题。
+        // 实测：致谢那一行 "Acknowledgment. This work is supported by the ICT R&D pro-" 长度 58 ≤ 60，
+        // 靠行首关键词命中标题 → 把 "pro-gram" 从中间切开，剩下 "gram of MSIT/IITP…" 成了碎片卡片。
+        const endsWithHyphen = /[-‐]\s*$/.test(text);
+
         const isHeading =
           atParagraphBoundary &&
           (curParaLines.length === 0 || prevEndedSentence) &&
           !hasDropCap &&
+          !endsWithHyphen &&
           ((line.h > normalLineHeight * 1.28 && line.spans.length <= 5) ||
             (/^[0-9]+(\.[0-9]+)*\.?\s+[A-Z]/.test(text) && text.length <= 60) ||
             (/^(abstract|introduction|related work|background|method|methods|methodology|approach|experiments?|results?|discussion|conclusions?|references|acknowledg(e)?ments?|appendix)\b/i.test(
