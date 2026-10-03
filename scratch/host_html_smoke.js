@@ -561,6 +561,20 @@ console.log('\n[视觉手术：按模型判断合并续句、拆开"正文+公�
     !/md-math/.test(S.renderEnTextHtml('The price was $5 and $6 in total.', [])),
     S.renderEnTextHtml('The price was $5 and $6 in total.', [])
   );
+  check(
+    '同一位置长短两条替换表 → 取更长（更精确）的那条（否则 Ŷ_{t−1} 会只渲染成 Ŷ_t，后面吊着 −1）',
+    (() => {
+      const html = S.renderEnTextHtml('Hence, we have Y ̂ t − 1 ⊂ { Y 1 }.', [
+        { find: 'Y ̂ t', latex: '\\hat{Y}_t' },
+        { find: 'Y ̂ t − 1', latex: '\\hat{Y}_{t-1}' }
+      ]);
+      return /\\hat\{Y\}_\{t-1\}/.test(html) && !/\\hat\{Y\}_t(?!\{)/.test(html);
+    })(),
+    S.renderEnTextHtml('Hence, we have Y ̂ t − 1 ⊂ { Y 1 }.', [
+      { find: 'Y ̂ t', latex: '\\hat{Y}_t' },
+      { find: 'Y ̂ t − 1', latex: '\\hat{Y}_{t-1}' }
+    ])
+  );
 
   // 卡片上确实出现了行内公式（走真实的 renderTranslationCards）
   const katexCalls = [];

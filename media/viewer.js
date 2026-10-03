@@ -7483,7 +7483,7 @@ let aiPresetQuestion = '';
   function renderEnTextHtml(text, inline) {
     const src = String(text == null ? '' : text);
     if (!src) return '';
-    const reps = [];
+    const cands = [];
     (Array.isArray(inline) ? inline : []).forEach(item => {
       const find = item && item.find ? String(item.find) : '';
       const latex = item && item.latex ? String(item.latex) : '';
@@ -7496,8 +7496,19 @@ let aiPresetQuestion = '';
       if (find.length > maxFind && !(find.length <= 120 && looksLikeMathResidue(find))) return;
       const at = locateAnchorIndex(src, find, 0);
       if (at < 0) return;
-      if (reps.some(r => at < r.end && at + find.length > r.start)) return;
-      reps.push({ start: at, end: at + find.length, latex });
+      cands.push({ start: at, end: at + find.length, latex, len: find.length });
+    });
+    /*
+     * 【最长匹配优先】同一个位置经常有长短两条替换表——例如 "Y ̂ t"（来自上一段）
+     * 与 "Y ̂ t − 1"（本段，更精确）。若按列表顺序取，短的那条会先命中、把更精确的长条目
+     * 挤掉：实测 Ŷ_{t−1} 只渲染成了 Ŷ_t，后面还吊着一个裸的 "− 1"。
+     * 所以先按"长的优先"接受，再按位置组装。
+     */
+    cands.sort((a, b) => b.len - a.len || a.start - b.start);
+    const reps = [];
+    cands.forEach(c => {
+      if (reps.some(r => c.start < r.end && c.end > r.start)) return;
+      reps.push(c);
     });
     reps.sort((a, b) => a.start - b.start);
     if (reps.length === 0) return renderTextWithMath(src);
