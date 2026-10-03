@@ -258,6 +258,16 @@ function makePaperData() {
     check('我的批注出现在附录里', flat.includes('这是全文动机'));
     check('AI 答疑出现在附录里', flat.includes('这个模块为什么能扩展到在线') && flat.includes('不需要未来帧'));
     check('图表标签不进附录', !flat.includes(squeeze('IoU mIoU J&F')));
+
+    // 排版不能溢出页面（长 URL/长英文词在硬切逻辑上有 bug 时这里会先红）
+    const items = (await lastPage.getTextContent()).items;
+    const viewport = lastPage.getViewport({ scale: 1 });
+    const overflow = items.filter(it => {
+      const x = it.transform[4];
+      const w = typeof it.width === 'number' ? it.width : 0;
+      return x + w > viewport.width - 20;
+    });
+    check('附录文字没有溢出页面右边界', overflow.length === 0, overflow.length ? `溢出的行：${overflow.length}` : '');
   }
 
   console.log('\n[4] 退化路径与接线');
