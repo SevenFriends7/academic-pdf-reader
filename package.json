@@ -7,7 +7,7 @@
                           "color":  "#0b578a",
                           "theme":  "dark"
                       },
-    "version":  "1.4.4",
+    "version":  "1.5.0",
     "publisher":  "paper-reader",
     "license":  "MIT",
     "repository":  {
@@ -282,7 +282,9 @@
                     "test:gate":  "node scratch/dstest/gate_test.js",
                     "test:nonprose":  "node scratch/dstest/nonprose_fix_test.js",
                     "lint":  "npx --yes eslint@8 --no-eslintrc -c .eslintrc.json media/viewer.js",
-                    "prevsix":  "node scratch/check_version.js"
+                    "prevsix":  "node scratch/check_version.js",
+                    "test:para":  "node scratch/para_rebuild_test.js",
+                    "test:math":  "node scratch/math_layer_test.js"
                 },
     "devDependencies":  {
                             "@pdf-lib/fontkit":  "^1.1.1",

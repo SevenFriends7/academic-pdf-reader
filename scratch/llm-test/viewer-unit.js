@@ -1446,7 +1446,7 @@ console.log('\n===== T17 标题判定不吞正文（真实数据） =====');
     mk(190, 309, 545, '2018 DAVIS challenge winner [ 20 ]. Our results on the test-', 'col2'),
     mk(178, 309, 510, 'dev set is included in the supplementary materials.', 'col2')
   ];
-  const paras = run(lines, labelRe, 6, split, false, 293, { log() {} }, { items: [] }, {}, () => [], () => 0, () => null);
+  const paras = run(lines, labelRe, 6, split, false, 293, { log() {}, warn() {}, error() {} }, { items: [] }, {}, () => [], () => 0, () => null);
 
   const headingCount = paras.filter(p => p.type === 'heading').length;
   checkTrue('行首出现 method/methods/results/数字大写 时**不产生标题**', headingCount === 0, `产生了 ${headingCount} 个标题`);
@@ -1473,7 +1473,7 @@ console.log('\n===== T17 标题判定不吞正文（真实数据） =====');
     mk(117, 50, 286, 'Single object (DAVIS-2016). DAVIS-2016 [ 27 ] is one of', 'col1'),
     mk(105, 50, 286, 'the most popular benchmark datasets for video object seg-', 'col1')
   ];
-  const paras2 = run(real, labelRe, 6, split, false, 293, { log() {} }, { items: [] }, {}, () => [], () => 0, () => null);
+  const paras2 = run(real, labelRe, 6, split, false, 293, { log() {}, warn() {}, error() {} }, { items: [] }, {}, () => [], () => 0, () => null);
   checkTrue(
     '真标题仍被识别为 heading',
     paras2.length >= 2 && paras2[0].type === 'heading',

@@ -1548,6 +1548,13 @@
       }
       const seg = src.slice(a, b);
       if (!seg || (!/[A-Za-z0-9\u0370-\u03ff]/.test(seg) && !(opts && opts.allowBareSymbol))) return;
+      /*
+       * 【编码损坏的片段要在这里也拦一次】实测 STM.pdf 第 4 页的 CambriaMath 的 ToUnicode 是坏的，
+       * `H×W×C` 被解成 `H×$×%`。这段文本常常**混在正文 span 里**（不是独立的数学 item），
+       * 走的是本函数（findMathRegions）而不是 mathItemsToLatex，所以质量闸门必须在这里也有一份，
+       * 否则界面上会渲染出 `H\times \$\times \%` 这种"看着像公式、内容全错"的东西。
+       */
+      if (/[%$]/.test(seg) || /\+\*|\)\*|\(\*/.test(seg)) return;
       runs.push({ start: a, end: b, text: seg });
     });
     // 合并相邻/重叠区间
@@ -2796,10 +2803,24 @@
           let needSpace = false;
           if (prevLastChar && curFirstChar) {
             if (prevLastChar === '-' || prevLastChar === '‐') {
-              // 连字符折行：去掉连字符、不加空格（保留原行为）
+              /*
+               * 连字符折行：去掉连字符、不加空格（保留原行为）。
+               *
+               * 【必须同步清掉 charMap 里的**相邻空格**】charMap 与 cleanText 是严格 1:1 的，
+               * 而"切掉一个字符"只能 pop 一次：若实际切掉了 2 个字符（连字符 + 它前面的空格），
+               * charMap 就会比 cleanText 短 1，后面所有划线高亮整体错位一位（实测 AOT 第 5 页差 1）。
+               */
               if (prevSeg.kind === 'body' && prevSeg.text.length > 0) {
+                // 补词距时会给这一段末尾塞一个**合成空格**，于是 cleanText 里是 "…compet- "（空格 + 连字符）。
+                // 切掉连字符后必须**连空格一起切**，charMap 也要弹两次——只弹一次就会比 cleanText 短 1，
+                // 后面所有字符的高亮整体错位一位（实测 AOT 第 5 页差 1、STM 差 16）。
+                const beforeLast = prevSeg.text.length >= 2 ? prevSeg.text[prevSeg.text.length - 2] : '';
                 prevSeg.text = prevSeg.text.slice(0, -1);
                 if (para.charMap.length) para.charMap.pop();
+                if (/\s/.test(beforeLast)) {
+                  prevSeg.text = prevSeg.text.replace(/\s+$/, '');
+                  if (para.charMap.length) para.charMap.pop();
+                }
               }
             } else if (
               !/\s$/.test(prevLast) &&
@@ -2848,6 +2869,21 @@
       while (para.cleanText.length > 0 && /^\s/.test(para.cleanText)) {
         para.cleanText = para.cleanText.slice(1);
         para.charMap.shift();
+      }
+
+      /*
+       * 【charMap 必须与 cleanText 严格 1:1——这是划线高亮不错位的唯一保证】
+       * 上面那些"去掉连字符 / 补词距空格"的处理都会同时动 cleanText 与 charMap，
+       * 只要有一处少弹/多弹一次，**后面所有字符的高亮都会整体错位一位**（用户看到"高亮偏了"）。
+       * 与其逐个分支去证明，不如在这里兜底对齐：多则截断，少则以"无名片段"补齐
+       * （span=null 的字符不参与高亮，只是安全垫，不会把高亮画到别的字上）。
+       */
+      if (para.charMap.length > para.cleanText.length) {
+        para.charMap.length = para.cleanText.length;
+      } else if (para.charMap.length < para.cleanText.length) {
+        const missing = para.cleanText.length - para.charMap.length;
+        console.warn(`[Viewer] charMap 比 cleanText 少 ${missing} 个字符（已用空片段补齐，避免整段高亮错位）`);
+        for (let i = 0; i < missing; i++) para.charMap.push({ span: null, offset: 0 });
       }
 
       if (para.cleanText.length > 0) {
