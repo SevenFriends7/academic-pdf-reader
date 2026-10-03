@@ -1,22 +1,23 @@
-# 1.4.0 公式层重做 · 交接（当前状态，务必先读这段）
+# 1.4.x 公式层重做 · 交接（当前状态，务必先读这段）
 
 ## 一句话结论
 
-**1.4.0 已发布到本机并打包完成；数学层 + 界面接线全部做完，全部门禁 0 失败。
+**公式/符号提取已用确定性方法（PDF 字体族 + 几何位置）重做完成，界面接线完成，
+批注/笔记支持 LaTeX 渲染，回归测试补齐，全部门禁 0 失败，已发版到本机。
 唯一没做的是"在真实 IDE 里目视确认"——我无法启动 VS Code，这一步必须由你完成。**
 
 ## 发版状态（已完成）
 
 | 项 | 状态 |
 |---|---|
-| 版本 | `1.3.9` → **`1.4.0`**（package.json + CHANGELOG + package-lock 同步） |
-| 商店包 | `academic-pdf-reader-1.4.0.vsix`（人工上传商店，别用 `-local.vsix`） |
-| 本机安装 | 已装到 VS Code / Antigravity，三个 IDE 的头像冒烟全绿 |
-| 安装产物一致性 | 工作区 `media/viewer.js` 与已安装目录里的 **SHA256 完全相同**（`C98AFC4D…1231`）——所以本机验证跑的就是将要发布的代码 |
-| git | 已 commit + 打 tag `v1.4.0`；**未推送**（脚本带 `-NoPush`），推送与商店上传由你决定 |
-| 下一步 | **完全退出 IDE 再打开**（Reload Window 不换版本）→ 看工具栏版本徽章是不是 `v1.4.0` |
+| 版本 | `1.3.9` → `1.4.0` → **`1.4.1`**（1.4.1 修的是撇号 `V′` 被判成下标的错） |
+| 商店包 | `academic-pdf-reader-1.4.1.vsix`（人工上传商店，别用 `-local.vsix`） |
+| 本机安装 | 已装到 VS Code / Antigravity，三个 IDE 的安装产物冒烟全绿 |
+| 安装产物一致性 | 工作区 `media/viewer.js` 与已安装目录里的 **SHA256 完全相同**——本机跑的就是要发布的代码 |
+| git | 已 commit + tag `v1.4.0`、`v1.4.1`；**未推送**（脚本带 `-NoPush`），推送与商店上传由你决定 |
+| 下一步 | **完全退出 IDE 再打开**（Reload Window 不换版本）→ 看工具栏版本徽章是不是 `v1.4.1` |
 
-## 验证证据（全部 0 失败）
+## 验证证据
 
 | 门禁 | 结果 |
 |---|---|
@@ -25,19 +26,22 @@
 | `npm run test:init`（jsdom 冒烟） | ✅ 无异常 |
 | `npm run test:html`（真实宿主 HTML） | ✅ 通过 |
 | `npm run test:pdf` | 50 通过 / 0 失败 |
-| `node scratch/math_layer_test.js`（**新增**数学层回归） | 47 通过 / 0 失败 |
+| `node scratch/math_layer_test.js`（**新增**数学层回归） | **48 通过 / 0 失败** |
 | `node scratch/math_latex_verify.js` | 481 条公式，空 0、KaTeX 语法错 0 |
-| `tsc --noEmit` / `lint` / `scan_secrets` / 已安装产物冒烟 | 全绿 |
+| `node scratch/math_audit.js --all` | 481 条，无高危可疑模式 |
+| `tsc --noEmit` / `lint` / `scan_secrets` / 安装产物冒烟 | 全绿 |
 
-**像素级/视觉对照（用户明确要求的那一项）**：
-用 PyMuPDF 把 cycle.pdf 第 4 页渲染成图（`scratch/vision/cycle_p4_render.png`、`cycle_p4_verify.png`），
-再用视觉模型逐字转写，与本地数学层的输出**逐条比对一致**：
+**像素级 / 视觉对照（用户明确要求的那一项）**：
+用 PyMuPDF 把页面渲染成图（`scratch/vision/cycle_p4_render.png`、`cycle_p4_verify.png`、
+`verify_AOT_p5.png` 等），再用视觉模型逐字转写，与本地数学层输出**逐条比对**：
 
 | 页面上印的 | 本地抽取的 LaTeX | 判定 |
 |---|---|---|
 | `X` 下标 `t−1` = `{X_1}`，`Y` 下标 `t−1` = `{Y_1}` | `X_{t-1}=\{X_{1}\}`、`Y_{t-1}=\{Y_{1}\}` | ✅ 一致 |
 | `L` 下标 `cycle,t` = `L(Ŷ_t, Y_t) + L(Ŷ_1, Y_1)` | `L_{cycle,t}=L(\hat{Y}_{t}, Y_{t})+L(\hat{Y}_{1}, Y_{1})` | ✅ 一致（视觉模型把下标读成 `cycle+`，而 PDF 文本层就是 `cycle,t`——以文本层为准） |
+| `V′ = AttID(Q, K, V, Y|D) = …` | `V'=AttID(Q, K, V, Y|D)=…` | ✅ 一致（**这条是视觉对照抓出来的真 bug**：撇号曾被判成下标，转出 `'_{V=…}`） |
 | `Ŷ`（帽子 + 下标 t） | `\hat{Y}_{t}` | ✅ 一致 |
+
 
 
 
