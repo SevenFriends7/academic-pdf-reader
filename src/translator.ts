@@ -159,6 +159,20 @@ export interface AcademicAnswer {
   note?: string;
 }
 
+/**
+ * 公式输出格式的统一要求（所有翻译提示词共用这一份，避免六处提示词各写一句、以后改漏）。
+ *
+ * 【为什么必须写死 LaTeX】PDF 文本层抽出来的公式是 "Y ̂ t = S θ (X t)" 这种残渣：
+ * 上下标全丢、希腊字母变普通字符。若只要求"原样保留"，模型就把残渣抄进中文译文——
+ * 那种文本 KaTeX 无从渲染，界面上怎么都排不出公式（用户实测反馈的原话：
+ * "右边应该还是有 latex 渲染"）。
+ * 要求模型把公式**转写成 $...$ 的 LaTeX**，译文侧就再也不依赖"视觉模型额外给一张替换表"，
+ * 而且导出的 Markdown 精读稿在 Obsidian / Typora 里也能直接渲染。
+ */
+const FORMULA_LATEX_RULE =
+  '公式一律转写成 LaTeX 并用 $...$ 包起来（独立成行的公式用 $$...$$），例如 $\\hat{Y}_t = S_\\theta(X_t)$，' +
+  '不要保留 "Y ̂ t" 这种从 PDF 文本层抄来的残渣；数学符号、变量名、缩写、文献引用编号仍原样保留';
+
 const EN_LANGS: Record<string, string> = {
   'zh-CN': '简体中文',
   'zh-TW': '繁体中文',
@@ -588,7 +602,7 @@ ${body}
    拿不准中文译法时就直接保留英文原词，**不要硬译成中文生造词**。
    反例：把 object-agnostic 单独译成"对象无关"——中文没有这个说法，读者既无法理解也无法查证原文。
    有通行译法的术语（如 key-value addressing → 键值寻址）用通行译法，并同样附一次原文。
-4. 公式、数学符号、变量名、缩写、文献引用编号原样保留；必须输出中文译文，绝对不要复制英文原文；
+4. ${FORMULA_LATEX_RULE}；必须输出中文译文，绝对不要复制英文原文；
    只输出 JSON，不要任何解释。`;
 
     let res;
@@ -754,7 +768,7 @@ ${body}
           turns: [
             {
               role: 'user',
-              text: `请将下面的学术英文内容翻译为${target}，保持术语准确、符合中文学术写作规范，公式、符号与文献引用编号（如 [1]、Smith et al.）原样保留：\n\n${text}`
+              text: `请将下面的学术英文内容翻译为${target}，保持术语准确、符合中文学术写作规范；${FORMULA_LATEX_RULE}；文献引用编号（如 [1]、Smith et al.）原样保留：\n\n${text}`
             }
           ],
           temperature: 0.2,
@@ -806,7 +820,7 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
 1. "translation"：整段连贯、严谨的中文学术译文（不要逐句拼贴，要通顺）。
 2. "sentences"：逐句译文数组，长度**必须恰好为 ${N}**。第 i 项只能对应第 i 句英文，一句对一句，不得合并或拆分。
 3. 同一段落内的人称代词、术语译法保持前后一致（如 "the model" 统一译法）。
-4. 公式、数学符号、变量名、缩写、文献引用编号原样保留。
+4. ${FORMULA_LATEX_RULE}。
 5. 只输出 JSON，不要任何解释。
 
 【翻译铁律】
@@ -1118,8 +1132,16 @@ ${sentences[i]}`
     const latinLetters = ((source || '').match(/[A-Za-z]/g) || []).length;
     if (latinLetters < 8) return null;
 
-    const cjk = this.countCjk(o);
-    const outLatin = ((o || '').match(/[A-Za-z]/g) || []).length;
+    /**
+     * 【必须先剥掉 LaTeX 再数】译文里的公式现在是 $...$ 形式的 LaTeX，
+     * 而 `\hat`、`\mathcal`、`Y`、`t` 全是拉丁字母 —— 不剥的话，一段"中文 + 公式"的译文
+     * 中文占比会被公式字母硬生生拉到阈值以下，然后弹出"疑似照搬原文"的假报错。
+     * 剥掉之后剩下的才是"真正的文字"（中文散文 + 少量必须保留的英文术语）。
+     */
+    const oPlain = this.stripLatexForCounting(o);
+
+    const cjk = this.countCjk(oPlain);
+    const outLatin = ((oPlain || '').match(/[A-Za-z]/g) || []).length;
     if (cjk + outLatin === 0) return '译文为空';
 
     /**
@@ -1140,13 +1162,27 @@ ${sentences[i]}`
     const threshold = mathHeavy ? 0.12 : 0.25;
     if (ratio >= threshold) return null;
 
-    // 中文占比过低：这时才值得判断"是不是直接把原文抄回来了"
-    if (this.similarity(source, o) > 0.9) {
+    // 中文占比过低：这时才值得判断"是不是直接把原文抄回来了"。
+    // 相似度也要拿**剥掉 LaTeX 之后**的译文比，否则"抄一遍原文再补两个 $x$"就能绕过这道闸门。
+    if (this.similarity(source, oPlain) > 0.9) {
       // 公式为主的段落，原样返回本来就是正常结果（没什么可翻的），不该报成失败
       if (mathHeavy) return null;
       return '译文与原文几乎完全相同（疑似照搬原文）';
     }
     return `译文疑似未翻译（汉字占字母+汉字的比例仅 ${Math.round(ratio * 100)}%）`;
+  }
+
+  /**
+   * 剥掉 LaTeX 片段，只留"真正的文字"（用于语言判断与相似度比较）。
+   * 覆盖 `$...$`、`$$...$$`、`\(...\)`、`\[...\]`，以及漏网的 `\command`。
+   */
+  private stripLatexForCounting(s: string): string {
+    return String(s || '')
+      .replace(/\$\$[\s\S]*?\$\$/g, ' ')
+      .replace(/\\\[[\s\S]*?\\\]/g, ' ')
+      .replace(/\\\([\s\S]*?\\\)/g, ' ')
+      .replace(/\$[^$\n]*?\$/g, ' ')
+      .replace(/\\[a-zA-Z]+/g, ' ');
   }
 
   /**
@@ -1231,7 +1267,7 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
 【输出要求】
 1. "translation"：整段连贯、地道、严谨的中文学术译文。
 2. "sentences"：逐句译文数组，长度**必须恰好为 ${N}**，第 i 项只对应第 i 句，不得合并或拆分。
-3. 公式、数学符号、变量名、缩写、文献引用编号原样保留。
+3. ${FORMULA_LATEX_RULE}。
 4. 只输出 JSON 对象，形如 {"translation":"…","sentences":["…","…"]}，不要任何解释。${correction}`;
 
       let raw: string;
@@ -1316,7 +1352,7 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
           turns: [
             {
               role: 'user',
-              text: `请将下面的学术英文内容翻译为${langName(lang)}。保持术语准确、符合中文学术规范；公式、符号、变量名、文献引用编号原样保留；只输出译文：\n\n${trimmed}`
+              text: `请将下面的学术英文内容翻译为${langName(lang)}。保持术语准确、符合中文学术规范；${FORMULA_LATEX_RULE}；只输出译文：\n\n${trimmed}`
             }
           ],
           temperature: 0.2,
@@ -1455,7 +1491,7 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
     const modelName = (config.get<string>('modelName', 'deepseek-chat') || '').trim();
     const prompt = `你是一名精通各学科前沿学术论文的专业科研翻译专家。请把下面内容翻译为${langName(
       targetLang
-    )}，术语专业准确、句式符合中文学术写作习惯；公式、符号、变量、代码与文献引用编号保留原样；直接输出译文，不要任何前言或解释。\n\n${text}`;
+    )}，术语专业准确、句式符合中文学术写作习惯；${FORMULA_LATEX_RULE}；文献引用编号与代码保留原样；直接输出译文，不要任何前言或解释。\n\n${text}`;
 
     const content = await this.callOpenAIChat(
       'You are a professional academic paper translation assistant.',

@@ -562,6 +562,18 @@ console.log('\n[视觉手术：按模型判断合并续句、拆开"正文+公�
     S.renderEnTextHtml('The price was $5 and $6 in total.', [])
   );
   check(
+    '译文里的 $...$ 也渲染成公式（不加 KaTeX 时退回可读的 $...$，但绝不能吞掉）',
+    (() => {
+      const html = S.renderEnTextHtml('因此，我们有 $\\hat{Y}_{t-1} \\subset \\{Y_1\\}$ 成立。', []);
+      return /md-math/.test(html) && /\\hat\{Y\}_\{t-1\}/.test(html) && /因此，我们有/.test(html) && /成立。/.test(html);
+    })(),
+    S.renderEnTextHtml('因此，我们有 $\\hat{Y}_{t-1} \\subset \\{Y_1\\}$ 成立。', []).slice(0, 150)
+  );
+  check(
+    '老译文里的残渣也能靠视觉替换表就地渲染（不用重译）',
+    /vision-inline-math/.test(S.renderEnTextHtml('因此，我们有 Y ̂ t − 1 ⊂ { Y 1 } 成立。', [{ find: 'Y ̂ t − 1', latex: '\\hat{Y}_{t-1}' }]))
+  );
+  check(
     '同一位置长短两条替换表 → 取更长（更精确）的那条（否则 Ŷ_{t−1} 会只渲染成 Ŷ_t，后面吊着 −1）',
     (() => {
       const html = S.renderEnTextHtml('Hence, we have Y ̂ t − 1 ⊂ { Y 1 }.', [

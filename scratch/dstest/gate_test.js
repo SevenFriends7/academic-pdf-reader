@@ -160,5 +160,35 @@ check('原文当译文的条目被清掉', prunedCount === 1 && !fakeCache.trans
 check('真译文与"合法的原样保留"（表头/标题）一条都没动', !!fakeCache.translations.B && !!fakeCache.translations.C && !!fakeCache.translations.D);
 check('幂等：再清理一次为 0', t.pruneStaleNonProseCache(fakeCache) === 0);
 
+console.log('\n[7] 译文里的 LaTeX 不能被当成"没翻译"');
+// 提示词现在要求模型把公式转写成 $...$ 的 LaTeX。若闸门照旧数字母，`\mathcal`/`\hat` 这些
+// 命令名会把"汉字/(汉字+字母)"拉到阈值以下，含公式的中文译文就会吃一个"疑似未翻译"的红框。
+const LATEX_ZH_SHORT = '$\\mathcal{L}_{cycle,t} = \\frac{1}{|\\Omega|}\\sum_{u \\in \\Omega} \\min(Y_{t,u}, Y_{t,u})$ 见前文。';
+check('公式很长、中文很短的译文 → 仍然通过（剥掉 LaTeX 后中文占比 100%）', gate(FORMULA_SET, LATEX_ZH_SHORT) === null, String(gate(FORMULA_SET, LATEX_ZH_SHORT)));
+const strippedLatex = t.stripLatexForCounting(LATEX_ZH_SHORT);
+check('剥掉 LaTeX 后既没有 $ 也没有 \\command', !/\$/.test(strippedLatex) && !/\\[a-zA-Z]/.test(strippedLatex), JSON.stringify(strippedLatex));
+check('$$...$$ 与 \\(...\\) 也一并剥掉', !/\$|\\\(|\\\)/.test(t.stripLatexForCounting('行内 $$x=1$$ 与 \\(y=2\\) 结束')));
+check(
+  '漏洞要堵住：抄一遍原文再补个 $x$ 仍算照搬（相似度拿剥完 LaTeX 的译文比）',
+  /照搬|疑似/.test(String(gate(BODY_SRC, `${BODY_SRC} $x$`))),
+  String(gate(BODY_SRC, `${BODY_SRC} $x$`))
+);
+
+console.log('\n[8] 接线：提示词要求 LaTeX、译文行走公式渲染');
+const translatorSrc = fs.readFileSync(path.join(ROOT, 'src', 'translator.ts'), 'utf8');
+const viewerSrc = fs.readFileSync(path.join(ROOT, 'media', 'viewer.js'), 'utf8');
+check(
+  '所有翻译提示词共用同一条 LaTeX 规则（不再是六处各写一句）',
+  /const FORMULA_LATEX_RULE/.test(translatorSrc) && (translatorSrc.match(/\$\{FORMULA_LATEX_RULE\}/g) || []).length >= 5,
+  `引用了 ${(translatorSrc.match(/\$\{FORMULA_LATEX_RULE\}/g) || []).length} 处`
+);
+check('规则本身明确要求 $...$ 包起来', /\$\.\.\.\$/.test(translatorSrc) && /不要保留/.test(translatorSrc));
+check('旧的"公式原样保留"要求已全部删除（那等于命令模型抄残渣）', !/公式、数学符号、变量名、缩写、文献引用编号原样保留/.test(translatorSrc));
+check('闸门会先剥 LaTeX 再判语言与相似度', /stripLatexForCounting/.test(translatorSrc) && /similarity\(source, oPlain\)/.test(translatorSrc));
+check(
+  '译文行走公式渲染（逐句两处 + 连贯段落一处）',
+  (viewerSrc.match(/sent-zh">\$\{renderEnTextHtml\(/g) || []).length === 2 && /zh-paragraph-plain">\$\{renderEnTextHtml\(/.test(viewerSrc)
+);
+
 console.log(`\n===== 结果: ${pass} 通过 / ${fail} 失败 =====`);
 process.exit(fail > 0 ? 1 : 0);

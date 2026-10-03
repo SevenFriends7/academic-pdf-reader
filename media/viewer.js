@@ -4033,7 +4033,7 @@
       return `<div class="sentence-pair-row" data-sent-idx="0">
         <div class="sent-num">1</div>
         <div class="sent-content">
-          <div class="sent-zh">${escapeHtml(cachedTrans)}</div>
+          <div class="sent-zh">${renderEnTextHtml(cachedTrans, para.visionInline)}</div>
           <div class="sent-en">${renderEnTextHtml(para.cleanText, para.visionInline)}</div>
         </div>
       </div>`;
@@ -4084,7 +4084,7 @@
         <div class="sentence-pair-row" data-sent-idx="${idx}" title="点击可使左侧 PDF 原件 100% 精确高亮对应本句">
           <div class="sent-num">${idx + 1}</div>
           <div class="sent-content">
-            <div class="sent-zh">${escapeHtml(zh)}</div>
+            <div class="sent-zh">${renderEnTextHtml(zh, para.visionInline)}</div>
             <div class="sent-en">${renderEnTextHtml(sent.text, para.visionInline)}</div>
           </div>
           <div class="sent-row-actions">
@@ -4656,15 +4656,18 @@
 
     // 只有真的逐句对齐了，才把中文切成可点击的句子。
     // 否则只渲染整段译文——不再用中文标点猜切分，然后让「点中文跳英文」跳到错误的句子。
+    // 【译文也要走公式渲染】译文里的公式现在是 $...$ LaTeX（提示词要求模型转写），
+    // 残渣形式的老译文则靠视觉模型的替换表就地补渲染——两条路都通到 KaTeX。
     if (!aligned) {
-      return `<div class="zh-paragraph-plain">${escapeHtml(transText)}</div>`;
+      return `<div class="zh-paragraph-plain">${renderEnTextHtml(transText, para.visionInline)}</div>`;
     }
 
     return cached
       .map(
         (s, idx) =>
-          `<span class="zh-sentence" data-sent-idx="${idx}" title="点击在原件中单独高亮此句">${escapeHtml(
-            s
+          `<span class="zh-sentence" data-sent-idx="${idx}" title="点击在原件中单独高亮此句">${renderEnTextHtml(
+            s,
+            para.visionInline
           )}</span>`
       )
       .join(' ');
