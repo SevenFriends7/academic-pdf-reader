@@ -328,6 +328,15 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
           break;
         }
 
+        case 'setAnswerStyle': {
+          // 弹窗里一键切换回答风格 → 写回用户设置，重载或换论文后依然生效
+          const style = ['concise', 'standard', 'reviewer'].includes(message.style) ? message.style : 'standard';
+          await vscode.workspace
+            .getConfiguration('academicReader')
+            .update('aiAnswerStyle', style, vscode.ConfigurationTarget.Global);
+          break;
+        }
+
         case 'openModelPicker': {
           await vscode.commands.executeCommand('academicReader.pickModel');
           break;

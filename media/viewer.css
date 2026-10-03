@@ -3492,3 +3492,32 @@ body.theme-paper-dark .article-section-zh {
   background: var(--accent-color, #0e639c);
   color: #fff;
 }
+
+/* AI 问答：回答风格一键切换 */
+.ai-style-switch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-muted, #8b949e);
+}
+.ai-style-label { margin-right: 2px; }
+.ai-style-btn {
+  background: transparent;
+  border: 1px solid var(--border-color, #3c3c3c);
+  color: inherit;
+  border-radius: 10px;
+  padding: 2px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.ai-style-btn:hover {
+  border-color: var(--accent-color, #0e639c);
+  color: var(--accent-color, #0e639c);
+}
+.ai-style-btn.active {
+  background: var(--accent-color, #0e639c);
+  border-color: var(--accent-color, #0e639c);
+  color: #fff;
+}

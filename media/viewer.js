@@ -231,6 +231,12 @@
               </div>
             </div>
             <div class="ai-scope-hint">问本论文的内容会严格依据原文（查不到就说查不到）；问概念、术语或临时想到的问题，会直接用通用知识回答并标明不是论文结论。</div>
+            <div class="ai-style-switch" role="group" aria-label="回答风格">
+              <span class="ai-style-label">回答风格</span>
+              <button type="button" class="ai-style-btn" data-style="concise" title="200 字内讲清，最省 token">简洁</button>
+              <button type="button" class="ai-style-btn" data-style="standard" title="先解释术语与前置概念，一般 300~700 字（默认）">标准</button>
+              <button type="button" class="ai-style-btn" data-style="reviewer" title="以审稿人视角质疑论证与实验设计">审稿</button>
+            </div>
           </div>
         </div>
       `;
@@ -5759,6 +5765,14 @@ let aiPresetQuestion = '';
     }
   }
 
+  /** 让弹窗里的风格按钮高亮当前档位 */
+  function syncAiStyleButtons() {
+    const cur = aiStyle || 'standard';
+    document.querySelectorAll('.ai-style-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.getAttribute('data-style') === cur);
+    });
+  }
+
   function closeAiAssistantModal() {
     const modal = dom.aiAssistantModal || document.getElementById('aiAssistantModal');
     if (modal) modal.style.display = 'none';
@@ -5902,6 +5916,7 @@ let aiPresetQuestion = '';
     aiEngineIsOpenAI = !!msg.isOpenAI;
     // 回答风格改为由设置项 academicReader.aiAnswerStyle 驱动，弹窗里不再放下拉框
     if (msg.answerStyle) aiStyle = msg.answerStyle;
+    syncAiStyleButtons();
     // 引擎标识变化 → 此后段落用新引擎重新翻译（旧引擎的缓存键不再命中）
     if (msg.engineTag && msg.engineTag !== currentEngineTag) {
       currentEngineTag = msg.engineTag;
@@ -6099,6 +6114,27 @@ let aiPresetQuestion = '';
         sendAiModalQuestion(q);
       };
     }
+
+    // 回答风格一键切换：弹窗内直接改，并写回设置（下次打开仍然生效）
+    const styleBtns = document.querySelectorAll('.ai-style-btn');
+    styleBtns.forEach(btn => {
+      btn.onclick = () => {
+        const style = btn.getAttribute('data-style') || 'standard';
+        aiStyle = style;
+        syncAiStyleButtons();
+        vscode.postMessage({ type: 'setAnswerStyle', style });
+        vscode.postMessage({
+          type: 'showInfo',
+          message:
+            style === 'concise'
+              ? '回答风格：简洁（200 字内，最省 token）'
+              : style === 'reviewer'
+                ? '回答风格：审稿（质疑论证与实验设计）'
+                : '回答风格：标准（先解释术语与前置概念，300~700 字）'
+        });
+      };
+    });
+    syncAiStyleButtons();
 
     const stopBtn = dom.btnStopAiModalQuestion || document.getElementById('btnStopAiModalQuestion');
     if (stopBtn) stopBtn.onclick = stopAiModalQuestion;

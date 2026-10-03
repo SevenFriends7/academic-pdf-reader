@@ -1187,5 +1187,26 @@ console.log('\n===== T17 标题判定不吞正文（真实数据） =====');
   );
 })();
 
+// ---------- 18. AI 弹窗内的回答风格一键切换 ----------
+console.log('\n===== T18 回答风格切换控件 =====');
+(function styleSwitchTest() {
+  checkTrue('弹窗里有风格切换控件', /class="ai-style-switch"/.test(code));
+  const styles = ['concise', 'standard', 'reviewer'];
+  const missing = styles.filter(s => !code.includes(`data-style="${s}"`));
+  checkTrue(`三档按钮齐全（${styles.join(' / ')}）`, missing.length === 0, `缺少 ${missing.join(',')}`);
+  checkTrue('点击后写回设置（否则重载就丢）', /type: 'setAnswerStyle', style/.test(code));
+  checkTrue('点击后立即生效（更新本地 aiStyle）', /aiStyle = style;[\s\S]{0,60}syncAiStyleButtons\(\);/.test(code));
+  checkTrue('有高亮当前档位的函数', /function syncAiStyleButtons\(\)/.test(code));
+  checkTrue('modelInfo 到达后刷新高亮', /msg\.answerStyle\) aiStyle = msg\.answerStyle;[\s\S]{0,40}syncAiStyleButtons\(\);/.test(code));
+  checkTrue('提问请求带上所选风格', /answerStyle: aiStyle \|\| ''/.test(code));
+  const ext = fs.readFileSync(path.join(path.dirname(VIEWER), '..', 'src', 'pdfEditorProvider.ts'), 'utf8');
+  checkTrue(
+    '宿主侧处理 setAnswerStyle 并校验取值',
+    /case 'setAnswerStyle'/.test(ext) && /\['concise', 'standard', 'reviewer'\]\.includes\(message\.style\)/.test(ext)
+  );
+  const css = fs.readFileSync(path.join(path.dirname(VIEWER), 'viewer.css'), 'utf8');
+  checkTrue('样式已定义（含 active 高亮）', /\.ai-style-btn\.active\s*\{/.test(css));
+})();
+
 console.log(`\n===== 结果: ${pass} 通过 / ${fail} 失败 =====`);
 process.exit(fail > 0 || loadError ? 1 : 0);
