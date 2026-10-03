@@ -93,10 +93,32 @@ const ALLOW = [
   /sk-\[A-Za-z0-9/
 ];
 
+/**
+ * 第三方 vendor 文件：**不是我们的代码**，压缩后常含长字母数字串（如 KaTeX 里的字母表
+ * `ABCDEFGH…wxyz`，正好 52 位，会被宽规则误报成访问令牌）。
+ *
+ * 为什么要显式跳过而不是放宽规则：放宽会漏掉真实密钥；
+ * 而这些文件是原样从 npm 拷来的（版本与来源可核对），扫描它们没有意义。
+ * 只跳过 vendor 目录，**我们自己写的代码一律照扫**。
+ */
+const VENDOR = [
+  /^media[\\/]katex[\\/]/,
+  /^media[\\/]pdfjs[\\/]/,
+  /^node_modules[\\/]/,
+  /[\\/]dist[\\/]extension\.js$/
+];
+const isVendor = rel => VENDOR.some(re => re.test(rel));
+
 const { files, source } = listFiles();
 let hits = 0;
+let skippedVendor = 0;
 
 for (const f of files) {
+  const rel = f.replace(ROOT + path.sep, '');
+  if (isVendor(rel)) {
+    skippedVendor++;
+    continue;
+  }
   let text;
   try {
     text = fs.readFileSync(f, 'utf8');
@@ -111,13 +133,15 @@ for (const f of files) {
       const v = m[0];
       if (ALLOW.some(a => a.test(v))) continue;
       const line = text.slice(0, m.index).split('\n').length;
-      console.log(`  ⚠️ ${f.replace(ROOT + path.sep, '')}:${line}  ${p.name}  ${v.slice(0, 8)}…${v.slice(-4)}（长度 ${v.length}）`);
+      console.log(`  ⚠️ ${rel}:${line}  ${p.name}  ${v.slice(0, 8)}…${v.slice(-4)}（长度 ${v.length}）`);
       hits++;
     }
   }
 }
 
-console.log(`\n扫描范围：${source}，共 ${files.length} 个文件，命中 ${hits} 处。`);
+console.log(
+  `\n扫描范围：${source}，共 ${files.length} 个文件（跳过 ${skippedVendor} 个第三方 vendor 文件），命中 ${hits} 处。`
+);
 if (hits === 0) console.log('✅ 未发现真实密钥，可以安全提交。');
 else console.log('❌ 请先清理上述内容再提交。');
 process.exit(hits > 0 ? 1 : 0);
