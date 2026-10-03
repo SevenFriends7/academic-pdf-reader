@@ -101,18 +101,45 @@ const COLOR_NAME: Record<string, string> = {
 };
 
 /**
- * 找一份**可嵌入的中文字体**。
+ * 我们要往 PDF 里排的字：**中英文都得有**。
  *
- * 只挑单体 TTF/OTF：.ttc 是字体集合，pdf-lib 的 embedFont 只能按整份文件解析，
- * 无法指定其中某一款，拿它去嵌会直接失败。
+ * 只验"能不能画汉字"是不够的——CI 实测踩到：DroidSansFallbackFull.ttf 有完整汉字
+ * 却没有拉丁字形，于是导出的 PDF 里中文正常、英文全变成 U+0000（提取出来是一串 ^@）。
  */
-export function findCjkFontPath(override?: string): string | undefined {
-  const candidates: string[] = [];
-  if (override && override.trim()) candidates.push(override.trim());
+const REQUIRED_GLYPH_SAMPLE = 'AaZz09中文测试，。';
+
+/** 字体文件是否同时覆盖中英文（用 fontkit 直接看字形 id，0 = .notdef 缺字） */
+function fontFileCoversSample(bytes: Buffer, sample = REQUIRED_GLYPH_SAMPLE): boolean {
+  try {
+    const parsed: any = fontkit.create(bytes);
+    if (!parsed || typeof parsed.layout !== 'function') return false; // .ttc 集合会走到这里
+    const glyphs: any[] = parsed.layout(sample).glyphs || [];
+    if (glyphs.length === 0) return false;
+    return glyphs.every(g => g && g.id !== 0);
+  } catch {
+    return false;
+  }
+}
+
+/** 逐个候选找一份"中英文都能画"的字体（override 优先） */
+function listFontCandidates(override?: string): string[] {
+  const out: string[] = [];
+  const push = (p?: string) => {
+    if (!p) return;
+    const v = p.trim();
+    // .ttc 是字体集合：pdf-lib 的 embedFont 无法指定其中某一款，直接排除
+    if (!v || !/\.(ttf|otf)$/i.test(v) || out.includes(v)) return;
+    try {
+      if (fs.existsSync(v) && fs.statSync(v).isFile() && fs.statSync(v).size > 0) out.push(v);
+    } catch {
+      /* 忽略这个候选 */
+    }
+  };
+  push(override);
 
   const winDir = process.env.WINDIR || 'C:\\Windows';
-  candidates.push(
-    path.join(winDir, 'Fonts', 'simhei.ttf'), // 黑体，简体覆盖最全
+  [
+    path.join(winDir, 'Fonts', 'simhei.ttf'), // 黑体：简体 + 拉丁都全
     path.join(winDir, 'Fonts', 'STXIHEI.TTF'),
     path.join(winDir, 'Fonts', 'STSONG.TTF'),
     path.join(winDir, 'Fonts', 'Deng.ttf'),
@@ -123,21 +150,29 @@ export function findCjkFontPath(override?: string): string | undefined {
     '/System/Library/Fonts/Supplemental/Arial Unicode.ttf',
     '/Library/Fonts/Arial Unicode.ttf',
     '/System/Library/Fonts/Supplemental/Songti.ttf',
-    // Linux（Debian/Ubuntu 的 noto-cjk 同时提供 ttc 与 otf，这里只取 otf/ttf）
-    '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc.otf',
-    '/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf',
-    '/usr/share/fonts/opentype/noto/NotoSerifCJKsc-Regular.otf',
+    // Linux：Debian/Ubuntu 的 noto-cjk 只有 .ttc（用不了），所以优先这些单体 TTF
+    '/usr/share/fonts/truetype/arphic/gbsn00lp.ttf', // 宋体，GB2312 简体 + 拉丁
+    '/usr/share/fonts/truetype/arphic/gkai00mp.ttf',
+    '/usr/share/fonts/truetype/arphic/bkai00mp.ttf',
     '/usr/share/fonts/truetype/arphic/ukai.ttf',
     '/usr/share/fonts/truetype/arphic/uming.ttf',
-    // Ubuntu 的 fonts-droid-fallback：单体 TTF 且带完整汉字，CI 里就是靠它跑中文路径
-    '/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf'
-  );
+    '/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf', // 注意：无拉丁字形，会被覆盖检查挡掉
+    '/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf',
+    '/usr/share/fonts/opentype/noto/NotoSerifCJKsc-Regular.otf'
+  ].forEach(push);
+  return out;
+}
 
-  for (const p of candidates) {
+/**
+ * 找一份**可嵌入的中文字体**。
+ *
+ * 返回第一个"文件存在且中英文都能画"的路径；找不到返回 undefined。
+ * 保留这个导出函数是为了兼容既有调用与测试。
+ */
+export function findCjkFontPath(override?: string): string | undefined {
+  for (const p of listFontCandidates(override)) {
     try {
-      if (p && fs.existsSync(p) && fs.statSync(p).isFile() && fs.statSync(p).size > 0) {
-        if (/\.(ttf|otf)$/i.test(p)) return p;
-      }
+      if (fontFileCoversSample(fs.readFileSync(p))) return p;
     } catch {
       /* 换下一个候选 */
     }
@@ -418,7 +453,9 @@ export async function buildAnnotatedPdf(opts: PdfExportOptions): Promise<PdfExpo
 
   // ---- 中文字体先就位 ----
   // 它不只是排版译文页要用：原文页上给每条高光画的编号标记也要用它。
-  const fontPath = wantTranslation ? findCjkFontPath(opts.fontPathOverride) : undefined;
+  // 选字体时必须确认**中英文都能画**，否则英文会变成一串 U+0000（CI 实测踩过）。
+  const candidates = wantTranslation ? listFontCandidates(opts.fontPathOverride) : [];
+  const fontPath = candidates.length > 0 ? findCjkFontPath(opts.fontPathOverride) : undefined;
   let font: PDFFont | undefined;
   if (wantTranslation && fontPath) {
     try {
@@ -433,8 +470,20 @@ export async function buildAnnotatedPdf(opts: PdfExportOptions): Promise<PdfExpo
       font = undefined;
     }
   } else if (wantTranslation) {
+    const tried = candidates.map(c => path.basename(c)).join('、') || '（无候选）';
     warnings.push(
-      '没有找到可嵌入的中文字体，已只导出原文页（高亮已画回原位）。可在设置 academicReader.pdfExportFontPath 指定一个中文 ttf/otf 字体。'
+      candidates.length > 0
+        ? `试过的字体都没有同时覆盖中文与英文（${tried}），已只导出原文页。` +
+            '可用设置 academicReader.pdfExportFontPath 指定一个中英文都全的 ttf/otf（注意 .ttc 字体集合无法嵌入）。'
+        : '没有找到可嵌入的中文字体，已只导出原文页（高亮已画回原位）。可在设置 academicReader.pdfExportFontPath 指定一个中文 ttf/otf 字体。'
+    );
+  }
+  // 用户指定了字体、但它不含中文（或中英文不全）而被跳过时，必须明确告知：
+  // 否则设置里写错了字体，用户只会觉得"我的设置没生效"，无从查起。
+  const override = (opts.fontPathOverride || '').trim();
+  if (wantTranslation && override && fontPath && override !== fontPath) {
+    warnings.push(
+      `你指定的字体 ${path.basename(override)} 不含所需字形（中文/英文都要有），本次改用 ${path.basename(fontPath)}。`
     );
   }
 

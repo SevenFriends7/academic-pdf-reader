@@ -45,11 +45,12 @@ jobs:
         run: npm run test:html
 
       # PDF 导出：把生成的 PDF 再解析回来，核对 高亮矩形位置/填充色/混合模式 与 中文可提取。
-      # ubuntu runner 默认没有中文字体，这里装一份**单体**中文字体（fonts-droid-fallback 是 .ttf；
-      # noto-cjk 是 .ttc 字体集合，pdf-lib 无法嵌入），让中文路径在 CI 里也真正被跑到。
-      # 装不上也无所谓：测试会如实打印"无中文字体 → 只出原文页"并跳过中文断言。
+      # ubuntu runner 默认没有中文字体，这里装**单体、且中英文都覆盖**的中文字体
+      # （arphic 的 gbsn00lp.ttf 是单体宋体；noto-cjk 是 .ttc 集合，pdf-lib 嵌不了；
+      #   fonts-droid-fallback 虽然有汉字但**没有拉丁字形**，会让英文变成 U+0000，已被覆盖检查挡掉）。
+      # 装不上也无所谓：测试会如实走"无可用字体 → 只出原文页"那条分支。
       - name: 安装可嵌入的中文字体（尽力而为）
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq fonts-droid-fallback || true
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq fonts-arphic-gbsn00lp fonts-droid-fallback || true
 
       - name: PDF 导出测试（pdf-lib 生成 + pdf.js 复核）
         run: npm run test:pdf

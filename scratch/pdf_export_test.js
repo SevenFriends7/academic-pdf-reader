@@ -520,14 +520,27 @@ function makePaperData() {
       fontPathOverride: latinFont,
       includeAllPages: true
     });
-    check(
-      '指定了不含汉字的字体时如实降级（不出译文页，并给出警告）',
-      latinResult.appendixPages === 0 &&
-        latinResult.sourcePages === 3 &&
-        latinResult.drawnAnnotations === 4 &&
-        latinResult.warnings.some(w => w.includes('中文字形')),
-      `字体=${path.basename(latinFont)}，译文页=${latinResult.appendixPages}，警告=${latinResult.warnings.length} 条`
-    );
+    if (result.fontPath) {
+      // 本机另有可用中文字体：指定的坏字体必须被拒、自动改用好的，并且**明确告知**
+      check(
+        '指定的字体不含中文 → 拒用它并改用可用字体，且明确告知（否则用户以为设置没生效）',
+        !!latinResult.fontPath &&
+          path.basename(latinResult.fontPath) !== path.basename(latinFont) &&
+          latinResult.warnings.some(w => w.includes('不含所需字形')) &&
+          latinResult.appendixPages >= 1,
+        `实际用字体=${path.basename(latinResult.fontPath || '(无)')}，警告=${latinResult.warnings.length} 条`
+      );
+    } else {
+      // 本机没有别的中文字体：只能如实降级
+      check(
+        '指定的字体不含中文、且本机没有其它中文字体 → 如实降级（不出译文页，并给出警告）',
+        latinResult.appendixPages === 0 &&
+          latinResult.sourcePages === 3 &&
+          latinResult.drawnAnnotations === 4 &&
+          latinResult.warnings.length > 0,
+        `译文页=${latinResult.appendixPages}，警告=${latinResult.warnings.length} 条`
+      );
+    }
   } else {
     console.log('   ⚠️  本机没有可用的拉丁字体，跳过降级路径断言');
   }
