@@ -3378,6 +3378,67 @@ body.theme-paper-dark .article-section-zh {
   padding: 0 3px;
   border-radius: 3px;
 }
+/* KaTeX 渲染成功的公式：去掉等宽/底色，交给 KaTeX 自己的排版 */
+.markdown-body .md-math-rendered {
+  background: none;
+  padding: 0;
+  font-style: normal;
+}
+.markdown-body .md-math-display {
+  display: block;
+  margin: 8px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  text-align: center;
+}
+/* 渲染失败时的兜底：原样显示写法（宁可难看，也不能让公式消失） */
+.markdown-body .md-math-fallback {
+  font-family: 'Cambria Math', 'Consolas', monospace;
+  font-style: normal;
+  background: rgba(245, 158, 11, 0.14);
+}
+/* 卡片里的公式块（视觉模型转写的 LaTeX） */
+.card-formula-block {
+  padding: 10px 12px;
+  background: rgba(99, 102, 241, 0.06);
+  border: 1px solid rgba(99, 102, 241, 0.22);
+  border-radius: 8px;
+}
+/* 混排段落里的公式条：正文才是主角，所以弱化它 */
+.card-formula-inline {
+  margin: 0 0 10px;
+  background: rgba(99, 102, 241, 0.04);
+}
+.card-formula-inline .card-formula-raw {
+  display: none;
+}
+.card-formula-label {
+  font-size: 11px;
+  color: var(--text-muted, #94a3b8);
+  margin-bottom: 6px;
+}
+.card-formula-body {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 6px 0;
+  color: var(--text-primary, #e2e8f0);
+}
+.card-formula-body .katex {
+  font-size: 1.15em;
+}
+.card-formula-note {
+  font-size: 11px;
+  color: var(--text-muted, #94a3b8);
+  margin-top: 6px;
+}
+.card-formula-raw {
+  margin-top: 6px;
+  font-family: 'Consolas', monospace;
+  font-size: 11px;
+  color: var(--text-muted, #94a3b8);
+  word-break: break-all;
+  opacity: 0.75;
+}
 .markdown-body .md-quote {
   border-left: 3px solid #6366f1;
   margin: 6px 0;

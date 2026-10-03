@@ -956,6 +956,13 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
     const scriptUri = webview.asWebviewUri(
       vscode.Uri.joinPath(extensionUri, 'media', 'viewer.js')
     );
+    // KaTeX：本地打包（含字体），不走 CDN —— 论文里的公式必须离线可渲染
+    const katexCssUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(extensionUri, 'media', 'katex', 'katex.min.css')
+    );
+    const katexJsUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(extensionUri, 'media', 'katex', 'katex.min.js')
+    );
 
     const nonce = getNonce();
     const v = Date.now();
@@ -971,7 +978,9 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}' ${webview.cspSource}; font-src ${webview.cspSource} data:; connect-src ${webview.cspSource} blob: data: https:; img-src ${webview.cspSource} data: blob:;">
   <title>双栏文献阅读器</title>
   <link rel="stylesheet" href="${cssUri}?v=${v}">
+  <link rel="stylesheet" href="${katexCssUri}?v=${v}">
   <script nonce="${nonce}">window.__EXT_VERSION__ = ${JSON.stringify(extVersion)};</script>
+  <script nonce="${nonce}" src="${katexJsUri}?v=${v}"></script>
 </head>
 <body>
   <!-- 顶部工具栏 -->

@@ -2489,6 +2489,22 @@
     return list;
   }
 
+  /** 图表标签 / 页眉页脚页码（视觉判为 noise 的）：连卡片都不生成 */
+  function isFigureLabelPara(para) {
+    return !!para && (para.type === 'figure-label' || para.type === 'noise');
+  }
+
+  /**
+   * 不需要翻译的段落：图表标签、页眉页脚页码，以及**独立公式块**。
+   *
+   * 公式块没有散文可翻：送过去只会拿回原文残渣（"L cycle,t = L (Y ̂ t, Y t) …"），
+   * 然后卡片里显示成一坨英文——这正是用户看到的"完全不行"。
+   * 视觉模型给了 latex 的，卡片会把公式渲染出来（见 renderCardFormulaHtml）。
+   */
+  function isUntranslatablePara(para) {
+    return isFigureLabelPara(para) || (!!para && para.type === 'formula');
+  }
+
   /**
    * 纯公式/符号段落（集合记号、损失函数定义这类）：**不送翻译**。
    *
@@ -2908,6 +2924,12 @@
         para.visionType = s.type;
         changed++;
       }
+      // 公式的 LaTeX（模型看图写的）——卡片里直接渲染成公式，不再显示 "Y ̂ t" 这种残渣
+      if (s.latex) {
+        para.visionLatex = s.latex;
+        changed++;
+      }
+      if (Array.isArray(s.splitAt) && s.splitAt.length) para.visionSplitAt = s.splitAt;
       if (s.why) para.visionWhy = s.why;
       para.visionAction = s.action || 'keep';
     });
@@ -3143,6 +3165,26 @@
       </div>`;
   }
 
+  /**
+   * 公式卡片的正文：把视觉模型看图转写出来的 LaTeX 渲染成真正的公式。
+   *
+   * 为什么不直接渲染段落原文：PDF 文本层抽出来的公式是 "L cycle,t = L (Y ̂ t, Y t)" 这种残渣，
+   * 上下标全丢、希腊字母变普通字符，KaTeX 也无从渲染。图像是唯一可靠的来源，
+   * 所以让视觉模型把公式**转写成 LaTeX**（见 translator.segmentPageWithVision 的提示词）。
+   */
+  function renderCardFormulaHtml(para, inline) {
+    const latex = String(para.visionLatex || '').trim();
+    if (!latex) return renderFigureLabelNoticeHtml(para);
+    return `
+      <div class="card-formula-block${inline ? ' card-formula-inline' : ''}">
+        <div class="card-formula-label">${inline ? '本段公式（视觉模型从页面图像转写为 LaTeX）' : '公式（由视觉模型从页面图像转写为 LaTeX）'}</div>
+        <div class="card-formula-body">${renderMathSpan(latex, true)}</div>
+        <div class="card-formula-note">公式不翻译；下方原文仅供核对字符层抽取结果</div>
+        <div class="card-formula-raw">${escapeHtml(String(para.cleanText || '').slice(0, 300))}</div>
+      </div>
+    `;
+  }
+
   function renderSentencePairsHtml(para, cachedTrans, cachedSentences) {
     if (!cachedTrans) {
       return `
@@ -3254,13 +3296,17 @@
 
     // 纯公式/符号段落也一起跳过（判据见 isFormulaLikePara）：
     // 它们是"公式行"不是散文，送翻译只会拿回原文，然后被质量校验判成"疑似未翻译"弹红框。
-    const skippedFormula = paragraphs.filter(p => !isFigureLabelPara(p) && isFormulaLikePara(p));
+    // 例外：视觉模型给了 LaTeX 的（type=formula）要**生成卡片**——卡片里渲染真公式。
+    const hasLatex = p => !!(p && p.visionLatex);
+    const skippedFormula = paragraphs.filter(p => !isFigureLabelPara(p) && isFormulaLikePara(p) && !hasLatex(p));
 
     // 这些段落**连卡片都不生成**。
     // 否则第 6 页那类以表格为主的页面会变成一张满屏数字的"未翻译"卡片墙，
     // 而且它们本来就不该出现在对照翻译视图里。
     const skippedFigure = paragraphs.filter(isFigureLabelPara);
-    const translatableParas = paragraphs.filter(p => !isFigureLabelPara(p) && !isFormulaLikePara(p));
+    const translatableParas = paragraphs.filter(
+      p => !isFigureLabelPara(p) && (!isFormulaLikePara(p) || hasLatex(p))
+    );
 
     if (translatableParas.length === 0) {
       dom.transListContainer.innerHTML = `
@@ -3320,12 +3366,18 @@
           </div>
         </div>
 
+        <!-- 混排段落（正文里夹公式）：额外给一条公式条，公式排版好看，正文照旧逐句精读。
+             独立成块的公式（type=formula）走下面模式 A 的公式卡。 -->
+        ${para.type !== 'formula' && hasLatex(para) ? renderCardFormulaHtml(para, true) : ''}
+
         <!-- 模式 A: 逐句双语精读对照模式 (默认推荐，精准对齐) -->
         <div class="trans-sentence-pairs" id="sentencePairs_${pageNum}_${para.id}">
           ${
             isFigureLabelPara(para)
               ? renderFigureLabelNoticeHtml(para)
-              : renderSentencePairsHtml(para, cachedTrans, cachedSentences)
+              : para.type === 'formula' && hasLatex(para)
+                ? renderCardFormulaHtml(para)
+                : renderSentencePairsHtml(para, cachedTrans, cachedSentences)
           }
         </div>
 
@@ -3627,8 +3679,8 @@
     // （免费档 Key 的瓶颈是每分钟请求数，逐段发必然 429，越翻越慢）。
     // 扩展侧仍有自己的并发闸门，真正同时打 API 的次数受 academicReader.translateConcurrency 控制。
     const unCachedParas = paragraphs.filter(
-      // 图表标签与纯公式段都不进翻译队列：送过去只会拿回原文，还会被判成"未翻译"。
-      p => !findCachedTranslation(pageNum, p) && p.type !== 'figure-label' && !isFormulaLikePara(p)
+      // 图表标签、页眉页脚与**独立公式块**都不进翻译队列：送过去只会拿回原文残渣
+      p => !findCachedTranslation(pageNum, p) && !isUntranslatablePara(p) && !isFormulaLikePara(p)
     );
     let qIdx = 0;
     let activeWorkers = 0;
@@ -6501,6 +6553,35 @@ let aiPresetQuestion = '';
    * 旧实现是「先整体 escapeHtml 再正则替换」，导致 `>` 引用变成 &gt;、
    * 代码块里的 `**` 被误加粗、$公式$ 被吃掉。
    */
+  /**
+   * 把文里的数学片段渲染成真正的公式（KaTeX，本地打包）。
+   *
+   * 支持的写法：`$$...$$`（独立公式）、`$...$`（行内）、`\[...\]`、`\(...\)`。
+   * 渲染失败**绝不吞掉**原文：退回等宽样式显示原始写法（旧行为），
+   * 因为"公式看不见"比"公式没排版"严重得多。
+   */
+  function renderMathSpan(tex, displayMode) {
+    const src = String(tex == null ? '' : tex).trim();
+    if (!src) return '';
+    const katex = typeof window !== 'undefined' ? window.katex : undefined;
+    if (katex && typeof katex.renderToString === 'function') {
+      try {
+        const html = katex.renderToString(src, {
+          displayMode: !!displayMode,
+          throwOnError: false, // 语法有误也渲染出可读结果，而不是整块消失
+          strict: false,
+          trust: false,
+          output: 'html'
+        });
+        return `<span class="md-math-rendered${displayMode ? ' md-math-display' : ''}">${html}</span>`;
+      } catch (e) {
+        /* 落到下面的原样显示 */
+      }
+    }
+    const escaped = escapeHtml(displayMode ? `$$${src}$$` : `$${src}$`);
+    return `<span class="md-math md-math-fallback">${escaped}</span>`;
+  }
+
   function renderInlineMarkdown(text) {
     let s = escapeHtml(text || '');
 
@@ -6511,9 +6592,18 @@ let aiPresetQuestion = '';
       return `\u0000C${codes.length - 1}\u0000`;
     });
 
-    // 数学公式：本插件不带 KaTeX，但至少原样保留并加等宽样式，绝不吞掉
-    s = s.replace(/\$([^$\n]+)\$/g, '<span class="md-math">$$$1$$</span>');
-    s = s.replace(/\\\((.*?)\\\)/g, '<span class="md-math">\\($1\\)</span>');
+    // 数学公式也先抽成占位：① 避免 KaTeX 生成的 HTML 被后续转义/强调语法破坏
+    // ② 顺序必须在 escapeHtml 之后（此时 $ 仍是原文的 $）
+    const maths = [];
+    const stashMath = (tex, displayMode) => {
+      maths.push(renderMathSpan(tex, displayMode));
+      return `\u0000M${maths.length - 1}\u0000`;
+    };
+    s = s.replace(/\$\$([^$]+?)\$\$/g, (m, tex) => stashMath(tex, true));
+    s = s.replace(/\\\[([\s\S]+?)\\\]/g, (m, tex) => stashMath(tex, true));
+    s = s.replace(/\\\(([\s\S]+?)\\\)/g, (m, tex) => stashMath(tex, false));
+    // 单个 $ 必须成对且不跨行：避免把 "价格 $5 和 $6" 这种误当公式
+    s = s.replace(/\$([^$\n]+?)\$/g, (m, tex) => stashMath(tex, false));
 
     s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     s = s.replace(/(^|[^*\w])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
@@ -6523,6 +6613,7 @@ let aiPresetQuestion = '';
       '<a href="$2" target="_blank" rel="noreferrer">$1</a>'
     );
 
+    s = s.replace(/\u0000M(\d+)\u0000/g, (m, i) => maths[Number(i)]);
     s = s.replace(/\u0000C(\d+)\u0000/g, (m, i) => `<code class="md-code">${codes[Number(i)]}</code>`);
     return s;
   }

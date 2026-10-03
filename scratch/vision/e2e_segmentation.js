@@ -95,12 +95,18 @@ const imageBase64 = fs.readFileSync(path.join(__dirname, 'p4_full.png')).toStrin
     console.log(
       `  [${p.id}] ${String(p.type).padEnd(10)} → ${(s?.type || '?').padEnd(15)} order=${s?.order ?? '-'} action=${s?.action ?? '-'} ${same ? '' : '← 改动'} ${s?.why ? '｜' + s.why : ''}`
     );
+    if (s?.latex) console.log(`         LaTeX: ${s.latex}`);
+    if (s?.splitAt && s.splitAt.length) console.log(`         拆分点: ${s.splitAt.map(t => `「${t.slice(0, 40)}」`).join(' → ')}`);
   });
   const changed = local.filter(p => byId.get(p.id) && byId.get(p.id).type !== p.type).length;
   const drops = r.segments.filter(s => s.action === 'drop').length;
   const merges = r.segments.filter(s => s.action === 'merge_next').length;
   const splits = r.segments.filter(s => s.action === 'split').length;
-  console.log(`\n汇总：类型改动 ${changed} 处 ｜ 建议丢弃 ${drops} ｜ 建议合并 ${merges} ｜ 建议拆分 ${splits}`);
+  const withLatex = r.segments.filter(s => s.latex).length;
+  const withSplitAt = r.segments.filter(s => s.splitAt && s.splitAt.length).length;
+  console.log(
+    `\n汇总：类型改动 ${changed} 处 ｜ 建议丢弃 ${drops} ｜ 建议合并 ${merges} ｜ 建议拆分 ${splits} ｜ 给了 LaTeX ${withLatex} 段 ｜ 给了拆分点 ${withSplitAt} 段`
+  );
 
   fs.writeFileSync(path.join(__dirname, 'e2e_result.json'), JSON.stringify({ local, vision: r }, null, 2), 'utf8');
   console.log('原始结果已存：scratch/vision/e2e_result.json');

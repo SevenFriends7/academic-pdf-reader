@@ -81,6 +81,10 @@ function extractHostHtml() {
     if (e.includes('extVersion')) return '9.9.9-smoke';
     if (e.includes('nonce')) return 'smoke-nonce';
     if (e.includes('cspSource')) return 'vscode-resource://smoke';
+    // KaTeX 两个变量名里都带 katex，按 css/js 区分。
+    // 【必须排在 cssUri/scriptUri 之前】否则 /cssUri/i 会先命中 katexCssUri（CssUri 是子串），
+    // 把 KaTeX 的样式表替换成 viewer.css，断言就会误报"没引入 KaTeX"。
+    if (/katex/i.test(e)) return /css/i.test(e) ? 'vscode-resource://smoke/katex.min.css' : 'vscode-resource://smoke/katex.min.js';
     if (/cssUri/i.test(e)) return 'vscode-resource://smoke/viewer.css';
     if (/scriptUri/i.test(e)) return 'vscode-resource://smoke/viewer.js';
     if (/pdfJsUri/i.test(e)) return 'vscode-resource://smoke/pdf.min.js';
@@ -169,6 +173,9 @@ const exposed =
     seedParagraphs: list => { currentParagraphs = list; },
     getParagraphs: () => currentParagraphs,
     seedPaperData: pd => { paperData = pd; },
+    // 公式渲染：KaTeX 是页面里的全局（jsdom 里没加载脚本，由测试自己塞桩验证两条分支）
+    renderInlineMarkdown,
+    renderCardFormulaHtml,
     seedMeta: opts => { if (opts && Number.isFinite(opts.totalPages)) totalPages = opts.totalPages; }
   };\n` +
   code.slice(idx);
@@ -339,6 +346,50 @@ console.log('\n[视觉分割：把模型的版面判断应用到本页段落]');
   S.requestVisionSegmentation(1, { manual: false });
   check('已有缓存时直接套用、不再调 API', postedMessages.slice(beforeMsgs).every(m => m.type !== 'requestVisionSegmentation'));
   check('缓存套用后类型被改正', S.getParagraphs().find(p => p.id === 0).type === 'formula_inline');
+}
+
+console.log('\n[数学公式渲染：KaTeX 本地打包，渲染失败也绝不吞掉公式]');
+{
+  const S = window.__SMOKE__;
+  check('宿主 HTML 引入 KaTeX 样式（本地 media/katex，不是 CDN）', /katex\.min\.css/.test(hostHtml) && !/cdn\.jsdelivr|unpkg\.com/.test(hostHtml));
+  check('宿主 HTML 引入 KaTeX 脚本', /katex\.min\.js/.test(hostHtml));
+  check('KaTeX 文件真的在扩展包里（含字体，离线可用）', fs.existsSync(path.join(ROOT, 'media', 'katex', 'katex.min.js')) && fs.existsSync(path.join(ROOT, 'media', 'katex', 'katex.min.css')) && fs.existsSync(path.join(ROOT, 'media', 'katex', 'fonts')));
+
+  // 分支 1：页面里没有 KaTeX 时 → 原样保留并标成兜底（旧行为，绝不吞掉）
+  const fallback = S.renderInlineMarkdown('设公式 $x^2 + y^2$ 与 \\(\\alpha\\) 结束');
+  check('没有 KaTeX 时公式原样保留、不吞掉', fallback.includes('x^2 + y^2') && fallback.includes('\\alpha'), fallback.slice(0, 120));
+  check('兜底样式带 md-math 标记（便于识别未渲染）', fallback.includes('md-math'));
+
+  // 分支 2：有 KaTeX 时 → 交给它渲染（用桩证明"确实调用了 KaTeX、且传对了 displayMode"）
+  const calls = [];
+  window.katex = {
+    renderToString: (tex, opts) => {
+      calls.push({ tex, displayMode: !!(opts && opts.displayMode) });
+      return `<span class="katex">${tex}</span>`;
+    }
+  };
+  const rendered = S.renderInlineMarkdown('行内 $a_t$ 与独立 $$\\hat{Y}_t = \\mathcal{L}(Y_t)$$ 结束');
+  check('有 KaTeX 时调用它渲染行内公式', calls.some(c => c.tex === 'a_t' && c.displayMode === false), JSON.stringify(calls));
+  check('$$...$$ 按独立公式渲染（displayMode=true）', calls.some(c => c.displayMode === true && /\\hat\{Y\}_t/.test(c.tex)), JSON.stringify(calls));
+  check('渲染结果进 HTML 且带 md-math-rendered 标记', rendered.includes('katex') && rendered.includes('md-math-rendered'));
+  check('KaTeX 报错时不让整块消失（throwOnError: false）', (() => {
+    window.katex = {
+      renderToString: (tex, opts) => {
+        if (opts.throwOnError !== false) throw new Error('应当要求 throwOnError:false');
+        throw new Error('这个语法坏了');
+      }
+    };
+    const out = S.renderInlineMarkdown('坏公式 $\\frac{$');
+    return out.includes('md-math-fallback') || out.includes('frac');
+  })());
+
+  // 公式卡片：视觉模型转写的 LaTeX 渲染成真公式；没有 latex 时退回提示，不留空白
+  const cardHtml = S.renderCardFormulaHtml({ id: 1, type: 'formula', visionLatex: '\\hat{Y}_1 = S_\\theta(\\hat{X}_t, \\hat{Y}_t, X_1)', cleanText: 'Y ̂ 1 = S θ X t (2)' });
+  check('公式卡片渲染 LaTeX 并标出来源', cardHtml.includes('card-formula-body') && cardHtml.includes('\\hat{Y}_1'), cardHtml.slice(0, 100));
+  check('公式卡片保留字符层原文供核对', cardHtml.includes('Y ̂ 1 = S θ X t'));
+  const noLatex = S.renderCardFormulaHtml({ id: 2, type: 'formula', cleanText: 'x' });
+  check('没有 LaTeX 时不出现空白卡片', noLatex.trim().length > 0);
+  delete window.katex;
 }
 
 console.log('\n[导出「全文双语精读稿」—— 调的是 viewer.js 里的真实实现]');

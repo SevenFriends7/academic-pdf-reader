@@ -102,6 +102,10 @@ export interface VisionSegment {
   action?: 'keep' | 'merge_next' | 'split' | 'drop';
   /** 一句话理由（模型给的） */
   why?: string;
+  /** 公式的 LaTeX 转写（模型看图写的；文本层抽不出可渲染的 LaTeX） */
+  latex?: string;
+  /** action=split 时：新片段开头的原文文字（据此在 charMap 上找切点） */
+  splitAt?: string[];
 }
 
 export interface VisionSegmentationResult {
@@ -1767,13 +1771,16 @@ ${rawText.slice(0, 8000)}
     const prompt =
       `这是论文第 ${opts.pageNum} 页的图像，下面还有一份程序给出的分段结果（顺序与类型可能有错）。\n` +
       `请结合图像判断，只输出 JSON：\n` +
-      `{"columns":1,"segments":[{"i":0,"type":"figure|table|caption|body|heading|formula|formula_inline|header|footer|reference|page_number|noise","order":1,"action":"keep|merge_next|split|drop","why":"15 字内"}],"fixes":"一句话总结你改了什么"}\n` +
+      `{"columns":1,"segments":[{"i":0,"type":"figure|table|caption|body|heading|formula|formula_inline|header|footer|reference|page_number|noise","order":1,"action":"keep|merge_next|split|drop","why":"15 字内","latex":"仅公式类需要：把公式转写成 LaTeX（不要 $ 包裹、不要 \\\\begin{equation}）","splitAt":["仅 action=split 需要：新片段开头的原文文字（照抄图像，10~40 字）"]}],"fixes":"一句话总结你改了什么"}\n` +
       `规则：\n` +
       `- 每个 i 都必须出现一次，不要新增、不要漏掉；i 必须与下面列表的编号一致。\n` +
       `- type 按你判断的**真实**类型（列表里给的是程序的判断，可能错）。\n` +
       `- 独立成行的公式标 formula；公式与句子混排标 formula_inline；图像/表格**内部**的文字标 figure/table。\n` +
       `- 页眉、页脚、页码标 header/footer/page_number，并给 action "drop"。\n` +
       `- 若某段其实是上一段的续句（被错误切开），给它 action "merge_next"。\n` +
+      `- 若一段里混了"正文 + 独立公式 + 正文"，给 action "split"，并在 splitAt 里按顺序给出每个新片段开头的原文文字。\n` +
+      `- **公式一定要给 latex**：图片是唯一可靠的来源，程序从文本层抽出的是 "Y ̂ t" 这种残渣，无法渲染。\n` +
+      `  例如图像上的 Ŷ_t = L(Ŷ_t, Y_t) + L(Ŷ_1, Y_1) 要写成 \\hat{Y}_t = \\mathcal{L}(\\hat{Y}_t, Y_t) + \\mathcal{L}(\\hat{Y}_1, Y_1)。\n` +
       `- 不要翻译，不要复述原文，不要解释。\n\n` +
       `程序的分段结果：\n${numbered}`;
 
@@ -1926,7 +1933,15 @@ ${rawText.slice(0, 8000)}
         type: allowed.has(type) ? type : 'body',
         order: Number.isFinite(Number(s?.order)) ? Number(s.order) : undefined,
         action: (['keep', 'merge_next', 'split', 'drop'].includes(action) ? action : 'keep') as VisionSegment['action'],
-        why: typeof s?.why === 'string' ? s.why.slice(0, 60) : undefined
+        why: typeof s?.why === 'string' ? s.why.slice(0, 60) : undefined,
+        // 公式的 LaTeX 转写：文本层给不出（抽出来是 "Y ̂ t" 这种残渣），只有图像可靠
+        latex: typeof s?.latex === 'string' && s.latex.trim() ? s.latex.trim().slice(0, 600) : undefined,
+        // 拆分点：新片段开头的原文文字，webview 据此在 charMap 上找切点
+        splitAt: Array.isArray(s?.splitAt)
+          ? s.splitAt
+              .filter((t: any) => typeof t === 'string' && t.trim())
+              .map((t: string) => t.trim().slice(0, 200))
+          : undefined
       });
     }
     if (segments.length === 0) {
