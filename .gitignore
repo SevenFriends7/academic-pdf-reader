@@ -41,3 +41,8 @@ scratch/llm-test/out/
 scratch/dstest/out/
 scratch/llm-test/*.js.map
 
+
+# ---- 公式对照页（本机生成，内嵌 KaTeX CSS 会被密钥扫描误报为 52 位令牌）----
+scratch/vision/cmp_*.html
+scratch/vision/crop_*.png
+
