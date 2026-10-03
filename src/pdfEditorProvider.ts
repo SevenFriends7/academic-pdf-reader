@@ -705,10 +705,42 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
   }
 
   /**
+   * 询问这一次导出要不要「高光译文」，并把选择记忆到设置里。
+   * 默认问一次而不是写死：有人要的是"我标注过的原文"（更小、更接近原论文），
+   * 有人要的是"每条高光都配中文"。两者差别很大，交给用户自己决定。
+   */
+  private async askPdfTranslationMode(): Promise<boolean | undefined> {
+    const cfg = vscode.workspace.getConfiguration('academicReader');
+    const current = cfg.get<boolean>('pdfExportIncludeTranslation', true);
+    const withTrans = {
+      label: `$(book) 原文 + 高光译文${current ? '（上次的选择）' : ''}`,
+      detail: '每条高光在左页边距标序号，紧跟一页给出 原文摘录 / 译文 / 我的批注 / AI 答疑',
+      value: true
+    };
+    const withoutTrans = {
+      label: `$(file-pdf) 只要高光后的原文${current ? '' : '（上次的选择）'}`,
+      detail: '只保留原样原文页 + 高亮，体积更小；不需要中文字体，任何机器都能导',
+      value: false
+    };
+    const items = current ? [withTrans, withoutTrans] : [withoutTrans, withTrans];
+    const pick = await vscode.window.showQuickPick(items, {
+      title: '导出高光批注 PDF',
+      placeHolder: '要不要把高光对应的译文也放进 PDF？'
+    });
+    if (!pick) return undefined;
+    if (pick.value !== current) {
+      // 记住这次的选择，下次把它排在第一位
+      await cfg.update('pdfExportIncludeTranslation', pick.value, vscode.ConfigurationTarget.Global);
+    }
+    return pick.value;
+  }
+
+  /**
    * 导出「高光批注 PDF」。
    *
-   * 形态：**原封不动的全部原文页**（高亮按原坐标画回原位，颜色/透明度/混合模式与阅读器一致）
-   * ＋ 附录页（按页给出原文 → 译文，带同色标记条，其下是批注与 AI 答疑）。
+   * 形态：**原封不动的全部原文页**（高亮按原坐标画回原位，颜色/透明度/混合模式与阅读器一致）；
+   * 选"带高光译文"时，另外给每条高光在左页边距标序号，并在该原文页**紧跟一页**逐条给出
+   * 原文摘录 → 译文 → 我的批注 → AI 答疑；末尾一页是导出说明。
    * 原文页用 copyPages 原样搬运，所以是矢量的、可搜索的，体积也小。
    */
   public async exportAnnotatedPdf(): Promise<void> {
@@ -718,6 +750,9 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
       vscode.window.showWarningMessage('当前没有处于激活状态的文献阅读窗口，请先打开一篇 PDF。');
       return;
     }
+
+    const includeTranslation = await this.askPdfTranslationMode();
+    if (includeTranslation === undefined) return;
 
     try {
       const done = await vscode.window.withProgress(
@@ -731,6 +766,7 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
             paperName: path.basename(uri.fsPath),
             fontPathOverride: cfg.get<string>('pdfExportFontPath', ''),
             includeAllPages: true,
+            includeTranslation,
             // 译文缓存键里带着引擎标识；不传的话，重开插件后（段落快照里没有译文时）
             // 就查不到 `${page}_${引擎标识}_${指纹}` 的译文 —— 用户看到的就是"译文没同步"
             engineTag: this.engineTag()
@@ -748,10 +784,16 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
           await vscode.workspace.fs.writeFile(target, result.bytes);
           const summary = [
             `原文 ${result.sourcePages} 页`,
-            result.appendixPages > 0 ? `译文附录 ${result.appendixPages} 页` : '',
+            includeTranslation
+              ? result.appendixPages > 0
+                ? `高光译文 ${result.appendixPages} 页`
+                : '未附译文'
+              : '仅原文与高亮',
             `高亮 ${result.drawnAnnotations} 条`,
-            // 让"译文只覆盖了一部分"这件事一眼可见，而不是让用户翻到附录才发现
-            result.sourcePages > 0 ? `译文覆盖 ${result.translatedPages.length}/${result.sourcePages} 页` : ''
+            // 让"译文只覆盖了一部分"这件事一眼可见，而不是让用户翻到译文页才发现
+            includeTranslation && result.sourcePages > 0
+              ? `译文覆盖 ${result.translatedPages.length}/${result.sourcePages} 页`
+              : ''
           ]
             .filter(Boolean)
             .join(' · ');

@@ -7,7 +7,7 @@
     "color": "#0b578a",
     "theme": "dark"
   },
-  "version": "0.5.16",
+  "version": "0.5.17",
   "publisher": "paper-reader",
   "license": "MIT",
   "repository": {
@@ -220,6 +220,11 @@
           "type": "string",
           "default": "",
           "description": "导出高光批注 PDF 时嵌进 PDF 的中文字体文件（.ttf/.otf）。留空则自动探测系统字体（Windows 黑体/宋体、macOS Arial Unicode、Linux Noto）。指定时请填单体字体文件的绝对路径——.ttc 字体集合无法嵌入。"
+        },
+        "academicReader.pdfExportIncludeTranslation": {
+          "type": "boolean",
+          "default": true,
+          "description": "导出高光批注 PDF 时是否附上「高光译文」：true = 每条高光在左页边距标序号，并在该原文页后紧跟一页给出 原文摘录 / 译文 / 我的批注 / AI 答疑；false = 只导出高光后的原文（体积更小，且不需要中文字体）。每次导出都会先问你一次，并把选择记在这里。"
         },
         "academicReader.autoTranslate": {
           "type": "boolean",

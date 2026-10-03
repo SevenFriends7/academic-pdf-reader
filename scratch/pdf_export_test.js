@@ -462,6 +462,39 @@ function makePaperData() {
     openBlock.includes("'在文件夹中显示'") && openBlock.includes("'打开 PDF'") && !/writeFile\(target[\s\S]{0,600}await vscode\.env\.openExternal\(target\);\s*\} catch/.test(providerSrc)
   );
 
+  console.log('\n[7] 自行选择要不要高光译文');
+  // 本机若有纯拉丁字体就故意把它当"中文字体"传进去：这一档压根不该用它
+  const latinFontForTest =
+    ['C:\\Windows\\Fonts\\arial.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'].find(p => fs.existsSync(p)) || null;
+  // 用户要"只要高光后的原文"时：不出译文页、不画编号、也不需要中文字体
+  const rPlain = await buildAnnotatedPdf({
+    originalBytes,
+    paperData,
+    paperName: 'cycle.pdf',
+    includeAllPages: true,
+    includeTranslation: false,
+    // 故意给一个没有汉字的字体路径：不该被用上，也不该产生任何字体相关警告
+    fontPathOverride: latinFontForTest || undefined
+  });
+  check('只要原文时不生成译文页', rPlain.appendixPages === 0, `实际 ${rPlain.appendixPages}`);
+  check('只要原文时总页数就是原文页数', (await pdfjs.getDocument({ data: new Uint8Array(rPlain.bytes), isEvalSupported: false }).promise).numPages === 3);
+  check('只要原文时不返回任何"已覆盖译文"的页', Array.isArray(rPlain.translatedPages) && rPlain.translatedPages.length === 0);
+  check('只要原文时高亮照样画回原位', rPlain.drawnAnnotations === 4, `实际 ${rPlain.drawnAnnotations}`);
+  check(
+    '只要原文时不报任何字体问题（这一档本来就不需要中文字体）',
+    !rPlain.warnings.some(w => w.includes('字体') || w.includes('中文字形')),
+    JSON.stringify(rPlain.warnings)
+  );
+  const opsPlain = await (await (await pdfjs.getDocument({ data: new Uint8Array(rPlain.bytes), isEvalSupported: false }).promise).getPage(1)).getOperatorList();
+  let plainCurves = 0;
+  for (let i = 0; i < opsPlain.fnArray.length; i++) {
+    if (opsPlain.fnArray[i] === pdfjs.OPS.constructPath) {
+      const pathOps = Array.isArray(opsPlain.argsArray[i] && opsPlain.argsArray[i][0]) ? opsPlain.argsArray[i][0] : [];
+      if (pathOps.includes(pdfjs.OPS.curveTo)) plainCurves++;
+    }
+  }
+  check('只要原文时不画编号圆点（没有译文页就没有对应关系）', plainCurves === 0, `实际 ${plainCurves} 个圆`);
+
   console.log('\n[4] 退化路径与接线');
   // 4a：给一个"没有汉字"的字体 → 必须如实降级（只出原文页 + 警告），不能画出豆腐块骗人
   const latinCandidates = ['C:\\Windows\\Fonts\\arial.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'];
@@ -507,6 +540,16 @@ function makePaperData() {
       pkg.contributes.commands.some(c => c.command === 'academicReader.exportAnnotatedPdf')
   );
   check('提供了中文字体路径设置项', !!pkg.contributes.configuration.properties['academicReader.pdfExportFontPath']);
+  check(
+    '导出前会问"要不要高光译文"，并把选择记住',
+    providerSrc.includes('askPdfTranslationMode') &&
+      providerSrc.includes('pdfExportIncludeTranslation') &&
+      !!pkg.contributes.configuration.properties['academicReader.pdfExportIncludeTranslation']
+  );
+  check(
+    '命令面板与按钮两条入口都会先问（不会绕过选择）',
+    /exportAnnotatedPdf\(\)[\s\S]{0,400}askPdfTranslationMode\(\)/.test(providerSrc)
+  );
   check('pdf-lib 已进入依赖清单', !!(pkg.devDependencies['pdf-lib'] && pkg.devDependencies['@pdf-lib/fontkit']));
 
   console.log(`\n===== 结果: ${pass} 通过 / ${fail} 失败 =====`);

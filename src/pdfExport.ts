@@ -32,6 +32,12 @@ export interface PdfExportOptions {
   fontPathOverride?: string;
   /** 是否把所有页都放进 PDF（false 时只放有批注的页） */
   includeAllPages?: boolean;
+  /**
+   * 是否附上「高光译文」（默认 true）。
+   * false = 只导出"高光后的原文"：不生成译文页、不画编号圆点，**也就不需要中文字体**，
+   * 所以在没装中文字体的机器上这种模式照样能用。
+   */
+  includeTranslation?: boolean;
   /** 当前翻译引擎标识（用于回查 `${page}_${引擎标识}_${指纹}` 形式的译文缓存） */
   engineTag?: string;
 }
@@ -403,11 +409,16 @@ export async function buildAnnotatedPdf(opts: PdfExportOptions): Promise<PdfExpo
     .filter(i => includeAllPages || annotatedPages.has(i + 1));
   const sourcePageCount = src.getPageCount();
 
+  // ---- 用户选了"不要高光译文"就什么都不用找字体 ----
+  // 这一档只导出"高光后的原文"，因此在没有中文字体的机器上也能正常用，
+  // 自然也不该弹"没找到中文字体"的警告。
+  const wantTranslation = opts.includeTranslation !== false;
+
   // ---- 中文字体先就位 ----
   // 它不只是排版译文页要用：原文页上给每条高光画的编号标记也要用它。
-  const fontPath = findCjkFontPath(opts.fontPathOverride);
+  const fontPath = wantTranslation ? findCjkFontPath(opts.fontPathOverride) : undefined;
   let font: PDFFont | undefined;
-  if (fontPath) {
+  if (wantTranslation && fontPath) {
     try {
       out.registerFontkit(fontkit);
       font = await out.embedFont(fs.readFileSync(fontPath), { subset: true });
@@ -419,14 +430,14 @@ export async function buildAnnotatedPdf(opts: PdfExportOptions): Promise<PdfExpo
       warnings.push(`嵌入中文字体失败（${path.basename(fontPath)}）：${e?.message || e}。已只导出原文页。`);
       font = undefined;
     }
-  } else {
+  } else if (wantTranslation) {
     warnings.push(
       '没有找到可嵌入的中文字体，已只导出原文页（高亮已画回原位）。可在设置 academicReader.pdfExportFontPath 指定一个中文 ttf/otf 字体。'
     );
   }
 
   // ---- 每页的"高光 → 译文"内容（按高光组织，而不是按段落）----
-  const { pages: pagesWithContent } = buildAppendix(paperData, opts.engineTag);
+  const { pages: pagesWithContent } = wantTranslation ? buildAppendix(paperData, opts.engineTag) : { pages: [] as ReturnType<typeof buildAppendix>['pages'] };
   const contentByPage = new Map(pagesWithContent.map(p => [p.page, p]));
 
   const PAGE_W = 595.28;
@@ -520,7 +531,7 @@ export async function buildAnnotatedPdf(opts: PdfExportOptions): Promise<PdfExpo
     .map(i => i + 1)
     .filter(n => !highlightedPageNumbers.includes(n) && !contentByPage.has(n));
 
-  if (font && writer) {
+  if (font && writer && wantTranslation) {
     writeSummarySheet(writer, {
       paperName,
       sourcePages: sourcePageCount,
