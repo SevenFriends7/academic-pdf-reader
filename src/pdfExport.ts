@@ -48,7 +48,31 @@ export interface PdfExportResult {
   rotatedPagesSkipped: number[];
   /** 实际使用的中文字体路径（未找到则为空） */
   fontPath: string;
+  /** 附录里真正带上了译文的页号 */
+  translatedPages: number[];
+  /** 原文里没有译文、因此附录未收录的页号 */
+  pagesWithoutTranslation: number[];
   warnings: string[];
+}
+
+/** 把页码压成 "1–3, 7" 这种可读区间（与 webview 里的同名逻辑一致） */
+function formatPageRanges(pages: number[]): string {
+  const sorted = [...new Set(pages)].filter(n => Number.isFinite(n)).sort((a, b) => a - b);
+  if (sorted.length === 0) return '（无）';
+  const parts: string[] = [];
+  let start = sorted[0];
+  let prev = sorted[0];
+  for (let i = 1; i <= sorted.length; i++) {
+    const cur = sorted[i];
+    if (cur === prev + 1) {
+      prev = cur;
+      continue;
+    }
+    parts.push(start === prev ? `${start}` : `${start}–${prev}`);
+    start = cur;
+    prev = cur;
+  }
+  return parts.join(', ');
 }
 
 /**
@@ -439,6 +463,15 @@ export async function buildAnnotatedPdf(opts: PdfExportOptions): Promise<PdfExpo
   }
 
   const { pages: appendixSource } = buildAppendix(paperData, opts.engineTag);
+  // 原文总页数：用来如实说明"译文覆盖了几页"，以及列出还没译文的页
+  const sourcePageCount = src.getPageCount();
+  const translatedPageNumbers = appendixSource
+    .filter(pg => pg.entries.some(e => e.translation))
+    .map(pg => pg.page);
+  const pagesWithoutTranslation: number[] = [];
+  for (let n = 1; n <= sourcePageCount; n++) {
+    if (!translatedPageNumbers.includes(n)) pagesWithoutTranslation.push(n);
+  }
   let appendixPages = 0;
 
   if (font) {
@@ -453,7 +486,11 @@ export async function buildAnnotatedPdf(opts: PdfExportOptions): Promise<PdfExpo
       color: [0.08, 0.1, 0.14],
       spaceAfter: 2
     });
-    const stat = `批注 ${annotations.length} 条 · AI 答疑 ${paperData.aiQa?.length || 0} 条 · 生成于 ${new Date().toLocaleString()}`;
+    // 覆盖范围必须写清楚：读者翻到附录只有两页时，得知道"是还没翻过/没翻译"，
+    // 而不是以为导出坏了（这个误会真实发生过）。
+    const stat =
+      `批注 ${annotations.length} 条 · AI 答疑 ${paperData.aiQa?.length || 0} 条 · ` +
+      `译文覆盖 ${translatedPageNumbers.length}/${sourcePageCount} 页 · 生成于 ${new Date().toLocaleString()}`;
     writer.paragraph(stat, { size: 9, color: [0.45, 0.47, 0.5], spaceAfter: 2 });
     writer.paragraph(
       '前一部分是未经改动的原文页（你的高亮已按原位置画回）；这里按页给出该页各段的原文与译文，' +
@@ -554,6 +591,24 @@ export async function buildAnnotatedPdf(opts: PdfExportOptions): Promise<PdfExpo
     });
 
     appendixPages = out.getPageCount() - firstAppendixPageIndex;
+
+    // 如实列出"没译文的页"，并告诉读者怎么补齐
+    if (pagesWithoutTranslation.length > 0) {
+      writer.divider();
+      writer.paragraph('未收录译文的页', { size: 11, color: [0.45, 0.25, 0.15], spaceAfter: 2 });
+      writer.paragraph(`第 ${formatPageRanges(pagesWithoutTranslation)} 页。`, {
+        size: 10,
+        color: [0.35, 0.3, 0.3],
+        spaceAfter: 2
+      });
+      writer.paragraph(
+        '这些页还没有被解析/翻译过，所以附录里只有它们的批注与答疑（如果有）。' +
+          '在阅读器里翻到这些页、或用「整页翻译」把它们译出来，再重新导出即可补齐——' +
+          '译文与批注都是本地持久化的，不会丢。',
+        { size: 9.5, color: [0.5, 0.5, 0.55], spaceAfter: 2, lineGap: 3.6 }
+      );
+      appendixPages = out.getPageCount() - firstAppendixPageIndex;
+    }
   }
 
   if (rotatedPagesSkipped.length > 0) {
@@ -570,6 +625,9 @@ export async function buildAnnotatedPdf(opts: PdfExportOptions): Promise<PdfExpo
     drawnAnnotations,
     rotatedPagesSkipped,
     fontPath: font ? fontPath || '' : '',
+    // 没字体就没有附录，也就没有任何译文被收录 —— 如实返回，别让上层以为"都覆盖了"
+    translatedPages: font ? translatedPageNumbers : [],
+    pagesWithoutTranslation,
     warnings
   };
 }

@@ -749,18 +749,32 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
           const summary = [
             `原文 ${result.sourcePages} 页`,
             result.appendixPages > 0 ? `译文附录 ${result.appendixPages} 页` : '',
-            `高亮 ${result.drawnAnnotations} 条`
+            `高亮 ${result.drawnAnnotations} 条`,
+            // 让"译文只覆盖了一部分"这件事一眼可见，而不是让用户翻到附录才发现
+            result.sourcePages > 0 ? `译文覆盖 ${result.translatedPages.length}/${result.sourcePages} 页` : ''
           ]
             .filter(Boolean)
             .join(' · ');
-          vscode.window.showInformationMessage(`高光批注 PDF 已导出：${path.basename(target.fsPath)}（${summary}）`);
-          result.warnings.forEach(w => vscode.window.showWarningMessage(w));
-          // 用系统默认阅读器打开（不占用编辑器，也避免"导出完又被自己的阅读器当成新论文打开"）
-          try {
+          // 【不要自动用系统程序打开】用户机器上 .pdf 可能根本没有关联程序，
+          // openExternal 失败时 VS Code 会自己弹一个"打开外部程序时出错"的对话框，
+          // 我们的 try/catch 拦不住它（实测：0x2 系统找不到指定的文件）。
+          // 改成给按钮，由用户自己决定。
+          const action = await vscode.window.showInformationMessage(
+            `高光批注 PDF 已导出：${path.basename(target.fsPath)}（${summary}）`,
+            '在文件夹中显示',
+            '打开 PDF'
+          );
+          if (action === '在文件夹中显示') {
+            try {
+              await vscode.commands.executeCommand('revealFileInOS', target);
+            } catch (e: any) {
+              vscode.window.showWarningMessage(`打开文件夹失败：${e?.message || e}`);
+            }
+          } else if (action === '打开 PDF') {
+            // 用户明确要求打开才尝试；失败与否交给 VS Code 自己提示
             await vscode.env.openExternal(target);
-          } catch {
-            /* 打开失败不影响导出结果 */
           }
+          result.warnings.forEach(w => vscode.window.showWarningMessage(w));
         }
       );
       void done;

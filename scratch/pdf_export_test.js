@@ -351,6 +351,42 @@ function makePaperData() {
   );
   check('合并段落快照时，空译文不会覆盖已存译文', merged[0].translation === '已经存好的译文', JSON.stringify(merged[0].translation));
 
+  console.log('\n[6] 译文覆盖范围（用户反馈："译文加上没有"）');
+  // 提前读源码：后面两节都要用（放在 [4] 里会触发 const 的暂时性死区）
+  const viewerSrc = fs.readFileSync(path.join(ROOT, 'media', 'viewer.js'), 'utf8');
+  const providerSrc = fs.readFileSync(path.join(ROOT, 'src', 'pdfEditorProvider.ts'), 'utf8');
+  const extensionSrc = fs.readFileSync(path.join(ROOT, 'src', 'extension.ts'), 'utf8');
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+  check(
+    '返回结果里带"译文覆盖了哪几页"',
+    Array.isArray(result.translatedPages) && result.translatedPages.includes(1) && result.translatedPages.includes(3),
+    JSON.stringify(result.translatedPages)
+  );
+  check(
+    '返回结果里带"哪些页没有译文"（第 2 页在本用例中没译文）',
+    Array.isArray(result.pagesWithoutTranslation) && result.pagesWithoutTranslation.includes(2),
+    JSON.stringify(result.pagesWithoutTranslation)
+  );
+  if (result.fontPath) {
+    const firstAppendix = await (await doc.getPage(4)).getTextContent();
+    const head = firstAppendix.items.map(it => it.str).join('').replace(/\s+/g, '');
+    check('附录抬头写明译文覆盖几页', /译文覆盖\d+\/3页/.test(head), head.slice(0, 80));
+    const allAppendix = [];
+    for (let n = 4; n <= doc.numPages; n++) {
+      allAppendix.push((await (await doc.getPage(n)).getTextContent()).items.map(it => it.str).join(''));
+    }
+    const tail = allAppendix.join('').replace(/\s+/g, '');
+    check('附录末尾列出未收录译文的页并说明怎么补齐', tail.includes('未收录译文的页') && tail.includes('重新导出即可补齐'));
+  }
+
+  // 自动用系统程序打开是踩过的坑：用户机器上 .pdf 没有关联程序时，
+  // openExternal 会让 VS Code 弹"打开外部程序时出错"，我们的 try/catch 拦不住。
+  const openBlock = providerSrc.slice(providerSrc.indexOf('const action = await vscode.window.showInformationMessage'));
+  check(
+    '导出后不再自动调用系统程序打开，改为给按钮',
+    openBlock.includes("'在文件夹中显示'") && openBlock.includes("'打开 PDF'") && !/writeFile\(target[\s\S]{0,600}await vscode\.env\.openExternal\(target\);\s*\} catch/.test(providerSrc)
+  );
+
   console.log('\n[4] 退化路径与接线');
   // 4a：给一个"没有汉字"的字体 → 必须如实降级（只出原文页 + 警告），不能画出豆腐块骗人
   const latinCandidates = ['C:\\Windows\\Fonts\\arial.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'];
@@ -376,10 +412,6 @@ function makePaperData() {
   }
 
   // 4b：接线检查——按钮、命令、消息类型、设置项必须都在（防止"功能写了但点不到"）
-  const viewerSrc = fs.readFileSync(path.join(ROOT, 'media', 'viewer.js'), 'utf8');
-  const providerSrc = fs.readFileSync(path.join(ROOT, 'src', 'pdfEditorProvider.ts'), 'utf8');
-  const extensionSrc = fs.readFileSync(path.join(ROOT, 'src', 'extension.ts'), 'utf8');
-  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
   check(
     '「导出笔记」按钮会打开导出菜单',
     /exportNotesBtn\.addEventListener\('click'[\s\S]{0,220}type: 'exportNotes'/.test(viewerSrc)
