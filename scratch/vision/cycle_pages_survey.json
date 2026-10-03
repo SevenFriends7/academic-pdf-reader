@@ -1,0 +1,908 @@
+{
+  "file": "paper_1f6c2345c825e6b5dac7170135b540b1.json",
+  "pdfName": "cycle.pdf",
+  "pages": [
+    {
+      "page": 1,
+      "count": 8,
+      "typeCounts": {
+        "title": 1,
+        "metadata": 1,
+        "body": 3,
+        "abstract": 1,
+        "heading": 1,
+        "footnote": 1
+      },
+      "labelishCount": 4,
+      "labelish": [
+        {
+          "i": 0,
+          "type": "title",
+          "len": 36,
+          "text": "Delving into the Cyclic Mechanism in"
+        },
+        {
+          "i": 1,
+          "type": "metadata",
+          "len": 41,
+          "text": "Semi-supervised Video Object Segmentation"
+        },
+        {
+          "i": 4,
+          "type": "heading",
+          "len": 14,
+          "text": "1 Introduction"
+        },
+        {
+          "i": 7,
+          "type": "footnote",
+          "len": 3,
+          "text": "∗ †"
+        }
+      ],
+      "mergeCandidateCount": 0,
+      "mergeCandidates": [],
+      "rows": [
+        {
+          "i": 0,
+          "type": "title",
+          "len": 36,
+          "text": "Delving into the Cyclic Mechanism in",
+          "endsWithoutTerminal": true,
+          "startsLowercaseOrDigit": false,
+          "nextI": 1,
+          "nextType": "metadata",
+          "nextStartsLowercaseOrDigit": false,
+          "labelish": true
+        },
+        {
+          "i": 1,
+          "type": "metadata",
+          "len": 41,
+          "text": "Semi-supervised Video Object Segmentation",
+          "endsWithoutTerminal": true,
+          "startsLowercaseOrDigit": false,
+          "nextI": 2,
+          "nextType": "body",
+          "nextStartsLowercaseOrDigit": false,
+          "labelish": true
+        },
+        {
+          "i": 2,
+          "type": "body",
+          "len": 344,
+          "text": "∗ ∗ ∗ Yuxi Li Ning Xu Jinlong Peng Shanghai Jiao Tong University Adobe Research Tencent Youtu Lab Shanghai, China San Jose, CA Shanghai, China lyxok1@sjtu.edu.cn nxu@adobe.com jeromepeng@tencent.com † John See Weiyao Lin Multimedia University Shanghai Jiao Tong University Selangor, Malaysia Shanghai, China johnsee@mmu.edu.my wylin@sjtu.edu.cn",
+          "endsWithoutTerminal": true,
+          "startsLowercaseOrDigit": false,
+          "nextI": 3,
+          "nextType": "abstract",
+          "nextStartsLowercaseOrDigit": false,
+          "labelish": false
+        },
+        {
+          "i": 3,
+          "type": "abstract",
+          "len": 854,
+          "text": "Abstract In this paper, we address several inadequacies of current video object segmentation pipelines. Firstly, a cyclic mechanism is incorporated to the standard semisupervised process to produce more robust representations. By relying on the accurate reference mask in the starting frame, we show that the error propagation problem can be mitigated. Next, we introduce a simple gradient correction module, which extends the offline pipeline to an online method while maintaining the efficiency of the former. Finally we develop cycle effective receptive field (cycleERF) based on gradient correction to provide a new perspective into analyzing object-specific regions of interests. We conduct comprehensive experiments on challenging benchmarks of DAVIS17 and Youtube-VOS, demonstrating that the cyclic mechanism is beneficial to segmentation quality.",
+          "endsWithoutTerminal": false,
+          "startsLowercaseOrDigit": false,
+          "nextI": 4,
+          "nextType": "heading",
+          "nextStartsLowercaseOrDigit": true,
+          "labelish": false
+        },
+        {
+          "i": 4,
+          "type": "heading",
+          "len": 14,
+          "text": "1 Introduction",
+          "endsWithoutTerminal": true,
+          "startsLowercaseOrDigit": true,
+          "nextI": 5,
+          "nextType": "body",
+          "nextStartsLowercaseOrDigit": false,
+          "labelish": true
+        },
+        {
+          "i": 5,
+          "type": "body",
+          "len": 476,
+          "text": "Video object segmentation (VOS) is garnering more attention in recent years due to its widespread application in the area of video editing and analysis. Among all the VOS scenarios, semi-supervised video object segmentation is the most practical and widely researched. Specifically, a mask is provided in the first frame indicating the location and boundary of the objects, and the algorithm should accurately segment the same objects from the background in subsequent frames.",
+          "endsWithoutTerminal": false,
+          "startsLowercaseOrDigit": false,
+          "nextI": 6,
+          "nextType": "body",
+          "nextStartsLowercaseOrDigit": false,
+          "labelish": false
+        },
+        {
+          "i": 6,
+          "type": "body",
+          "len": 1143,
+          "text": "A natural solution toward the problem is to process videos in sequential order; this exploits the information from previous frames and guides the segmentation process in the current frame. In most practical scenarios, the video is processed in an online manner where only previous knowledge is available. Due to this reason, most state-of-the-art pipelines [1, 2, 3, 4, 5, 6, 7, 8, 9] follow a sequential order for segmentation in both training and inference stages. Ideally, if the masks predicted for intermediate frames are sufficiently accurate, they can provide more helpful object-specific features and position prior to segmentation. Besides, the existence of prediction errors at intermediate frames can be problematic — these masks can mislead the segmentation procedure in future frames. Figure 1 illustrates an example of such error propagation risk in sequential video object segmentation pipelines. As the algorithm is misled by another camel of similar appearance in the background, the segmented equal contribution Correspondance author 34th Conference on Neural Information Processing Systems (NeurIPS 2020), Vancouver, Canada.",
+          "endsWithoutTerminal": false,
+          "startsLowercaseOrDigit": false,
+          "nextI": 7,
+          "nextType": "footnote",
+          "nextStartsLowercaseOrDigit": false,
+          "labelish": false
+        },
+        {
+          "i": 7,
+          "type": "footnote",
+          "len": 3,
+          "text": "∗ †",
+          "endsWithoutTerminal": true,
+          "startsLowercaseOrDigit": false,
+          "nextI": null,
+          "nextType": null,
+          "nextStartsLowercaseOrDigit": false,
+          "labelish": true
+        }
+      ]
+    },
+    {
+      "page": 2,
+      "count": 8,
+      "typeCounts": {
+        "caption": 1,
+        "body": 6,
+        "heading": 1
+      },
+      "labelishCount": 1,
+      "labelish": [
+        {
+          "i": 6,
+          "type": "heading",
+          "len": 15,
+          "text": "2 Related works"
+        }
+      ],
+      "mergeCandidateCount": 1,
+      "mergeCandidates": [
+        {
+          "prevI": 6,
+          "prevType": "heading",
+          "prevTail": "2 Related works",
+          "nextI": 7,
+          "nextType": "body",
+          "nextHead": "2.1 Semi-supervised video object segmentation Semi-supervise"
+        }
+      ],
+      "rows": [
+        {
+          "i": 0,
+          "type": "caption",
+          "len": 73,
+          "text": "Figure 1: An example of error propagation risk during the inference time.",
+          "endsWithoutTerminal": false,
+          "startsLowercaseOrDigit": false,
+          "nextI": 1,
+          "nextType": "body",
+          "nextStartsLowercaseOrDigit": true,
+          "labelish": false
+        },
+        {
+          "i": 1,
+          "type": "body",
+          "len": 185,
+          "text": "background camel will serve as erroneous guidance to future frames. Consequently the algorithm will gradually focus on both the foreground and background objects in upcoming new frames.",
+          "endsWithoutTerminal": false,
+          "startsLowercaseOrDigit": true,
+          "nextI": 2,
+          "nextType": "body",
+          "nextStartsLowercaseOrDigit": false,
+          "labelish": false
+        },
+        {
+          "i": 2,
+          "type": "body",
+          "len": 679,
+          "text": "Based on these observations, in this paper, we propose to train and apply a segmentation network in cyclical fashion. In contrast to the predicted reference masks, the initial reference mask provided in the starting frame is always perfectly accurate and reliable (under semi-supervised mode). This inspires us to explicitly bridge the relationship between the initial reference mask and objective frame by taking the first reference mask as a measurement of prediction. This way, we can further refine the intermediate mask prediction and guide the network to learn more robust feature representation of cross frame correspondence, which is less prone to background distractors.",
+          "endsWithoutTerminal": false,
+          "startsLowercaseOrDigit": false,
+          "nextI": 3,
+          "nextType": "body",
+          "nextStartsLowercaseOrDigit": false,
+          "labelish": false
+        },
+        {
+          "i": 3,
+          "type": "body",
+          "len": 1006,
+          "text": "In this work, we apply a forward-backward data flow to form a cyclical structure, and train our segmentation network at both the objective frame and starting frame to help our model learn more robust correspondence relationship between predictions and the initial reference mask. Further to this, at the inference stage, we design a gradient correction module to selectively refine the predicted mask based on the gradient backward from the starting frame. In this way, we are able to naturally extend the offline trained model to an online scheme with marginal increase in time latency. Furthermore, we train our model under such cyclic consistency constraint without additional annotated data from other tasks. The trained models are evaluated in both online and offline schemes on common object segmentation benchmarks: DAVIS17 [10] and Youtube-VOS [11], in which we achieve results that are competitive to other state-of-the-art methods while keeping the efficiency on par with most offline approaches.",
+          "endsWithoutTerminal": false,
+          "startsLowercaseOrDigit": false,
+          "nextI": 4,
+          "nextType": "body",
+          "nextStartsLowercaseOrDigit": false,
+          "labelish": false
+        },
+        {
+          "i": 4,
+          "type": "body",
+          "len": 551,
+          "text": "Additionally, inspired by the process of gradient correction, we develop a new receptive field visualization method called cycle effective receptive field (cycle-ERF), which gradually updates an empty objective mask to show the strong response area w.r.t. the reference mask. In our experiments, we utilize the cycle-ERF to analyze how the cyclic training scheme affects the support regions of objects. This visualization method provides a fresh perspective for analyzing how the segmentation network extracts regions of interests from guidance masks.",
+          "endsWithoutTerminal": false,
+          "startsLowercaseOrDigit": false,
+          "nextI": 5,
+          "nextType": "body",
+          "nextStartsLowercaseOrDigit": false,
+          "labelish": false
+        },
+        {
+          "i": 5,
+          "type": "body",
+          "len": 651,
+          "text": "In a nutshell, the contribution of this paper can be summarized as follows: • We incorporate cycle consistency into the training process of a semi-supervised video object segmentation network to mitigate the error propagation problem. We achieved competitive results on mainstream benchmarks. • We design a gradient correction module to extend the offline segmentation network to an online approach, which boosts the model performance with marginal increase in computation cost. • We develop cycle-ERF, a new visualization method to analyze the important regions for object mask prediction which offers explainability on the impact of cyclic training.",
+          "endsWithoutTerminal": false,
+          "startsLowercaseOrDigit": false,
+          "nextI": 6,
+          "nextType": "heading",
+          "nextStartsLowercaseOrDigit": true,
+          "labelish": false
+        },
+        {
+          "i": 6,
+          "type": "heading",
+          "len": 15,
+          "text": "2 Related works",
+          "endsWithoutTerminal": true,
+          "startsLowercaseOrDigit": true,
+          "nextI": 7,
+          "nextType": "body",
+          "nextStartsLowercaseOrDigit": true,
+          "labelish": true
+        },
+        {
+          "i": 7,
+          "type": "body",
+          "len": 343,
+          "text": "2.1 Semi-supervised video object segmentation Semi-supervised video object segmentation has been widely researched in recent years with the rapid development of deep learning techniques. Depending on the presence of a learning process during inference stage, the segmentation algorithms can be generally divided into online methods and offline",
+          "endsWithoutTerminal": true,
+          "startsLowercaseOrDigit": true,
+          "nextI": null,
+          "nextType": null,
+          "nextStartsLowercaseOrDigit": false,
+          "labelish": false
+        }
+      ]
+    },
+    {
+      "page": 3,
+      "count": 9,
+      "typeCounts": {
+        "body": 6,
+        "heading": 2,
+        "keywords": 1
+      },
+      "labelishCount": 1,
+      "labelish": [
+        {
+          "i": 5,
+          "type": "heading",
+          "len": 9,
+          "text": "3 Methods"
+        }
+      ],
+      "mergeCandidateCount": 3,
+      "mergeCandidates": [
+        {
+          "prevI": 5,
+          "prevType": "heading",
+          "prevTail": "3 Methods",
+          "nextI": 6,
+          "nextType": "body",
+          "nextHead": "3.1 Problem formulation Given a video of length T, X t is th"
+        },
+        {
+          "prevI": 6,
+          "prevType": "body",
+          "prevTail": "1) below: Y ̂ t = S θ (X t − 1, Y t − 1, X t) t ∈ [2, T] (1)",
+          "nextI": 7,
+          "nextType": "keywords",
+          "nextHead": "where Y ̂ t denotes the predicted object mask at t -th frame"
+        },
+        {
+          "prevI": 7,
+          "prevType": "keywords",
+          "prevTail": "h frame. X t − 1 ⊂ { X i | i ∈ [1, t − 1] } is the reference",
+          "nextI": 8,
+          "nextType": "body",
+          "nextHead": "frame set, which is a subset of all frames appearing before "
+        }
+      ],
+      "rows": [
+        {
+          "i": 0,
+          "type": "body",
+          "len": 752,
+          "text": "methods. OVOS [2] is the first online approach to exploit deep learning for the VOS problem, where a multi-stage training strategy is design to gradually shrink the focus of network from general objects to the one in reference masks. Subsequently, OnAVOS [9] improved the online learning process with an adaptive mechanism. MaskTrack [6] introduced extra static image data with mask annotation and employed data synthesized through affine transformation, to fine-tune the network before inference. All of these online methods require explicit parameter updating during inference. Although high performance can be achieved, these methods are usually time-consuming with a real-time FPS of less than 1, rendering them unfeasible for practical deployment.",
+          "endsWithoutTerminal": false,
+          "startsLowercaseOrDigit": true,
+          "nextI": 1,
+          "nextType": "body",
+          "nextStartsLowercaseOrDigit": false,
+          "labelish": false
+        },
+        {
+          "i": 1,
+          "type": "body",
+          "len": 1607,
+          "text": "On the other hand, there are a number of offline methods that are deliberately designed to learn generalized correspondence feature and they do not require a online learning process during inference time. RGMP [1] designed an hourglass structure with skip connections to predict the objective mask based on the current frame and previous information. S2S [11] proposed to model video object segmentation as a sequence-to-sequence problem and proceeds to exploit a temporal modeling module to enhance the temporal coherency of mask propagation. Other works like [8, 4] resorted to using state-of-the-art instance segmentation or tracking pipeline [12, 13] while attempting to design matching strategies to associate the mask over time. A few recent methods FEELVOS [7] and AGSS-VOS [3] mainly exploited the guidance from the initial reference and the last previous frame to enhance the segmentation accuracy with deliberately designed feature matching scheme or attention mechanism. STM [5] further optimized the feature matching process with external feature memory and an attention-based matching strategy. Compared with online methods, these offline approaches are more efficient. However, to learn more general and robust feature correspondence, these data-hungry methods may require backbones pretrained on extra data with mask annotations from other tasks such as instance segmentation [14] or saliency detection [15]. Without these auxiliary help, the methods might well be disrupted by distractions from similar objects in the video, which then propagates erroneous mask information to future frames.",
+          "endsWithoutTerminal": false,
+          "startsLowercaseOrDigit": false,
+          "nextI": 2,
+          "nextType": "heading",
+          "nextStartsLowercaseOrDigit": true,
+          "labelish": false
+        },
+        {
+          "i": 2,
+          "type": "heading",
+          "len": 21,
+          "text": "2.2 Cycle consistency",
+          "endsWithoutTerminal": true,
+          "startsLowercaseOrDigit": true,
+          "nextI": 3,
+          "nextType": "body",
+          "nextStartsLowercaseOrDigit": false,
+          "labelish": false
+        },
+        {
+          "i": 3,
+          "type": "body",
+          "len": 973,
+          "text": "Cycle consistency is widely researched in unsupervised and semi-supervised representation learning, where a transformation and its inverse operation are applied sequentially on input data, the consistency requires that the output representation should be close to the original input data in feature space. With this property, cycle consistency can be applied to different types of correspondence-related tasks. [16] combined patch-wise consistency with a weak tracker to construct a forward-backward data loop and this guides the network to learn representative feature across different time spans. [17] exploited the cycle consistency in unsupervised optical flow estimation by designing a bidirectional consensus loss during training. On the other hand Cycle-GAN [18] and Recycle-GAN [19] and other popular examples of how cyclic training can be utilized to learn non-trivial cross-domain mapping, yielding reliable image-to-image transformation across different domains.",
+          "endsWithoutTerminal": false,
+          "startsLowercaseOrDigit": false,
+          "nextI": 4,
+          "nextType": "body",
+          "nextStartsLowercaseOrDigit": false,
+          "labelish": false
+        },
+        {
+          "i": 4,
+          "type": "body",
+          "len": 357,
+          "text": "Our method with cyclic mechanism is different from the works mentioned above in two main aspects. First, we incorporate cycle consistency with network training in a fully supervised manner, without requiring large amounts of unlabeled data as [16]. Second, our cyclic structure is not only applicable during training, but also useful in the inference stage.",
+          "endsWithoutTerminal": false,
+          "startsLowercaseOrDigit": false,
+          "nextI": 5,
+          "nextType": "heading",
+          "nextStartsLowercaseOrDigit": true,
+          "labelish": false
+        },
+        {
+          "i": 5,
+          "type": "heading",
+          "len": 9,
+          "text": "3 Methods",
+          "endsWithoutTerminal": true,
+          "startsLowercaseOrDigit": true,
+          "nextI": 6,
+          "nextType": "body",
+          "nextStartsLowercaseOrDigit": true,
+          "labelish": true
+        },
+        {
+          "i": 6,
+          "type": "body",
+          "len": 426,
+          "text": "3.1 Problem formulation Given a video of length T, X t is the t -th frame (t ∈ [1, T]) in temporal sequential order, and Y t is its corresponding annotation mask. S θ is an object segmentation network parameterized by learnable weights θ. In terms of the sequential processing order of the video, the segmentation network should achieve the function as in Equation (1) below: Y ̂ t = S θ (X t − 1, Y t − 1, X t) t ∈ [2, T] (1)",
+          "endsWithoutTerminal": true,
+          "startsLowercaseOrDigit": true,
+          "nextI": 7,
+          "nextType": "keywords",
+          "nextStartsLowercaseOrDigit": true,
+          "labelish": false
+        },
+        {
+          "i": 7,
+          "type": "keywords",
+          "len": 113,
+          "text": "where Y ̂ t denotes the predicted object mask at t -th frame. X t − 1 ⊂ { X i | i ∈ [1, t − 1] } is the reference",
+          "endsWithoutTerminal": true,
+          "startsLowercaseOrDigit": true,
+          "nextI": 8,
+          "nextType": "body",
+          "nextStartsLowercaseOrDigit": true,
+          "labelish": false
+        },
+        {
+          "i": 8,
+          "type": "body",
+          "len": 312,
+          "text": "frame set, which is a subset of all frames appearing before objective frame X t. Similarly, Y t − 1 is a set containing reference object masks corresponding to the reference frames in X t − 1. However, in the semi-supervised setting, only the initial reference mask at the first frame is available. Therefore, in",
+          "endsWithoutTerminal": true,
+          "startsLowercaseOrDigit": true,
+          "nextI": null,
+          "nextType": null,
+          "nextStartsLowercaseOrDigit": false,
+          "labelish": false
+        }
+      ]
+    },
+    {
+      "page": 4,
+      "count": 12,
+      "typeCounts": {
+        "caption": 1,
+        "body": 6,
+        "keywords": 1,
+        "heading": 2,
+        "formula": 2
+      },
+      "labelishCount": 1,
+      "labelish": [
+        {
+          "i": 8,
+          "type": "formula",
+          "len": 7,
+          "text": "| Ω | ̂"
+        }
+      ],
+      "mergeCandidateCount": 2,
+      "mergeCandidates": [
+        {
+          "prevI": 1,
+          "prevType": "body",
+          "prevTail": "d mask Y ̂ t is used as the approximation of the reference ⋃",
+          "nextI": 2,
+          "nextType": "keywords",
+          "nextHead": "mask. Hence, we have Y ̂ t − 1 ⊂ { Y 1 } { Y i | i ∈ [2, t −"
+        },
+        {
+          "prevI": 8,
+          "prevType": "formula",
+          "prevTail": "| Ω | ̂",
+          "nextI": 9,
+          "nextType": "body",
+          "nextHead": "u ∈ Ω u ∈ Ω max(Y t,u, Y t,u) where Ω denotes the set of all"
+        }
+      ],
+      "rows": [
+        {
+          "i": 0,
+          "type": "caption",
+          "len": 253,
+          "text": "Figure 2: Overview of the proposed cyclic mechanism in both training and inference stages of the segmentation network. For simplicity, we take the situation where X t − 1 = { X 1 }, Y t − 1 = { Y 1 }, X ̂ t = { X t } and Y ̂ t = { Y ̂ t } as an example.",
+          "endsWithoutTerminal": false,
+          "startsLowercaseOrDigit": false,
+          "nextI": 1,
+          "nextType": "body",
+          "nextStartsLowercaseOrDigit": true,
+          "labelish": false
+        },
+        {
+          "i": 1,
+          "type": "body",
+          "len": 107,
+          "text": "the inference stage, the corresponding predicted mask Y ̂ t is used as the approximation of the reference ⋃",
+          "endsWithoutTerminal": true,
+          "startsLowercaseOrDigit": true,
+          "nextI": 2,
+          "nextType": "keywords",
+          "nextStartsLowercaseOrDigit": true,
+          "labelish": false
+        },
+        {
+          "i": 2,
+          "type": "keywords",
+          "len": 66,
+          "text": "mask. Hence, we have Y ̂ t − 1 ⊂ { Y 1 } { Y i | i ∈ [2, t − 1] }.",
+          "endsWithoutTerminal": false,
+          "startsLowercaseOrDigit": true,
+          "nextI": 3,
+          "nextType": "heading",
+          "nextStartsLowercaseOrDigit": true,
+          "labelish": false
+        },
+        {
+          "i": 3,
+          "type": "heading",
+          "len": 26,
+          "text": "3.2 Cycle consistency loss",
+          "endsWithoutTerminal": true,
+          "startsLowercaseOrDigit": true,
+          "nextI": 4,
+          "nextType": "body",
+          "nextStartsLowercaseOrDigit": false,
+          "labelish": false
+        },
+        {
+          "i": 4,
+          "type": "body",
+          "len": 409,
+          "text": "For the sake of mitigating error propagation during training, we incorporate the cyclical process into the offline training process to explicitly bridge the relationship between the initial reference and predicted masks. To be specific, as illustrated in Figure 2, after obtaining the predicted output mask Y ̂ t at frame t, we construct a cyclic reference set for frames and mask set, respectively denoted as",
+          "endsWithoutTerminal": true,
+          "startsLowercaseOrDigit": false,
+          "nextI": 5,
+          "nextType": "formula",
+          "nextStartsLowercaseOrDigit": false,
+          "labelish": false
+        },
+        {
+          "i": 5,
+          "type": "formula",
+          "len": 61,
+          "text": "X ̂ t ⊂ { X ̂ i | i ∈ [2, t] }, Y ̂ t ⊂ { Y i | i ∈ [2, t] }.",
+          "endsWithoutTerminal": false,
+          "startsLowercaseOrDigit": false,
+          "nextI": 6,
+          "nextType": "body",
+          "nextStartsLowercaseOrDigit": false,
+          "labelish": false
+        },
+        {
+          "i": 6,
+          "type": "body",
+          "len": 332,
+          "text": "With the cyclic reference set, we can obtain the prediction for the initial reference mask in the same manner as sequential processing: (̂) Y ̂ 1 = S θ X t, Y ̂ t, X 1 (2) Consequently, we apply mask reconstruction loss (in Equation 3) during supervision, optimizing on both the output t -th frame and the backward prediction Y ̂ 1.",
+          "endsWithoutTerminal": false,
+          "startsLowercaseOrDigit": false,
+          "nextI": 7,
+          "nextType": "body",
+          "nextStartsLowercaseOrDigit": false,
+          "labelish": false
+        },
+        {
+          "i": 7,
+          "type": "body",
+          "len": 322,
+          "text": "L cycle,t = L (Y ̂ t, Y t) + L (Y ̂ 1, Y 1) (3) In implementation, we utilize the combination of cross-entropy loss and mask IOU loss as supervision at both sides of the cyclic loop, which can be formulated as, ∑ () 1 ∑ ̂ u ∈ Ω min(Y t,u, Y t,u) L (Y ̂ t, Y t) = (1 − Y t,u) log(1 − Y ̂ t,u) + Y t,u log(Y ̂ t,u) − γ ∑ (4)",
+          "endsWithoutTerminal": true,
+          "startsLowercaseOrDigit": false,
+          "nextI": 8,
+          "nextType": "formula",
+          "nextStartsLowercaseOrDigit": false,
+          "labelish": false
+        },
+        {
+          "i": 8,
+          "type": "formula",
+          "len": 7,
+          "text": "| Ω | ̂",
+          "endsWithoutTerminal": true,
+          "startsLowercaseOrDigit": false,
+          "nextI": 9,
+          "nextType": "body",
+          "nextStartsLowercaseOrDigit": true,
+          "labelish": true
+        },
+        {
+          "i": 9,
+          "type": "body",
+          "len": 490,
+          "text": "u ∈ Ω u ∈ Ω max(Y t,u, Y t,u) where Ω denotes the set of all pixel coordinates in the mask while Y ̂ t,u and Y t,u are the normalized pixel values at coordinate u of the masks, γ is a hyperparameter to balance between the two loss components. It should also be noted that the cyclic mechanism in Figure 2 indirectly applies data augmentation on the training data by reversing the input clips in temporal order, helping the segmentation network to learn more general feature correspondences.",
+          "endsWithoutTerminal": false,
+          "startsLowercaseOrDigit": true,
+          "nextI": 10,
+          "nextType": "heading",
+          "nextStartsLowercaseOrDigit": true,
+          "labelish": false
+        },
+        {
+          "i": 10,
+          "type": "heading",
+          "len": 23,
+          "text": "3.3 Gradient correction",
+          "endsWithoutTerminal": true,
+          "startsLowercaseOrDigit": true,
+          "nextI": 11,
+          "nextType": "body",
+          "nextStartsLowercaseOrDigit": false,
+          "labelish": false
+        },
+        {
+          "i": 11,
+          "type": "body",
+          "len": 465,
+          "text": "After training with the cyclic loss as Equation (3), we can directly apply the offline model in the inference stage. However, inspired by the cyclic structure in training process, we can take the accurate initial reference mask as a measurement to evaluate the segmentation quality of current frame and proceed to refine the output results based on the evaluation results. In this way, we can explicitly reduce the effect of error propagation during inference time.",
+          "endsWithoutTerminal": false,
+          "startsLowercaseOrDigit": false,
+          "nextI": null,
+          "nextType": null,
+          "nextStartsLowercaseOrDigit": false,
+          "labelish": false
+        }
+      ]
+    },
+    {
+      "page": 5,
+      "count": 8,
+      "typeCounts": {
+        "body": 6,
+        "heading": 2
+      },
+      "labelishCount": 1,
+      "labelish": [
+        {
+          "i": 4,
+          "type": "heading",
+          "len": 13,
+          "text": "4 Experiments"
+        }
+      ],
+      "mergeCandidateCount": 1,
+      "mergeCandidates": [
+        {
+          "prevI": 4,
+          "prevType": "heading",
+          "prevTail": "4 Experiments",
+          "nextI": 5,
+          "nextType": "body",
+          "nextHead": "4.1 Experiment setup Datasets. We train and evaluate our met"
+        }
+      ],
+      "rows": [
+        {
+          "i": 0,
+          "type": "body",
+          "len": 1246,
+          "text": "To achieve this goal, we design a gradient correction block to update segmentation results iteratively as illustrated in Figure 2. Since only the initial mask Y 1 is available in inference stage, we apply the predicted mask Y ̂ t to infer the initial reference mask in the same manner as Equation (2), and we evaluate the segmentation quality of Y ̂ t with the loss function in Equation (4). Intuitively, a more accurate prediction mask Y ̂ t will result in a smaller reconstruction error for Y 1; therefore, the gradient descent method is adopted to refine the mask Y ̂ t. To be specific, we start from an output 0 mask Y ̂ ̂ t = Y t, and then update the mask for N iterations: (()) l ∂ L S θ { X t }, { Y ̂ t }, X 1, Y 1 l +1 l Y ̂ Y ̂ t = t − α (5) ∂ Y ̂ l t N where α is a predefined correction rate for mask update. After N iterations, we take the output Y ̂ t as the final segmentation. With this iterative refinement, we naturally extend the offline model to an online inference algorithm. However, the gradient correction approach can be time-consuming since it requires multiple times of network forward-backward pass. Due to this reason, we only apply gradient correction once per K frames to achieve good performance-runtime trade-off.",
+          "endsWithoutTerminal": false,
+          "startsLowercaseOrDigit": false,
+          "nextI": 1,
+          "nextType": "heading",
+          "nextStartsLowercaseOrDigit": true,
+          "labelish": false
+        },
+        {
+          "i": 1,
+          "type": "heading",
+          "len": 13,
+          "text": "3.4 Cycle-ERF",
+          "endsWithoutTerminal": true,
+          "startsLowercaseOrDigit": true,
+          "nextI": 2,
+          "nextType": "body",
+          "nextStartsLowercaseOrDigit": false,
+          "labelish": false
+        },
+        {
+          "i": 2,
+          "type": "body",
+          "len": 815,
+          "text": "The cyclic mechanism with gradient update in Equation (5) is not only helpful for the output mask refinement, but it also offers a new aspect of analyzing the region of interests of specific objects segmented by the pretrained network. In detail, we construct a reference set as X l = { X l } and Y l = { 0 } as the guidance, where 0 denotes an empty mask of the same size as X l but is filled with zeros. We take these references to predict objects at the t -th frame Y ̂ t. To this end, we can obtain the prediction loss L (Y ̂ t, Y t). To minimize this loss, we conduct the gradient correction process as in Equation (5) to gradually update the empty mask for M iterations. Finally, we take the ReLU function to preserve the positively activated areas of the objective mask as our final cycle-ERF representation.",
+          "endsWithoutTerminal": false,
+          "startsLowercaseOrDigit": false,
+          "nextI": 3,
+          "nextType": "body",
+          "nextStartsLowercaseOrDigit": true,
+          "labelish": false
+        },
+        {
+          "i": 3,
+          "type": "body",
+          "len": 304,
+          "text": "(̂) M cycle-ERF (Y l) = ReLU Y l (6) As we will show in our experiments, the cycle-ERF is capable of properly reflecting the support region of specific objects for the segmentation task. Through this analysis, the pretrained model can be shown to be particularly concentrated on certain objects in video.",
+          "endsWithoutTerminal": false,
+          "startsLowercaseOrDigit": true,
+          "nextI": 4,
+          "nextType": "heading",
+          "nextStartsLowercaseOrDigit": true,
+          "labelish": false
+        },
+        {
+          "i": 4,
+          "type": "heading",
+          "len": 13,
+          "text": "4 Experiments",
+          "endsWithoutTerminal": true,
+          "startsLowercaseOrDigit": true,
+          "nextI": 5,
+          "nextType": "body",
+          "nextStartsLowercaseOrDigit": true,
+          "labelish": true
+        },
+        {
+          "i": 5,
+          "type": "body",
+          "len": 787,
+          "text": "4.1 Experiment setup Datasets. We train and evaluate our method on two widely used benchmarks for semi-supervised video object segmentation, DAVIS17 [10] and Youtube-VOS [11]. DAVIS17 contains 120 video sequences in total with at most 10 objects in a video. The dataset is split into 60 sequences for training, 30 for validation and the other 30 for test. The Youtube-VOS is larger in scale and contains more object categories. There are a total of 3,471 video sequences for training and 474 videos for validation in this dataset with at most 12 objects in a video. Following the training procedure in [5, 7], we construct a hybrid training set by mixing the data from two training sets. Furthermore, we also report the results of other methods with Youtube-VOS pretraining if available.",
+          "endsWithoutTerminal": false,
+          "startsLowercaseOrDigit": true,
+          "nextI": 6,
+          "nextType": "body",
+          "nextStartsLowercaseOrDigit": false,
+          "labelish": false
+        },
+        {
+          "i": 6,
+          "type": "body",
+          "len": 558,
+          "text": "Metrics. For evaluation on DAVIS17 validation and test set, we adopt the metric following standard DAVIS evaluation protocol [10]. The Jaccard overlap J is adopted to evaluate the mean IOU between predicted and groundtruth masks. The contour F-score F computes the F-measurement in terms of the contour based precision and recall rate. The final score is obtained from the average value of J and F. The evaluation on Youtube-VOS follows the same protocol except that the two metrics are computed on seen and unseen objects respectively and averaged together.",
+          "endsWithoutTerminal": false,
+          "startsLowercaseOrDigit": false,
+          "nextI": 7,
+          "nextType": "body",
+          "nextStartsLowercaseOrDigit": false,
+          "labelish": false
+        },
+        {
+          "i": 7,
+          "type": "body",
+          "len": 389,
+          "text": "Baseline. We take the widely used Space Time Memory Network (STM) [5] as our baseline model due to its flexibility in adjusting the reference sets X t and Y t. However, since the original STM model involves too much external data and results in unfair comparison, we retrain our implemented model with only the training data in DAVIS17 and Youtube-VOS in all experiments. In order to adapt",
+          "endsWithoutTerminal": true,
+          "startsLowercaseOrDigit": false,
+          "nextI": null,
+          "nextType": null,
+          "nextStartsLowercaseOrDigit": false,
+          "labelish": false
+        }
+      ]
+    },
+    {
+      "page": 6,
+      "count": 11,
+      "typeCounts": {
+        "heading": 2,
+        "body": 5,
+        "figure-label": 2,
+        "caption": 2
+      },
+      "labelishCount": 2,
+      "labelish": [
+        {
+          "i": 0,
+          "type": "heading",
+          "len": 6,
+          "text": "Method"
+        },
+        {
+          "i": 6,
+          "type": "body",
+          "len": 55,
+          "text": "Extra data OL J S (%) J U (%) F S (%) F U (%) G (%) FPS"
+        }
+      ],
+      "mergeCandidateCount": 1,
+      "mergeCandidates": [
+        {
+          "prevI": 2,
+          "prevType": "heading",
+          "prevTail": "4.2 Main results",
+          "nextI": 3,
+          "nextType": "body",
+          "nextHead": "validation Extra data OL J (%) F (%) J & F (%) FPS X 64.8 68"
+        }
+      ],
+      "rows": [
+        {
+          "i": 0,
+          "type": "heading",
+          "len": 6,
+          "text": "Method",
+          "endsWithoutTerminal": true,
+          "startsLowercaseOrDigit": false,
+          "nextI": 1,
+          "nextType": "body",
+          "nextStartsLowercaseOrDigit": false,
+          "labelish": true
+        },
+        {
+          "i": 1,
+          "type": "body",
+          "len": 171,
+          "text": "RGMP [1] DMM-Net [8] AGSS-VOS [3] FEELVOS [7] Official STM [5] OnAVOS [9] PReMVOS [4] STM-cycle (Ours) STM-cycle+GC (Ours) Method Method with cyclic scheme as “STM-cycle”.",
+          "endsWithoutTerminal": false,
+          "startsLowercaseOrDigit": false,
+          "nextI": 2,
+          "nextType": "heading",
+          "nextStartsLowercaseOrDigit": true,
+          "labelish": false
+        },
+        {
+          "i": 2,
+          "type": "heading",
+          "len": 16,
+          "text": "4.2 Main results",
+          "endsWithoutTerminal": true,
+          "startsLowercaseOrDigit": true,
+          "nextI": 3,
+          "nextType": "body",
+          "nextStartsLowercaseOrDigit": true,
+          "labelish": false
+        },
+        {
+          "i": 3,
+          "type": "body",
+          "len": 288,
+          "text": "validation Extra data OL J (%) F (%) J & F (%) FPS X 64.8 68.6 66.7 3.6 X 68.1 73.3 70.7 X 64.9 69.9 67.4 10 X 69.1 74.0 71.5 2 X 79.2 84.3 81.8 6.3 X X 61.0 66.1 63.6 0.04 X X 73.9 81.7 77.8 0.03 68.7 74.7 71.7 38 X 69.3 75.3 72.3 9.3 test-dev Extra data OL J (%) F (%) J & F (%) FPS − 5",
+          "endsWithoutTerminal": true,
+          "startsLowercaseOrDigit": true,
+          "nextI": 4,
+          "nextType": "figure-label",
+          "nextStartsLowercaseOrDigit": false,
+          "labelish": false
+        },
+        {
+          "i": 4,
+          "type": "figure-label",
+          "len": 270,
+          "text": "RVOS [23] RGMP [1] AGSS-VOS [3] FEELVOS [7] OnAVOS [9] PReMVOS [4] STM-cycle (Ours) STM-cycle+GC (Ours) 48.0 52.6 50.3 22.7 X 51.3 54.4 52.8 2.4 X 54.8 59.7 57.2 10 X 55.2 60.5 57.8 1.8 X X 53.4 59.6 56.9 0.03 X X 67.5 75.7 71.6 0.02 55.1 60.5 57.8 31 X 55.3 62 58.6 6.9",
+          "endsWithoutTerminal": true,
+          "startsLowercaseOrDigit": false,
+          "nextI": 5,
+          "nextType": "caption",
+          "nextStartsLowercaseOrDigit": false,
+          "labelish": false
+        },
+        {
+          "i": 5,
+          "type": "caption",
+          "len": 262,
+          "text": "Table 1: Comparison with state-of-the-art method on DAVIS17 validation and test-dev set. “Extra data” indicates the method is pretrained with extra data with mask annotations. “OL” denotes online learning or update process. “GC” is short for gradient correction.",
+          "endsWithoutTerminal": false,
+          "startsLowercaseOrDigit": false,
+          "nextI": 6,
+          "nextType": "body",
+          "nextStartsLowercaseOrDigit": false,
+          "labelish": false
+        },
+        {
+          "i": 6,
+          "type": "body",
+          "len": 55,
+          "text": "Extra data OL J S (%) J U (%) F S (%) F U (%) G (%) FPS",
+          "endsWithoutTerminal": true,
+          "startsLowercaseOrDigit": false,
+          "nextI": 7,
+          "nextType": "figure-label",
+          "nextStartsLowercaseOrDigit": false,
+          "labelish": true
+        },
+        {
+          "i": 7,
+          "type": "figure-label",
+          "len": 545,
+          "text": "RVOS [23] S2S [11] RGMP [1] X DMM-Net [8] X AGSS-VOS [3] X Official STM [5] X S2S [11] OSVOS [2] X MaskTrack [6] X OnAVOS [9] X DMM-Net [8] X STM-cycle(Ours) STM-cycle+GC(Ours) 63.6 45.5 67.2 51.0 56.8 24 66.7 48.2 65.5 50.3 57.6 6 59.5 45.2 53.8 7 58.3 41.6 60.7 46.3 51.7 12 71.3 65.5 75.2 73.1 71.3 12.5 79.7 84.2 72.8 80.9 79.4 6.3 X 71.0 55.5 70.0 61.2 64.4 0.06 X 59.8 54.2 60.5 60.7 58.8 X 59.9 45.0 59.5 47.9 53.1 0.05 X 60.1 46.6 62.7 51.4 55.2 0.05 X 60.3 50.6 63.5 57.4 58.0 71.7 61.4 75.8 70.4 69.9 43 X 72.2 62.8 76.3 71.9 70.8 13.8",
+          "endsWithoutTerminal": true,
+          "startsLowercaseOrDigit": false,
+          "nextI": 8,
+          "nextType": "caption",
+          "nextStartsLowercaseOrDigit": false,
+          "labelish": false
+        },
+        {
+          "i": 8,
+          "type": "caption",
+          "len": 197,
+          "text": "Table 2: Comparison with state-of-the-art method on Youtube-VOS validation set. The subscript S and U denote the seen and unseen categories. G is the global mean. “-” indicates unavailable results.",
+          "endsWithoutTerminal": false,
+          "startsLowercaseOrDigit": false,
+          "nextI": 9,
+          "nextType": "body",
+          "nextStartsLowercaseOrDigit": true,
+          "labelish": false
+        },
+        {
+          "i": 9,
+          "type": "body",
+          "len": 1264,
+          "text": "to the time-consuming gradient correction process, we take the lightweight design by reducing the intermediate feature dimension, resizing the input to half of the original work and upsampling the output to original size by nearest interpolation. For ease of representation, we denote the one trained Implementation details. The training and inference procedures are deployed on an NVIDIA TITAN Xp GPU. Within an epoch, for each video sequence, we randomly sample 3 frames as the training samples; the frame with the smallest timestamp is regarded as the initial reference frame. Similar to [5], the maximum temporal interval of sampling increases by 5 every 20 training epochs. We set the hyperparameters as γ = 1. 0, N = 10, K = 5, and M = 50. The Resnet50 [20] pretrained on ImageNet [21] is adopted as our backbone in baseline. The network is trained with a batch size of 4 for 240 epochs in total and is optimized by the Adam optimizer [22] of learning rate 10 and β 1 = 0. 9, β 2 = 0. 999. In both training and inference stages, the input frames are resized to the resolution of 240 × 427. The final output is upsampled to the original resolution by nearest interpolation. For simplicity, we directly use X t and Y ̂ t to construct the cyclic reference sets.",
+          "endsWithoutTerminal": false,
+          "startsLowercaseOrDigit": true,
+          "nextI": 10,
+          "nextType": "body",
+          "nextStartsLowercaseOrDigit": false,
+          "labelish": false
+        },
+        {
+          "i": 10,
+          "type": "body",
+          "len": 195,
+          "text": "DAVIS17. The evaluation results on DAVIS17 validation and test-dev set are reported in Table 1. From this table, we observe that our model trained with cyclic loss outperforms most of the offline",
+          "endsWithoutTerminal": true,
+          "startsLowercaseOrDigit": false,
+          "nextI": null,
+          "nextType": null,
+          "nextStartsLowercaseOrDigit": false,
+          "labelish": false
+        }
+      ]
+    }
+  ]
+}

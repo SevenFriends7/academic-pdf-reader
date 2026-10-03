@@ -168,13 +168,30 @@ const exposed =
     // 段落快照是**节流合并**后同步给宿主的；测试里要确定性，直接手动冲一次
     flushArchiveSync: flushPendingArchiveSync,
     // 视觉分割：把模型判断应用到本页段落的真实实现
+    //  - applyVisionSegments：关闭视觉手术时的路径（只改类型/顺序/丢弃）
+    //  - applyVisionStructure / undoVisionStructure / visionSurgery：手术路径（真的合并/拆分）
     applyVisionSegments,
+    applyVisionStructure,
+    undoVisionStructure,
+    visionSurgery,
+    locateAnchorIndex,
+    isUsableVisionCache,
     requestVisionSegmentation,
     seedParagraphs: list => { currentParagraphs = list; },
+    // 本地未手术的原件（视觉手术每次都在这上面重放，撤销也回到它）
+    seedLocalParagraphs: (list, page) => {
+      localParagraphsSnapshot = list;
+      localParagraphsPage = Number.isFinite(page) ? page : 1;
+      currentParagraphs = list;
+    },
+    getLocalParagraphs: () => localParagraphsSnapshot,
     getParagraphs: () => currentParagraphs,
     seedPaperData: pd => { paperData = pd; },
+    seedVisionSurgery: on => { visionSurgeryAllowed = !!on; },
+    getVisionStructureCache: () => paperData.visionStructure,
     // 公式渲染：KaTeX 是页面里的全局（jsdom 里没加载脚本，由测试自己塞桩验证两条分支）
     renderInlineMarkdown,
+    renderEnTextHtml,
     renderCardFormulaHtml,
     seedMeta: opts => { if (opts && Number.isFinite(opts.totalPages)) totalPages = opts.totalPages; }
   };\n` +
@@ -328,6 +345,21 @@ console.log('\n[视觉分割：把模型的版面判断应用到本页段落]');
   const cached = postedMessages.some(m => m.type === 'syncVisionStructure' && String(m.page) === '1');
   check('视觉结果同步给宿主持久化', cached);
 
+  // v1 缓存（没有 version）必须判废：那批回包里没有 parts/group/inline，
+  // 套用只会得到"类型改了但段落边界没真的动过"，正是用户反馈"切分不准"的那种状态。
+  check(
+    'v1 缓存被判废（缺 version → 不可用）',
+    S.isUsableVisionCache({ model: 'x', at: 1, segments: [{ index: 0, type: 'body' }] }) === false
+  );
+  check(
+    'v2 缓存可用（version=2 + segments）',
+    S.isUsableVisionCache({ version: 2, segments: [{ index: 0, type: 'body' }] }) === true
+  );
+  check(
+    '用户撤销过本页的缓存不再自动套用',
+    S.isUsableVisionCache({ version: 2, disabled: true, segments: [{ index: 0, type: 'body' }] }) === false
+  );
+
   // 缓存命中时不应再发请求（由 requestVisionSegmentation 读取缓存分支保证）
   S.seedParagraphs([
     { id: 0, type: 'keywords', cleanText: 'X ̂ t ⊂ { X ̂ i | i ∈ [2, t] }.' },
@@ -339,13 +371,214 @@ console.log('\n[视觉分割：把模型的版面判断应用到本页段落]');
     translations: {},
     sentenceTranslations: {},
     aiQa: [],
-    visionStructure: { '1': { model: 'deepseek-flash', at: Date.now(), segments: [{ index: 0, type: 'formula_inline', order: 1, action: 'keep' }] } }
+    visionStructure: {
+      '1': { version: 2, model: 'deepseek-flash', at: Date.now(), segments: [{ index: 0, type: 'formula_inline', order: 1, action: 'keep' }] }
+    }
   });
   // 缓存命中分支在 await 之前就返回，所以这里不 await 也能同步看到效果
   // （这个脚本是 CommonJS，顶层不能出现 await）
+  S.seedVisionSurgery(false); // 这一段测的是"关闭手术"的老路径
   S.requestVisionSegmentation(1, { manual: false });
   check('已有缓存时直接套用、不再调 API', postedMessages.slice(beforeMsgs).every(m => m.type !== 'requestVisionSegmentation'));
   check('缓存套用后类型被改正', S.getParagraphs().find(p => p.id === 0).type === 'formula_inline');
+  S.seedVisionSurgery(true);
+}
+
+// ------------------------------------------------------------------ 视觉手术：真的合并 / 拆分
+console.log('\n[视觉手术：按模型判断合并续句、拆开"正文+公式+正文"、剔除图内文字]');
+{
+  const S = window.__SMOKE__;
+  // 与真实实现一致的分句器（下标必须与文本严格自洽，后面要验这一点）
+  const splitSents = t => {
+    const out = [];
+    const re = /[^.!?]+[.!?]*/g;
+    let m;
+    while ((m = re.exec(t)) !== null) {
+      const raw = m[0];
+      const body = raw.trim();
+      if (!body) continue;
+      const lead = raw.length - raw.trimStart().length;
+      out.push({ text: body, startIdx: m.index + lead, endIdx: m.index + lead + body.length });
+    }
+    return out;
+  };
+  let spanSeq = 0;
+  const mkPara = (id, type, text, translations) => {
+    const charMap = [];
+    for (let i = 0; i < text.length; i++) {
+      const span = { id: `s${spanSeq++}`, setAttribute() {} };
+      charMap.push({ span, offset: i });
+    }
+    const sentencesEn = splitSents(text);
+    return {
+      id,
+      type,
+      cleanText: text,
+      charMap,
+      rawSpans: charMap.map(c => c.span),
+      sentencesEn,
+      sentenceTranslations: Array.isArray(translations) ? translations : [],
+      translation: ''
+    };
+  };
+
+  // 一份"本地代码切歪了"的分段（症状与真实第 4 页一致）：
+  // 图注在图内文字之前、公式与正文混在一段、跨栏续句被切成两段、页码混进正文、行内公式是残渣
+  const local = [
+    mkPara(0, 'caption', 'Figure 2: Overview of the proposed framework for segmentation.'),
+    mkPara(1, 'body', 'Segmentation Network'),
+    mkPara(
+      2,
+      'body',
+      'L cycle,t = L (Y ̂ t, Y t) + L (Y ̂ 1, Y 1) (3) In implementation, we utilize the combination of two losses.'
+    ),
+    mkPara(
+      3,
+      'body',
+      'A related work fine-tunes deep network models on the initial object mask in the first frame to remember the appearance of the',
+      ['相关工作在首帧的目标掩码上微调深度网络，以记住']
+    ),
+    mkPara(4, 'body', 'target object [2,34,26,14,26,11,18] during the test time.', ['测试时间内的目标对象的外观']),
+    mkPara(5, 'body', 'PDF-4'),
+    mkPara(6, 'body', 'The set X ̂ t ⊂ { X ̂ i | i ∈ [2, t] } is defined as above, and we denote the loss by S θ.')
+  ];
+  S.seedVisionSurgery(true);
+  S.seedPaperData({ annotations: [], translations: {}, sentenceTranslations: {}, aiQa: [] });
+  S.seedLocalParagraphs(local.slice(), 1);
+
+  const visionResult = {
+    version: 2,
+    model: 'deepseek-flash',
+    fixes: '公式独立成段、续句合并、图内文字剔除',
+    segments: [
+      { index: 0, type: 'figure_caption', order: 1, group: 1, action: 'keep' },
+      { index: 1, type: 'figure', order: 2, group: 1, action: 'keep', why: '图内文字' },
+      {
+        index: 2,
+        type: 'body',
+        order: 3,
+        action: 'split',
+        why: '夹带式(3)',
+        parts: [
+          { type: 'formula', latex: '\\mathcal{L}_{cycle,t} = \\mathcal{L}(\\hat{Y}_t, Y_t) + \\mathcal{L}(\\hat{Y}_1, Y_1)' },
+          { type: 'body', at: 'In implementation, we utilize the combination' }
+        ]
+      },
+      { index: 3, type: 'body', order: 4, action: 'merge_next', why: '左栏末句续到右栏' },
+      { index: 4, type: 'body', order: 5, action: 'keep' },
+      { index: 5, type: 'page_number', order: 6, action: 'drop', why: '页码' },
+      { index: 6, type: 'body', order: 7, action: 'keep', inline: [{ find: 'X ̂ t', latex: '\\hat{X}_t' }] }
+    ]
+  };
+
+  const stat = S.applyVisionStructure(1, visionResult);
+  const after = S.getParagraphs();
+  const texts = after.map(p => p.cleanText);
+
+  check('拆开"正文+公式+正文"：出现独立公式段且带 LaTeX', after.some(p => p.type === 'formula' && p.visionLatex));
+  check(
+    '拆开后正文片从锚点处开始（锚点定位没跑偏）',
+    texts.some(t => t.indexOf('In implementation, we utilize the combination') === 0),
+    texts.find(t => t.indexOf('In implementation') === 0)
+  );
+  check(
+    '续句被合并成一段（半句不再是独立卡片）',
+    texts.some(t => /appearance of the target object \[2,34,26,14,26,11,18\] during the test time\.$/.test(t)),
+    texts.find(t => t.indexOf('appearance of') >= 0)
+  );
+  check('页码段标成 noise（卡片/翻译/导出都会跳过）', after.some(p => p.type === 'noise' && /PDF-4/.test(p.cleanText)));
+  check(
+    '图内文字被剔成 figure-label（不再被送去翻译）',
+    after.some(p => p.type === 'figure-label' && /Segmentation Network/.test(p.cleanText))
+  );
+  check(
+    '图注与图内文字排在一起',
+    (() => {
+      const i = after.findIndex(p => /Figure 2/.test(p.cleanText));
+      return i >= 0 && after[i + 1] && /Segmentation Network/.test(after[i + 1].cleanText);
+    })(),
+    after.map(p => `${p.type}:${p.cleanText.slice(0, 14)}`).join(' | ')
+  );
+  check('id 重新编号成 0..n-1（否则点左侧 PDF 会定位到别的段落）', after.every((p, i) => p.id === i), after.map(p => p.id).join(','));
+  check(
+    '不变量：cleanText 与 charMap 严格 1:1（切片精确的前提）',
+    after.every(p => p.cleanText.length === p.charMap.length),
+    after.map(p => `${p.cleanText.length}/${p.charMap.length}`).join(' ')
+  );
+  check(
+    '不变量：逐句下标与文本严格自洽（切完不会串句）',
+    after.every(p => (p.sentencesEn || []).every(s => p.cleanText.slice(s.startIdx, s.endIdx) === s.text))
+  );
+  check(
+    '合并时把"跨栏半句"真正拼成一句并保住原译文',
+    (() => {
+      const p = after.find(x => /appearance of the target object/.test(x.cleanText));
+      return !!p && p.sentenceTranslations.length === p.sentencesEn.length && p.sentenceTranslations.length > 0;
+    })(),
+    JSON.stringify((after.find(x => /appearance of the target object/.test(x.cleanText)) || {}).sentenceTranslations)
+  );
+  check('改动统计里合并/拆分都记到了', stat.stats && stat.stats.merged === 1 && stat.stats.split === 1, JSON.stringify(stat.stats));
+  check('改动摘要可读（给卡片区那行提示用）', /拆分 1 处/.test(stat.summary) && /合并 1 处/.test(stat.summary), stat.summary);
+
+  // 行内公式：只影响显示
+  const inlineHtml = S.renderEnTextHtml('The set X ̂ t ⊂ { X ̂ i | i ∈ [2, t] } is defined.', [
+    { find: 'X ̂ t', latex: '\\hat{X}_t' }
+  ]);
+  check(
+    '行内公式残渣被替换成公式（没有 KaTeX 时退回可读的 $...$）',
+    /vision-inline-math/.test(inlineHtml) && /\\hat\{X\}_t/.test(inlineHtml),
+    inlineHtml.slice(0, 160)
+  );
+  check('替换只动定位到的那几个字，其余原文原样保留', /The set /.test(inlineHtml) && /is defined\./.test(inlineHtml));
+  check(
+    '过长的 find（整句公式）不被采纳，避免"逐字替换"变成"整句重排"',
+    !/vision-inline-math/.test(
+      S.renderEnTextHtml('one two three four five six seven', [{ find: 'one two three four five', latex: 'A=B' }])
+    )
+  );
+  check(
+    '正文里的普通 $ 不被误当成公式',
+    !/md-math/.test(S.renderEnTextHtml('The price was $5 and $6 in total.', [])),
+    S.renderEnTextHtml('The price was $5 and $6 in total.', [])
+  );
+
+  // 卡片上确实出现了行内公式（走真实的 renderTranslationCards）
+  const katexCalls = [];
+  window.katex = {
+    renderToString(tex, opts) {
+      katexCalls.push({ tex, displayMode: !!(opts && opts.displayMode) });
+      return `<span class="katex">${tex}</span>`;
+    }
+  };
+  S.applyVisionStructure(1, visionResult);
+  const cardHtml = document.getElementById('transListContainer').innerHTML;
+  check('卡片里行内公式交给 KaTeX 渲染', /vision-inline-math/.test(cardHtml) && /class="katex"/.test(cardHtml));
+  check('公式段卡片渲染块级公式', katexCalls.some(c => /mathcal\{L\}_\{cycle,t\}/.test(c.tex) && c.displayMode === true));
+  delete window.katex;
+
+  // 幂等：手术永远在"本地原件"上重放，重复应用不会叠加
+  const twice = S.getParagraphs().map(p => `${p.type}|${p.cleanText}`).join('\n');
+  S.applyVisionStructure(1, visionResult);
+  check(
+    '重复应用视觉结果结果一致（幂等：不会把同一处拆分/合并叠加两次）',
+    S.getParagraphs().map(p => `${p.type}|${p.cleanText}`).join('\n') === twice,
+    `${S.getParagraphs().length} 段`
+  );
+  check('缓存里记下协议版本（v1 缓存据此判废）', ((S.getVisionStructureCache() || {})['1'] || {}).version === 2);
+
+  // 撤销：回到本地分段，并记住"本页别再自动套用"
+  const beforeUndoMsgs = postedMessages.length;
+  const undone = S.undoVisionStructure(1);
+  check('撤销本页视觉改动 → 恢复本地代码切出来的分段', undone === true && S.getParagraphs().length === local.length, `${S.getParagraphs().length} vs ${local.length}`);
+  check(
+    '撤销后文本与本地原件逐段一致（工整地回到原样）',
+    S.getParagraphs().map(p => p.cleanText).join('\n') === local.map(p => p.cleanText).join('\n')
+  );
+  check(
+    '撤销被记住（写进缓存 disabled，否则一缩放视觉结果又自动回来了）',
+    ((S.getVisionStructureCache() || {})['1'] || {}).disabled === true &&
+      postedMessages.slice(beforeUndoMsgs).some(m => m.type === 'syncVisionStructure' && m.structure && m.structure.disabled === true)
+  );
 }
 
 console.log('\n[数学公式渲染：KaTeX 本地打包，渲染失败也绝不吞掉公式]');

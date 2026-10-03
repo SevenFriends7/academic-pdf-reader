@@ -1,0 +1,646 @@
+{
+  "ok": true,
+  "generatedAt": "2026-10-03T08:46:26.549Z",
+  "model": "deepseek-flash",
+  "endpoint": "https://api.deepseek.com/v1",
+  "page": 4,
+  "image": {
+    "path": "D:\\kx\\上海交大\\academic-pdf-reader\\scratch\\vision\\p4_full.png",
+    "bytes": 398599,
+    "mime": "image/png"
+  },
+  "storeFile": "paper_1f6c2345c825e6b5dac7170135b540b1.json",
+  "promptChars": 4676,
+  "attempts": [
+    {
+      "round": 1,
+      "maxTokens": 8000,
+      "ms": 664,
+      "finishReason": "length",
+      "usage": {
+        "prompt_tokens": 2715,
+        "completion_tokens": 8000,
+        "total_tokens": 10715,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 8000
+        },
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 2715
+      },
+      "contentChars": 0,
+      "parsed": false,
+      "error": "空回答（content 为空，多半是推理吃光了预算）",
+      "reasoningChars": 26567
+    },
+    {
+      "round": 2,
+      "maxTokens": 16000,
+      "ms": 591,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 2715,
+        "completion_tokens": 7929,
+        "total_tokens": 10644,
+        "prompt_tokens_details": {
+          "cached_tokens": 2560
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 6868
+        },
+        "prompt_cache_hit_tokens": 2560,
+        "prompt_cache_miss_tokens": 155
+      },
+      "contentChars": 2728,
+      "parsed": true,
+      "error": null,
+      "reasoningChars": 22051
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 2715,
+    "completion_tokens": 7929,
+    "total_tokens": 10644,
+    "prompt_tokens_details": {
+      "cached_tokens": 2560
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 6868
+    },
+    "prompt_cache_hit_tokens": 2560,
+    "prompt_cache_miss_tokens": 155
+  },
+  "latencyMs": 591,
+  "finishReason": "stop",
+  "columns": 1,
+  "fixes": "图注与正文分离，把式(2)(3)(4)从段落中拆出，丢弃式(4)残片。",
+  "localSegments": [
+    {
+      "id": 0,
+      "type": "caption",
+      "cleanText": "Figure 2: Overview of the proposed cyclic mechanism in both training and inference stages of the segmentation network. For simplicity, we take the situation where X t − 1 = { X 1 }, Y t − 1 = { Y 1 }, X ̂ t = { X t } and Y ̂ t = { Y ̂ t } as an example."
+    },
+    {
+      "id": 1,
+      "type": "body",
+      "cleanText": "the inference stage, the corresponding predicted mask Y ̂ t is used as the approximation of the reference ⋃"
+    },
+    {
+      "id": 2,
+      "type": "keywords",
+      "cleanText": "mask. Hence, we have Y ̂ t − 1 ⊂ { Y 1 } { Y i | i ∈ [2, t − 1] }."
+    },
+    {
+      "id": 3,
+      "type": "heading",
+      "cleanText": "3.2 Cycle consistency loss"
+    },
+    {
+      "id": 4,
+      "type": "body",
+      "cleanText": "For the sake of mitigating error propagation during training, we incorporate the cyclical process into the offline training process to explicitly bridge the relationship between the initial reference and predicted masks. To be specific, as illustrated in Figure 2, after obtaining the predicted output mask Y ̂ t at frame t, we construct a cyclic reference set for frames and mask set, respectively denoted as"
+    },
+    {
+      "id": 5,
+      "type": "formula",
+      "cleanText": "X ̂ t ⊂ { X ̂ i | i ∈ [2, t] }, Y ̂ t ⊂ { Y i | i ∈ [2, t] }."
+    },
+    {
+      "id": 6,
+      "type": "body",
+      "cleanText": "With the cyclic reference set, we can obtain the prediction for the initial reference mask in the same manner as sequential processing: (̂) Y ̂ 1 = S θ X t, Y ̂ t, X 1 (2) Consequently, we apply mask reconstruction loss (in Equation 3) during supervision, optimizing on both the output t -th frame and the backward prediction Y ̂ 1."
+    },
+    {
+      "id": 7,
+      "type": "body",
+      "cleanText": "L cycle,t = L (Y ̂ t, Y t) + L (Y ̂ 1, Y 1) (3) In implementation, we utilize the combination of cross-entropy loss and mask IOU loss as supervision at both sides of the cyclic loop, which can be formulated as, ∑ () 1 ∑ ̂ u ∈ Ω min(Y t,u, Y t,u) L (Y ̂ t, Y t) = (1 − Y t,u) log(1 − Y ̂ t,u) + Y t,u log(Y ̂ t,u) − γ ∑ (4)"
+    },
+    {
+      "id": 8,
+      "type": "formula",
+      "cleanText": "| Ω | ̂"
+    },
+    {
+      "id": 9,
+      "type": "body",
+      "cleanText": "u ∈ Ω u ∈ Ω max(Y t,u, Y t,u) where Ω denotes the set of all pixel coordinates in the mask while Y ̂ t,u and Y t,u are the normalized pixel values at coordinate u of the masks, γ is a hyperparameter to balance between the two loss components. It should also be noted that the cyclic mechanism in Figure 2 indirectly applies data augmentation on the training data by reversing the input clips in temporal order, helping the segmentation network to learn more general feature correspondences."
+    },
+    {
+      "id": 10,
+      "type": "heading",
+      "cleanText": "3.3 Gradient correction"
+    },
+    {
+      "id": 11,
+      "type": "body",
+      "cleanText": "After training with the cyclic loss as Equation (3), we can directly apply the offline model in the inference stage. However, inspired by the cyclic structure in training process, we can take the accurate initial reference mask as a measurement to evaluate the segmentation quality of current frame and proceed to refine the output results based on the evaluation results. In this way, we can explicitly reduce the effect of error propagation during inference time."
+    }
+  ],
+  "rawResponse": {
+    "columns": 1,
+    "segments": [
+      {
+        "i": 0,
+        "type": "figure_caption",
+        "order": 1,
+        "group": 1,
+        "action": "keep",
+        "why": "图2题注",
+        "latex": null,
+        "inline": []
+      },
+      {
+        "i": 1,
+        "type": "body",
+        "order": 2,
+        "group": null,
+        "action": "keep",
+        "why": "正文段落",
+        "latex": null,
+        "inline": [
+          {
+            "find": "Y ̂ t",
+            "latex": "\\hat{Y}_t"
+          }
+        ]
+      },
+      {
+        "i": 2,
+        "type": "body",
+        "order": 3,
+        "group": null,
+        "action": "keep",
+        "why": "同段续文，含行内集合式",
+        "latex": null,
+        "inline": [
+          {
+            "find": "Y ̂ t − 1",
+            "latex": "\\mathcal{Y}_{t-1}"
+          },
+          {
+            "find": "Y i",
+            "latex": "Y_i"
+          },
+          {
+            "find": "{ Y 1 } { Y i | i ∈ [2, t − 1] }",
+            "latex": "\\{Y_1\\}\\cup\\{Y_i \\mid i \\in [2,t-1]\\}"
+          }
+        ]
+      },
+      {
+        "i": 3,
+        "type": "heading",
+        "order": 4,
+        "group": null,
+        "action": "keep",
+        "why": "小节标题",
+        "latex": null,
+        "inline": []
+      },
+      {
+        "i": 4,
+        "type": "body",
+        "order": 5,
+        "group": null,
+        "action": "keep",
+        "why": "正文段落",
+        "latex": null,
+        "inline": [
+          {
+            "find": "Y ̂ t",
+            "latex": "\\hat{Y}_t"
+          }
+        ]
+      },
+      {
+        "i": 5,
+        "type": "formula",
+        "order": 6,
+        "group": null,
+        "action": "keep",
+        "why": "段末行内集合定义式",
+        "latex": "\\hat{\\mathcal{X}}_t \\subset \\{\\hat{X}_i \\mid i \\in [2,t]\\},\\quad \\hat{\\mathcal{Y}}_t \\subset \\{\\hat{Y}_i \\mid i \\in [2,t]\\}",
+        "inline": []
+      },
+      {
+        "i": 6,
+        "type": "body",
+        "order": 7,
+        "group": null,
+        "action": "split",
+        "why": "正文夹带独立公式(2)",
+        "latex": null,
+        "parts": [
+          {
+            "type": "body",
+            "at": "With the cyclic reference set, we can obtain the prediction"
+          },
+          {
+            "type": "formula",
+            "at": "(̂) Y ̂ 1 = S θ X t, Y ̂ t, X 1 (2)",
+            "latex": "\\hat{Y}_1 = \\mathcal{S}_\\theta\\left(\\hat{\\mathcal{X}}_t, \\hat{\\mathcal{Y}}_t, X_1\\right)"
+          },
+          {
+            "type": "body",
+            "at": "Consequently, we apply mask reconstruction loss"
+          }
+        ],
+        "inline": []
+      },
+      {
+        "i": 7,
+        "type": "body",
+        "order": 8,
+        "group": null,
+        "action": "split",
+        "why": "夹带式(3)与式(4)",
+        "latex": null,
+        "parts": [
+          {
+            "type": "formula",
+            "at": "L cycle,t = L (Y ̂ t, Y t) + L (Y ̂ 1, Y 1) (3)",
+            "latex": "\\mathcal{L}_{cycle,t} = \\mathcal{L}(\\hat{Y}_t, Y_t) + \\mathcal{L}(\\hat{Y}_1, Y_1)"
+          },
+          {
+            "type": "body",
+            "at": "In implementation, we utilize the combination"
+          },
+          {
+            "type": "formula",
+            "at": "∑ () 1 ∑ ̂ u ∈ Ω min(Y t,u, Y t,u)",
+            "latex": "\\mathcal{L}(\\hat{Y}_t, Y_t) = \\frac{1}{|\\Omega|}\\sum_{u \\in \\Omega}\\left((1-Y_{t,u})\\log(1-\\hat{Y}_{t,u}) + Y_{t,u}\\log(\\hat{Y}_{t,u})\\right) - \\gamma \\frac{\\sum_{u \\in \\Omega}\\min(\\hat{Y}_{t,u}, Y_{t,u})}{\\sum_{u \\in \\Omega}\\max(\\hat{Y}_{t,u}, Y_{t,u})}"
+          }
+        ],
+        "inline": []
+      },
+      {
+        "i": 8,
+        "type": "noise",
+        "order": 9,
+        "group": null,
+        "action": "drop",
+        "why": "式(4)文本层残片，已并入i=7",
+        "latex": null,
+        "inline": []
+      },
+      {
+        "i": 9,
+        "type": "body",
+        "order": 10,
+        "group": null,
+        "action": "keep",
+        "why": "式(4)后正文段",
+        "latex": null,
+        "inline": [
+          {
+            "find": "Y ̂ t,u",
+            "latex": "\\hat{Y}_{t,u}"
+          },
+          {
+            "find": "Y t,u",
+            "latex": "Y_{t,u}"
+          }
+        ]
+      },
+      {
+        "i": 10,
+        "type": "heading",
+        "order": 11,
+        "group": null,
+        "action": "keep",
+        "why": "小节标题",
+        "latex": null,
+        "inline": []
+      },
+      {
+        "i": 11,
+        "type": "body",
+        "order": 12,
+        "group": null,
+        "action": "keep",
+        "why": "正文段落",
+        "latex": null,
+        "inline": []
+      }
+    ],
+    "fixes": "图注与正文分离，把式(2)(3)(4)从段落中拆出，丢弃式(4)残片。"
+  },
+  "checks": {
+    "numbering": {
+      "localCount": 12,
+      "returnedCount": 12,
+      "uniqueI": 12,
+      "duplicateI": [],
+      "missingI": [],
+      "extraI": [],
+      "orderIsPermutation": true,
+      "orderSequence": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12
+      ],
+      "orderMissingOrNonNumeric": 0,
+      "orderMissingI": [],
+      "orderDuplicate": [],
+      "illegalTypes": [],
+      "illegalActions": []
+    },
+    "anchors": {
+      "counts": {
+        "total": 6,
+        "exactStrict": 6,
+        "exactLoose": 0,
+        "fuzzy": 0,
+        "fail": 0,
+        "located": 6,
+        "locateRate": 1
+      },
+      "rows": [
+        {
+          "i": 6,
+          "partIndex": 0,
+          "anchor": "With the cyclic reference set, we can obtain the prediction",
+          "type": "body",
+          "method": "exact-strict",
+          "index": 0,
+          "fuzzyScore": null
+        },
+        {
+          "i": 6,
+          "partIndex": 1,
+          "anchor": "(̂) Y ̂ 1 = S θ X t, Y ̂ t, X 1 (2)",
+          "type": "formula",
+          "method": "exact-strict",
+          "index": 114,
+          "fuzzyScore": null
+        },
+        {
+          "i": 6,
+          "partIndex": 2,
+          "anchor": "Consequently, we apply mask reconstruction loss",
+          "type": "body",
+          "method": "exact-strict",
+          "index": 135,
+          "fuzzyScore": null
+        },
+        {
+          "i": 7,
+          "partIndex": 0,
+          "anchor": "L cycle,t = L (Y ̂ t, Y t) + L (Y ̂ 1, Y 1) (3)",
+          "type": "formula",
+          "method": "exact-strict",
+          "index": 0,
+          "fuzzyScore": null
+        },
+        {
+          "i": 7,
+          "partIndex": 1,
+          "anchor": "In implementation, we utilize the combination",
+          "type": "body",
+          "method": "exact-strict",
+          "index": 31,
+          "fuzzyScore": null
+        },
+        {
+          "i": 7,
+          "partIndex": 2,
+          "anchor": "∑ () 1 ∑ ̂ u ∈ Ω min(Y t,u, Y t,u)",
+          "type": "formula",
+          "method": "exact-strict",
+          "index": 167,
+          "fuzzyScore": null
+        }
+      ]
+    },
+    "groups": {
+      "groupCount": 1,
+      "groups": [
+        {
+          "group": "1",
+          "members": [
+            {
+              "i": 0,
+              "type": "figure_caption",
+              "order": 1,
+              "action": "keep"
+            }
+          ],
+          "hasCaption": true,
+          "hasFigureish": true,
+          "size": 1
+        }
+      ],
+      "segmentsWithGroup": 1,
+      "standAloneInGroup": [
+        "1"
+      ],
+      "captionButNoGroup": [],
+      "bboxPresent": []
+    },
+    "inline": {
+      "total": 7,
+      "found": 7,
+      "notFound": 0,
+      "rows": [
+        {
+          "i": 1,
+          "find": "Y ̂ t",
+          "latex": "\\hat{Y}_t",
+          "hasLatex": true,
+          "inCleanText": true,
+          "localExists": true,
+          "method": "exact-strict"
+        },
+        {
+          "i": 2,
+          "find": "Y ̂ t − 1",
+          "latex": "\\mathcal{Y}_{t-1}",
+          "hasLatex": true,
+          "inCleanText": true,
+          "localExists": true,
+          "method": "exact-strict"
+        },
+        {
+          "i": 2,
+          "find": "Y i",
+          "latex": "Y_i",
+          "hasLatex": true,
+          "inCleanText": true,
+          "localExists": true,
+          "method": "exact-strict"
+        },
+        {
+          "i": 2,
+          "find": "{ Y 1 } { Y i | i ∈ [2, t − 1] }",
+          "latex": "\\{Y_1\\}\\cup\\{Y_i \\mid i \\in [2,t-1]\\}",
+          "hasLatex": true,
+          "inCleanText": true,
+          "localExists": true,
+          "method": "exact-strict"
+        },
+        {
+          "i": 4,
+          "find": "Y ̂ t",
+          "latex": "\\hat{Y}_t",
+          "hasLatex": true,
+          "inCleanText": true,
+          "localExists": true,
+          "method": "exact-strict"
+        },
+        {
+          "i": 9,
+          "find": "Y ̂ t,u",
+          "latex": "\\hat{Y}_{t,u}",
+          "hasLatex": true,
+          "inCleanText": true,
+          "localExists": true,
+          "method": "exact-strict"
+        },
+        {
+          "i": 9,
+          "find": "Y t,u",
+          "latex": "Y_{t,u}",
+          "hasLatex": true,
+          "inCleanText": true,
+          "localExists": true,
+          "method": "exact-strict"
+        }
+      ],
+      "segmentsWithInline": [
+        1,
+        2,
+        4,
+        9
+      ]
+    },
+    "latex": {
+      "formulaSegments": [
+        5
+      ],
+      "formulaWithLatex": [
+        5
+      ],
+      "formulaMissingLatex": [],
+      "formulaParts": [
+        {
+          "i": 6,
+          "partIndex": 1,
+          "hasLatex": true,
+          "latex": "\\hat{Y}_1 = \\mathcal{S}_\\theta\\left(\\hat{\\mathcal{X}}_t, \\hat{\\mathcal{Y}}_t, X_1\\right)"
+        },
+        {
+          "i": 7,
+          "partIndex": 0,
+          "hasLatex": true,
+          "latex": "\\mathcal{L}_{cycle,t} = \\mathcal{L}(\\hat{Y}_t, Y_t) + \\mathcal{L}(\\hat{Y}_1, Y_1)"
+        },
+        {
+          "i": 7,
+          "partIndex": 2,
+          "hasLatex": true,
+          "latex": "\\mathcal{L}(\\hat{Y}_t, Y_t) = \\frac{1}{|\\Omega|}\\sum_{u \\in \\Omega}\\left((1-Y_{t,u})\\log(1-\\hat{Y}_{t,u}) + Y_{t,u}\\log(\\hat{Y}_{t,u})\\right) - \\gamma \\frac{\\sum_{u \\in \\Omega}\\min(\\hat{Y}_{t,u}, Y_{t,u})}{\\sum_{u \\in \\Omega}\\max(\\hat{Y}_{t,u}, Y_{t,u})}"
+        }
+      ],
+      "formulaPartsMissingLatex": []
+    },
+    "splitReview": [
+      {
+        "i": 6,
+        "localType": "body",
+        "cleanTextRaw": "With the cyclic reference set, we can obtain the prediction for the initial reference mask in the same manner as sequential processing: (̂) Y ̂ 1 = S θ X t, Y ̂ t, X 1 (2) Consequently, we apply mask reconstruction loss (in Equation 3) during supervision, optimizing on both the output t -th frame and the backward prediction Y ̂ 1.",
+        "visionEntry": {
+          "i": 6,
+          "type": "body",
+          "order": 7,
+          "group": null,
+          "action": "split",
+          "why": "正文夹带独立公式(2)",
+          "latex": null,
+          "parts": [
+            {
+              "type": "body",
+              "at": "With the cyclic reference set, we can obtain the prediction"
+            },
+            {
+              "type": "formula",
+              "at": "(̂) Y ̂ 1 = S θ X t, Y ̂ t, X 1 (2)",
+              "latex": "\\hat{Y}_1 = \\mathcal{S}_\\theta\\left(\\hat{\\mathcal{X}}_t, \\hat{\\mathcal{Y}}_t, X_1\\right)"
+            },
+            {
+              "type": "body",
+              "at": "Consequently, we apply mask reconstruction loss"
+            }
+          ],
+          "inline": []
+        }
+      },
+      {
+        "i": 7,
+        "localType": "body",
+        "cleanTextRaw": "L cycle,t = L (Y ̂ t, Y t) + L (Y ̂ 1, Y 1) (3) In implementation, we utilize the combination of cross-entropy loss and mask IOU loss as supervision at both sides of the cyclic loop, which can be formulated as, ∑ () 1 ∑ ̂ u ∈ Ω min(Y t,u, Y t,u) L (Y ̂ t, Y t) = (1 − Y t,u) log(1 − Y ̂ t,u) + Y t,u log(Y ̂ t,u) − γ ∑ (4)",
+        "visionEntry": {
+          "i": 7,
+          "type": "body",
+          "order": 8,
+          "group": null,
+          "action": "split",
+          "why": "夹带式(3)与式(4)",
+          "latex": null,
+          "parts": [
+            {
+              "type": "formula",
+              "at": "L cycle,t = L (Y ̂ t, Y t) + L (Y ̂ 1, Y 1) (3)",
+              "latex": "\\mathcal{L}_{cycle,t} = \\mathcal{L}(\\hat{Y}_t, Y_t) + \\mathcal{L}(\\hat{Y}_1, Y_1)"
+            },
+            {
+              "type": "body",
+              "at": "In implementation, we utilize the combination"
+            },
+            {
+              "type": "formula",
+              "at": "∑ () 1 ∑ ̂ u ∈ Ω min(Y t,u, Y t,u)",
+              "latex": "\\mathcal{L}(\\hat{Y}_t, Y_t) = \\frac{1}{|\\Omega|}\\sum_{u \\in \\Omega}\\left((1-Y_{t,u})\\log(1-\\hat{Y}_{t,u}) + Y_{t,u}\\log(\\hat{Y}_{t,u})\\right) - \\gamma \\frac{\\sum_{u \\in \\Omega}\\min(\\hat{Y}_{t,u}, Y_{t,u})}{\\sum_{u \\in \\Omega}\\max(\\hat{Y}_{t,u}, Y_{t,u})}"
+            }
+          ],
+          "inline": []
+        }
+      }
+    ]
+  },
+  "summary": {
+    "numberingOk": true,
+    "orderOk": true,
+    "anchorCount": 6,
+    "anchorLocated": 6,
+    "anchorFailed": 0,
+    "anchorRate": 1,
+    "exactStrict": 6,
+    "exactLoose": 0,
+    "fuzzy": 0,
+    "splitCount": 2,
+    "groupCount": 1,
+    "inlineCount": 7,
+    "inlineFound": 7,
+    "formulaMissingLatex": [],
+    "bboxPresent": [],
+    "totalMs": 67957
+  },
+  "consoleNotes": {
+    "anchorFidelity": "6 个锚点全部 exact-strict，且逐字符等于文本层原文（连 \")(\" + U+0302 这种残渣顺序都照抄），说明 100% 定位率证明的是\"模型愿意照抄文本层写法\"；本页没有出现\"模型改用图像排版写法\"的硬骨头。",
+    "columns": "回包 columns=1；本页图像实为分栏页面（大图在栏内、题注整宽），该值不可信，且没有任何产品代码消费它 → 建议删字段。",
+    "groupCoverage": "本页文本层只有 1 条段落在图区域内（[0] 图注），图内标签（Segmentation Network / Loss 等）根本没进文本层，因此\"图内文字 + 图注同组\"这条只得到单元素 group，属覆盖不足，不能算验证通过。",
+    "splitSurgery": "i=6/i=7 的 6 个锚点全部可精确定位，说明 split 手术点可用；但唯一需要\"处理已存在独立公式段\"的 [8] 走的是 drop + 并入 i=7，说明模型会用 drop 绕开 group 归并。",
+    "mergeNextNotUsed": "本页真正该合并的两段 [1]+[2]（\"the inference stage...\" 与 \"mask. Hence, ...\"）模型都给了 keep，未触发 merge_next。"
+  }
+}

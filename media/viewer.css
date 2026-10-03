@@ -3519,6 +3519,54 @@ body.theme-paper-dark .article-section-zh {
   margin-bottom: 8px;
   cursor: help;
 }
+
+/* 视觉分割的状态条：进度 / 改动摘要 / 「撤销本页视觉改动」按钮。
+   （1.1.0 起就在用 .vision-status-badge 这个类名，但一直没写样式，等于裸 div。） */
+.vision-status-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-secondary, var(--text-muted));
+  background: var(--bg-secondary, rgba(148, 163, 184, 0.1));
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 5px 10px;
+  margin-bottom: 8px;
+}
+.vision-status-badge .vision-status-text {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.vision-status-badge.vision-status-error {
+  color: var(--danger, #ef4444);
+  border-color: var(--danger, #ef4444);
+}
+.vision-status-badge .vision-status-action {
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  font-family: inherit;
+  color: var(--text-primary, inherit);
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.vision-status-badge .vision-status-action:hover {
+  border-color: var(--accent-color, #0b578a);
+  color: var(--accent-color, #0b578a);
+}
+
+/* 行内公式（视觉模型把文本层残渣转写成 LaTeX，只影响显示） */
+.vision-inline-math {
+  padding: 0 1px;
+}
+.vision-inline-math .md-math-fallback {
+  font-size: 0.92em;
+}
 .sentence-pair-list.en-only .sentence-pair-row {
   opacity: 0.85;
 }

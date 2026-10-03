@@ -1,0 +1,354 @@
+{
+  "ok": true,
+  "generatedAt": "2026-10-03T08:54:54.333Z",
+  "page": 2,
+  "model": "deepseek-flash",
+  "endpoint": "https://api.deepseek.com/v1",
+  "image": {
+    "path": "D:\\kx\\上海交大\\academic-pdf-reader\\scratch\\vision\\cycle_p2_full.png",
+    "bytes": 579557
+  },
+  "storeFile": "paper_1f6c2345c825e6b5dac7170135b540b1.json",
+  "promptChars": 5655,
+  "attempts": [
+    {
+      "round": 1,
+      "maxTokens": 16000,
+      "ms": 712,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 2707,
+        "completion_tokens": 2748,
+        "total_tokens": 5455,
+        "prompt_tokens_details": {
+          "cached_tokens": 2560
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 2360
+        },
+        "prompt_cache_hit_tokens": 2560,
+        "prompt_cache_miss_tokens": 147
+      },
+      "reasoningChars": 9117,
+      "contentChars": 1096,
+      "parsed": true,
+      "error": null
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 2707,
+    "completion_tokens": 2748,
+    "total_tokens": 5455,
+    "prompt_tokens_details": {
+      "cached_tokens": 2560
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 2360
+    },
+    "prompt_cache_hit_tokens": 2560,
+    "prompt_cache_miss_tokens": 147
+  },
+  "latencyMs": 712,
+  "fixes": "图1题注归入图的组，并把2.1节标题从正文中拆出。",
+  "localSegments": [
+    {
+      "id": 0,
+      "type": "caption",
+      "cleanText": "Figure 1: An example of error propagation risk during the inference time."
+    },
+    {
+      "id": 1,
+      "type": "body",
+      "cleanText": "background camel will serve as erroneous guidance to future frames. Consequently the algorithm will gradually focus on both the foreground and background objects in upcoming new frames."
+    },
+    {
+      "id": 2,
+      "type": "body",
+      "cleanText": "Based on these observations, in this paper, we propose to train and apply a segmentation network in cyclical fashion. In contrast to the predicted reference masks, the initial reference mask provided in the starting frame is always perfectly accurate and reliable (under semi-supervised mode). This inspires us to explicitly bridge the relationship between the initial reference mask and objective frame by taking the first reference mask as a measurement of prediction. This way, we can further refine the intermediate mask prediction and guide the network to learn more robust feature representation of cross frame correspondence, which is less prone to background distractors."
+    },
+    {
+      "id": 3,
+      "type": "body",
+      "cleanText": "In this work, we apply a forward-backward data flow to form a cyclical structure, and train our segmentation network at both the objective frame and starting frame to help our model learn more robust correspondence relationship between predictions and the initial reference mask. Further to this, at the inference stage, we design a gradient correction module to selectively refine the predicted mask based on the gradient backward from the starting frame. In this way, we are able to naturally extend the offline trained model to an online scheme with marginal increase in time latency. Furthermore, we train our model under such cyclic consistency constraint without additional annotated data from other tasks. The trained models are evaluated in both online and offline schemes on common object segmentation benchmarks: DAVIS17 [10] and Youtube-VOS [11], in which we achieve results that are competitive to other state-of-the-art methods while keeping the efficiency on par with most offline approaches."
+    },
+    {
+      "id": 4,
+      "type": "body",
+      "cleanText": "Additionally, inspired by the process of gradient correction, we develop a new receptive field visualization method called cycle effective receptive field (cycle-ERF), which gradually updates an empty objective mask to show the strong response area w.r.t. the reference mask. In our experiments, we utilize the cycle-ERF to analyze how the cyclic training scheme affects the support regions of objects. This visualization method provides a fresh perspective for analyzing how the segmentation network extracts regions of interests from guidance masks."
+    },
+    {
+      "id": 5,
+      "type": "body",
+      "cleanText": "In a nutshell, the contribution of this paper can be summarized as follows: • We incorporate cycle consistency into the training process of a semi-supervised video object segmentation network to mitigate the error propagation problem. We achieved competitive results on mainstream benchmarks. • We design a gradient correction module to extend the offline segmentation network to an online approach, which boosts the model performance with marginal increase in computation cost. • We develop cycle-ERF, a new visualization method to analyze the important regions for object mask prediction which offers explainability on the impact of cyclic training."
+    },
+    {
+      "id": 6,
+      "type": "heading",
+      "cleanText": "2 Related works"
+    },
+    {
+      "id": 7,
+      "type": "body",
+      "cleanText": "2.1 Semi-supervised video object segmentation Semi-supervised video object segmentation has been widely researched in recent years with the rapid development of deep learning techniques. Depending on the presence of a learning process during inference stage, the segmentation algorithms can be generally divided into online methods and offline"
+    }
+  ],
+  "rawResponse": {
+    "segments": [
+      {
+        "i": 0,
+        "type": "figure_caption",
+        "order": 1,
+        "group": 1,
+        "action": "keep",
+        "why": "图1题注，归属该图",
+        "latex": null,
+        "parts": [],
+        "inline": []
+      },
+      {
+        "i": 1,
+        "type": "body",
+        "order": 2,
+        "group": null,
+        "action": "keep",
+        "why": "上页续段，本页无前段可并",
+        "latex": null,
+        "parts": [],
+        "inline": []
+      },
+      {
+        "i": 2,
+        "type": "body",
+        "order": 3,
+        "group": null,
+        "action": "keep",
+        "why": "完整正文段",
+        "latex": null,
+        "parts": [],
+        "inline": []
+      },
+      {
+        "i": 3,
+        "type": "body",
+        "order": 4,
+        "group": null,
+        "action": "keep",
+        "why": "完整正文段",
+        "latex": null,
+        "parts": [],
+        "inline": []
+      },
+      {
+        "i": 4,
+        "type": "body",
+        "order": 5,
+        "group": null,
+        "action": "keep",
+        "why": "完整正文段",
+        "latex": null,
+        "parts": [],
+        "inline": []
+      },
+      {
+        "i": 5,
+        "type": "body",
+        "order": 6,
+        "group": null,
+        "action": "keep",
+        "why": "含项目符号的贡献列表段",
+        "latex": null,
+        "parts": [],
+        "inline": []
+      },
+      {
+        "i": 6,
+        "type": "heading",
+        "order": 7,
+        "group": null,
+        "action": "keep",
+        "why": "一级节标题",
+        "latex": null,
+        "parts": [],
+        "inline": []
+      },
+      {
+        "i": 7,
+        "type": "heading",
+        "order": 8,
+        "group": null,
+        "action": "split",
+        "why": "小节标题与正文粘连",
+        "latex": null,
+        "parts": [
+          {
+            "type": "heading",
+            "at": "2.1 Semi-supervised video object segmentation"
+          },
+          {
+            "type": "body",
+            "at": "Semi-supervised video object"
+          }
+        ],
+        "inline": []
+      }
+    ],
+    "fixes": "图1题注归入图的组，并把2.1节标题从正文中拆出。"
+  },
+  "checks": {
+    "numbering": {
+      "localCount": 8,
+      "returnedCount": 8,
+      "uniqueI": 8,
+      "missingI": [],
+      "duplicateI": [],
+      "extraI": [],
+      "orderSequence": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8
+      ],
+      "orderIsSequence": true
+    },
+    "groups": {
+      "groupCount": 1,
+      "groups": [
+        {
+          "group": "1",
+          "size": 1,
+          "members": [
+            {
+              "i": 0,
+              "type": "figure_caption",
+              "order": 1,
+              "action": "keep",
+              "head": "Figure 1: An example of error "
+            }
+          ],
+          "hasCaption": true,
+          "types": [
+            "figure_caption"
+          ]
+        }
+      ],
+      "singletons": [
+        "1"
+      ],
+      "typeCounts": [
+        {
+          "group": "1",
+          "size": 1,
+          "typeCounts": {
+            "figure_caption": 1
+          }
+        }
+      ],
+      "captionWithoutGroup": [],
+      "bboxPresent": [],
+      "columnsPresent": 0
+    },
+    "mergeNext": {
+      "count": 0,
+      "rows": [],
+      "keepButLooksLikeContinuation": [
+        {
+          "i": 1,
+          "startsLowercaseOrDigit": true,
+          "head": "background camel will serve as erroneous guidance "
+        },
+        {
+          "i": 6,
+          "startsLowercaseOrDigit": true,
+          "head": "2 Related works"
+        }
+      ],
+      "adjacentCandidates": [
+        {
+          "prevI": 6,
+          "prevType": "heading",
+          "prevAction": "keep",
+          "prevTail": "2 Related works",
+          "nextI": 7,
+          "nextType": "heading",
+          "nextAction": "split",
+          "nextHead": "2.1 Semi-supervised video object segmentation Semi-supervise",
+          "modelMarkedMergeNext": false
+        }
+      ]
+    },
+    "anchors": {
+      "counts": {
+        "total": 2,
+        "exactStrict": 2,
+        "exactLoose": 0,
+        "fuzzy": 0,
+        "fail": 0,
+        "absent": 0,
+        "located": 2,
+        "locateRate": 1
+      },
+      "rows": [
+        {
+          "i": 7,
+          "partIndex": 0,
+          "anchor": "2.1 Semi-supervised video object segmentation",
+          "type": "heading",
+          "method": "exact-strict",
+          "fuzzyScore": null
+        },
+        {
+          "i": 7,
+          "partIndex": 1,
+          "anchor": "Semi-supervised video object",
+          "type": "body",
+          "method": "exact-strict",
+          "fuzzyScore": null
+        }
+      ]
+    },
+    "inline": {
+      "total": 0,
+      "found": 0,
+      "notFound": 0,
+      "overLimit": 0,
+      "lenMin": null,
+      "lenMax": null,
+      "lenMedian": null,
+      "rows": []
+    }
+  },
+  "summary": {
+    "numberingOk": true,
+    "groupCount": 1,
+    "singletonGroups": [
+      "1"
+    ],
+    "captionWithoutGroup": [],
+    "mergeNextCount": 0,
+    "keepButLooksLikeContinuation": 2,
+    "anchorCount": 2,
+    "anchorLocated": 2,
+    "anchorFailed": 0,
+    "anchorRate": 1,
+    "inlineCount": 0,
+    "inlineFound": 0,
+    "inlineOverLimit": 0,
+    "bboxPresent": [],
+    "columnsPresent": 0,
+    "totalMs": 12347
+  },
+  "consoleNotes": {
+    "task": "任务 A merge_next（cycle.pdf 第 2 页，真调 API）",
+    "quotedPairNotInArchive": "父 agent 引用的那对样本（\"A related work fine-tunes … appearance of the\" / \"target object [2,34,26,14,26,11,18] during the test time.\"）**不在 cycle.pdf 归档里**：cycle 存档关键词命中 0 次；该措辞出现在 scratch/llm-test/viewer-unit.js:1031 的单元测试夹具里，另外 STM 存档里有一条用户批注用了极相似的句式（annotations 字段，非分段）。真实的 cycle 第 2 页是**单栏**页（图像已核对），无该文本。",
+    "mergeNextVerdict": "两次同样的提示词跑同一页，结果不同：第 1 次给 i=1 action=merge_next（why=\"小写起首，上页续句\"），第 2 次给 i=1 action=keep（why=\"上页续段，本页无前段可并\"）。口径上 merge_next 的语义是\"本段是**下一段**的续句\"，而 i=1 的下一段 [2] 以大写 \"Based on these observations\" 开头 → 第 1 次那次是**假阳性**（模型想表达的是\"续自上一页\"）。第 2 次的判断才是语义正确的，而且\"本页无前段可并\"这个理由说明它分得清\"跨页续接\"和\"merge_next\"。",
+    "runToRunVariance": "temperature=0 下同一提示词同一页两次回包不一致（merge_next 1 次 vs 0 次），这是协议稳定性上的真实噪声，落地时要有兜底。",
+    "trueCandidateMissed": "规则真值候选只有 1 对：[6]\"2 Related works\"(heading) → [7]\"2.1 Semi-supervised…\"——但 [6] 是标题，merge_next 对它本来就不适用（模型给 keep 是对的，属规则字面 vs 语义的边界情形）。真正该并的同句续接对：[1] 续自**上一页**、[7] 续到**下一页**（第 3 页 [0] 以 \"methods. OVOS [2] …\" 开头），都跨页，本页内无可并对象。",
+    "splitBonus": "模型额外把 [7] 拆成 heading(\"2.1 Semi-supervised video object segmentation\") + body(\"Semi-supervised video object…\")，两片类型与锚点均正确。",
+    "anchors": "2/2 精确命中（均在 [7] 的 parts 里），0 模糊 0 失败。",
+    "inline": "0 条（该页正文没有需要替换的行内公式残渣），符合\"没有就给空数组\"。"
+  }
+}

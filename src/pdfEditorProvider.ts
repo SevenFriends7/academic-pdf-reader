@@ -131,7 +131,9 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
               // 版面分割引擎要在首屏渲染前就位，否则设成 local 的用户也会被发一次视觉请求
               segmentationEngine: vscode.workspace
                 .getConfiguration('academicReader')
-                .get<string>('segmentationEngine', 'vision')
+                .get<string>('segmentationEngine', 'vision'),
+              // 视觉结果能不能真的改写分段（合并/拆分）：默认允许，关掉 = 只改类型/顺序/丢弃
+              visionSurgery: vscode.workspace.getConfiguration('academicReader').get<boolean>('visionSurgery', true)
             });
           } catch (err: any) {
             vscode.window.showErrorMessage(`加载 PDF 失败: ${err.message}`);
@@ -381,6 +383,8 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
             answerStyle: cfg.get<string>('aiAnswerStyle', 'standard'),
             // 版面分割引擎：webview 据此决定是否请视觉模型判断本页结构
             segmentationEngine: cfg.get<string>('segmentationEngine', 'vision'),
+            // 视觉手术开关（真的按模型判断合并/拆分段落）
+            visionSurgery: cfg.get<boolean>('visionSurgery', true),
             visionModel: cfg.get<string>('visionModel', ''),
             engineTag: this.engineTag(),
             available,
@@ -1087,7 +1091,7 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
           </div>
           <div style="display: flex; align-items: center; gap: 4px;">
             <!-- 视觉重排本页：把本页图像 + 本地分段编号交给视觉模型，由它判断类型/顺序（坐标仍来自文本层） -->
-            <button id="visionRestructureBtn" class="btn-secondary btn-vision-restructure" title="请视觉模型重新判断本页版面（哪些是正文/图注/公式、阅读顺序）——坐标仍来自文本层，划线不受影响">
+            <button id="visionRestructureBtn" class="btn-secondary btn-vision-restructure" title="请视觉模型重新判断本页版面：哪些是正文/图注/图内文字/公式、阅读顺序如何，以及哪两段本是一段（跨栏被切开）、哪一段里混着正文+公式+正文。代码据此真的合并/拆分，改错了可以「撤销本页视觉改动」。坐标仍来自本地文本层，划线不受影响">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
               视觉重排
             </button>

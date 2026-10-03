@@ -84,6 +84,20 @@
    * 把引擎设成 local 的用户也会在首屏被发一次视觉请求（真实会踩到）。
    */
   let visionEngine = 'local';
+  /**
+   * 是否允许视觉结果**真的改写分段**（合并/拆分），由宿主下发 academicReader.visionSurgery。
+   * 关掉就退化成 1.2.0 的行为：只改类型/顺序/丢弃。
+   */
+  let visionSurgeryAllowed = true;
+  /**
+   * 当前页**本地代码切出来的原件**（还没做过视觉手术的那一份）。
+   *
+   * 为什么必须留着它：视觉结果永远在它之上重放，所以翻页回来、缩放重渲染、
+   * 手动点「视觉重排」都是幂等的 —— 否则第二次会把同一处合并/拆分再叠加一遍。
+   * 它也是「撤销本页视觉改动」要恢复的目标。
+   */
+  let localParagraphsSnapshot = null;
+  let localParagraphsPage = 0;
   /** 待同步给宿主的段落快照（按页合并 + 节流，见 syncPageArchive） */
   const pendingArchiveSync = new Map();
   let archiveSyncTimer = null;
@@ -658,6 +672,8 @@
         }
         // 版面分割引擎要在第一次 renderPage 之前就位（renderPage 会据此决定是否请视觉）
         if (msg.segmentationEngine) visionEngine = msg.segmentationEngine;
+        // 视觉结果能不能真的改写分段（合并/拆分）：默认允许，宿主可关
+        visionSurgeryAllowed = msg.visionSurgery !== false;
         if (msg.paperData) {
           paperData = msg.paperData;
           // AI 答疑记录随论文数据一起回来（旧版没有这个字段）
@@ -762,34 +778,39 @@
         visionPending.delete(Number(msg.page));
         if (Number(msg.page) !== currentPage) {
           // 用户已经翻页了：结果仍缓存下来（钱已经花了），下次回到这页直接用
-          paperData.visionStructure = paperData.visionStructure || {};
-          if (msg.result) {
-            paperData.visionStructure[String(msg.page)] = {
-              model: msg.result.model || '',
-              at: Date.now(),
-              columns: msg.result.columns,
-              fixes: msg.result.fixes || '',
-              segments: msg.result.segments || []
-            };
-            vscode.postMessage({
-              type: 'syncVisionStructure',
-              page: Number(msg.page),
-              structure: paperData.visionStructure[String(msg.page)]
-            });
-          }
+          if (msg.result) cacheVisionStructure(Number(msg.page), msg.result);
           break;
         }
         {
-          const stat = applyVisionSegments(Number(msg.page), msg.result || {});
-          const model = (msg.result && msg.result.model) || '视觉模型';
-          const fixes = (msg.result && msg.result.fixes) || '';
+          const page = Number(msg.page);
+          const result = msg.result || {};
+          const model = result.model || '视觉模型';
+          const fixes = result.fixes || '';
+          // 视觉手术默认开：真的按模型的判断合并/拆分。关掉时退化成"只改类型/顺序/丢弃"。
+          let applied;
+          try {
+            applied = visionSurgeryAllowed ? applyVisionStructure(page, result) : applyVisionSegments(page, result);
+          } catch (e) {
+            // 手术出任何异常都不能让用户只剩一屏半成品：退回"只改类型"的老路径再试一次
+            console.error('[Viewer] 视觉手术失败，回退到只改类型:', e);
+            try {
+              applied = applyVisionSegments(page, result);
+            } catch (e2) {
+              showVisionBadge(`视觉结果应用失败：${(e2 && e2.message) || e2}`, 'error');
+              break;
+            }
+          }
+          const summary = applied.summary || `校正 ${applied.changed} 处`;
           showVisionBadge(
-            `视觉重排完成：${model} 判断 ${stat.applied} 段，校正 ${stat.changed} 处${fixes ? ` · ${fixes}` : ''}`
+            `视觉重排完成：${model} 判断 ${applied.applied} 段 · ${summary}${fixes ? ` · ${fixes}` : ''}`,
+            undefined,
+            visionSurgeryAllowed ? { label: '撤销本页视觉改动', onClick: () => doUndoVision(page) } : undefined
           );
-          setTimeout(() => showVisionBadge(''), 8000);
+          // 有「撤销」按钮时不自动消失（否则用户还没看清按钮就没了）
+          if (!visionSurgeryAllowed) setTimeout(() => showVisionBadge(''), 8000);
           vscode.postMessage({
             type: 'showToast',
-            message: `视觉重排：${stat.changed} 处改动（${model}）`,
+            message: `视觉重排：${summary}（${model}）`,
             level: 'info'
           });
         }
@@ -952,6 +973,11 @@
 
   // ====================== 核心：学术文献双栏高保真版面解析器 ======================
   function buildAcademicLayout(pageNum, textContent, textDivs, viewport) {
+    // 视觉状态条属于"这一帧的这一页"：换页或重渲染时先清掉旧的（否则翻页后会留着上一页的
+    // 改动摘要与「撤销本页视觉改动」按钮，点下去撤销的是别的页）。
+    // 视觉请求还在飞时保留进度提示；结果回来命中缓存/新结果时会重新显示。
+    if (!visionPending.has(pageNum)) showVisionBadge('');
+
     if (!textContent || !textContent.items) {
       renderTranslationCards(pageNum, []);
       return;
@@ -1868,13 +1894,24 @@
     });
 
     currentParagraphs = paras;
+    // 本地原件留档：视觉手术每次都在它之上重放（幂等），「撤销本页视觉改动」也回到它
+    localParagraphsSnapshot = cloneParagraphs(paras);
+    localParagraphsPage = pageNum;
     renderTranslationCards(pageNum, currentParagraphs);
 
     // 视觉分割：本地结果先显示，随后请视觉模型判断版面并校正（坐标不受影响）。
     // 默认 vision（每页都问）；auto 只在本地判据可疑时问；local 从不问。
     try {
       const engine = visionEngine;
-      if (engine === 'vision' || (engine === 'auto' && looksLowConfidence(paras))) {
+      const cachedEntry = paperData.visionStructure && paperData.visionStructure[String(pageNum)];
+      const undone = !!(cachedEntry && cachedEntry.disabled);
+      if (undone && (engine === 'vision' || engine === 'auto')) {
+        // 用户撤销过这一页：不再自动套用，但要让他知道"现在用的是本地分段"以及怎么找回视觉判断
+        showVisionBadge('本页视觉改动已被你撤销（当前用本地代码的分段）', undefined, {
+          label: '重新判断版面',
+          onClick: () => void requestVisionSegmentation(pageNum, { manual: true })
+        });
+      } else if (engine === 'vision' || (engine === 'auto' && looksLowConfidence(paras))) {
         // 用 setTimeout 让本页先画出来，避免请求把首屏拖慢
         setTimeout(() => {
           if (currentPage === pageNum) void requestVisionSegmentation(pageNum, { manual: false });
@@ -2838,18 +2875,28 @@
   /**
    * 请求视觉判断。
    * @param {number} pageNum
-   * @param {{manual?: boolean}} opts 手动点击时忽略缓存与 auto 判据
+   * @param {{manual?: boolean}} opts 手动点击时忽略缓存、撤销标记与 auto 判据
    */
   async function requestVisionSegmentation(pageNum, opts = {}) {
     if (visionPending.has(pageNum)) return;
-    const paragraphs = currentParagraphs || [];
+    // 【必须发"本地未手术的分段"】否则第二次判断看到的是上一次手术后的结果，
+    // 编号与内容都对不上，合并/拆分会被重复叠加（旧版只改类型所以看不出来）。
+    const paragraphs =
+      localParagraphsPage === pageNum && localParagraphsSnapshot ? localParagraphsSnapshot : currentParagraphs || [];
     if (paragraphs.length === 0) return;
 
     const cached = paperData.visionStructure && paperData.visionStructure[String(pageNum)];
-    if (!opts.manual && cached && Array.isArray(cached.segments) && cached.segments.length) {
-      applyVisionSegments(pageNum, cached);
-      showVisionBadge(`已用缓存的视觉结果校正本页（${cached.model || '视觉模型'}）`);
-      setTimeout(() => showVisionBadge(''), 4000);
+    // 用户撤销过本页 → 不再自动套用（手动点「视觉重排」才会重新问一次）
+    if (!opts.manual && cached && cached.disabled) return;
+    if (!opts.manual && isUsableVisionCache(cached)) {
+      const applied = visionSurgeryAllowed ? applyVisionStructure(pageNum, cached) : applyVisionSegments(pageNum, cached);
+      showVisionBadge(
+        `已用缓存的视觉结果校正本页（${cached.model || '视觉模型'}）：${
+          applied.summary || `校正 ${applied.changed} 处`
+        }`,
+        undefined,
+        visionSurgeryAllowed ? { label: '撤销本页视觉改动', onClick: () => doUndoVision(pageNum) } : undefined
+      );
       return;
     }
 
@@ -2879,8 +2926,28 @@
     }
   }
 
-  /** 卡片区顶部的小状态条（视觉进度/结果提示） */
-  function showVisionBadge(text, level) {
+  /** 「撤销本页视觉改动」按钮的处理：恢复本地分段 + 记住"本页别再自动套用" */
+  function doUndoVision(pageNum) {
+    if (!undoVisionStructure(pageNum)) {
+      showVisionBadge('没有可撤销的视觉改动', 'error');
+      return;
+    }
+    showVisionBadge('已撤销本页视觉改动：恢复本地分段，本页不再自动套用视觉结果（点「视觉重排」可重新判断）');
+    setTimeout(() => showVisionBadge(''), 12000);
+    try {
+      vscode.postMessage({ type: 'showToast', message: '已撤销本页视觉改动（恢复本地分段）', level: 'info' });
+    } catch (e) {
+      /* 提示失败不影响撤销 */
+    }
+  }
+
+  /**
+   * 卡片区顶部的小状态条（视觉进度/结果提示）。
+   * @param {string} text 传空串即移除
+   * @param {string} [level] 'error' 时标红
+   * @param {{label: string, onClick: Function}} [action] 可选的按钮（如「撤销本页视觉改动」）
+   */
+  function showVisionBadge(text, level, action) {
     let el = document.getElementById('visionStatusBadge');
     if (!text) {
       if (el) el.remove();
@@ -2894,15 +2961,628 @@
       if (host && host.parentNode) host.parentNode.insertBefore(el, host);
       else document.body.appendChild(el);
     }
-    el.textContent = text;
+    el.innerHTML = '';
+    const span = document.createElement('span');
+    span.className = 'vision-status-text';
+    span.textContent = text;
+    el.appendChild(span);
+    if (action && action.label) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'vision-status-action';
+      btn.textContent = action.label;
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        action.onClick();
+      });
+      el.appendChild(btn);
+    }
     el.classList.toggle('vision-status-error', level === 'error');
   }
 
+  // ============ 视觉手术：真的按模型的判断合并 / 拆分 / 改类型（坐标仍来自文本层） ============
   /**
-   * 应用视觉判断结果（第一片：类型 + 顺序 + 丢弃）。
+   * 把视觉模型的类型收敛到阅读器自己的类型词汇。
    *
-   * 合并/拆分暂不在这里做：那要动 charMap/spans（把两段的字符映射接起来、
-   * 按文本边界切一段的映射），属于另一片手术。先把类型与顺序弄对。
+   * 【为什么必须收敛】旧版把模型给的 type 原样写进段落，而"不翻译"的判据只认
+   * figure-label / noise —— 于是模型判成 figure / table 的**图内文字**照旧进了翻译队列，
+   * "图内文字不翻译"这条其实从未真正生效（模型越准，这个漏洞越显眼）。
+   */
+  function normalizeVisionType(t) {
+    const s = String(t == null ? '' : t).trim().toLowerCase();
+    if (!s) return '';
+    if (s === 'figure' || s === 'table' || s === 'figure-label' || s === 'table-label') return 'figure-label';
+    if (s === 'figure_caption' || s === 'table_caption' || s === 'caption') return 'caption';
+    if (s === 'header' || s === 'footer' || s === 'page_number' || s === 'noise') return 'noise';
+    if (s === 'equation') return 'formula';
+    const known = [
+      'title',
+      'abstract',
+      'keywords',
+      'significance',
+      'heading',
+      'footnote',
+      'metadata',
+      'body',
+      'reference',
+      'formula',
+      'formula_inline'
+    ];
+    return known.indexOf(s) >= 0 ? s : '';
+  }
+
+  /** 归一化匹配时的等价字符表（排版上"看着一样、码位不同"的那些） */
+  const VISION_CHAR_EQUIV = {
+    '\u2212': '-',
+    '\u2013': '-',
+    '\u2014': '-',
+    '\u2010': '-',
+    '\u2011': '-',
+    '\u2012': '-',
+    '\u2018': "'",
+    '\u2019': "'",
+    '\u2032': "'",
+    '\u201c': '"',
+    '\u201d': '"',
+    '\u00d7': '*',
+    '\u00b7': '*',
+    '\u22c5': '*',
+    '\u2219': '*'
+  };
+
+  /**
+   * 归一化：去掉所有空白、拆掉重音与组合符（NFD 去 combining marks：
+   * 模型写的 "Ŷ" 与文本层抽出的 "Y" + U+0302 都会变成 "Y"）、统一等价字符、转小写。
+   * 同时返回**下标映射表**（归一化后第 i 个字符在原文里的下标），定位结果据此换算回原文。
+   */
+  function normalizeForMatch(s) {
+    const src = String(s == null ? '' : s);
+    const norm = [];
+    const map = [];
+    for (let i = 0; i < src.length; ) {
+      const cp = src.codePointAt(i);
+      const ch = String.fromCodePoint(cp);
+      const at = i;
+      i += ch.length;
+      if (/\s/.test(ch)) continue;
+      const eq = VISION_CHAR_EQUIV[ch];
+      const base = (eq !== undefined ? eq : ch).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+      for (const c of base) {
+        norm.push(c);
+        map.push(at);
+      }
+    }
+    return { norm: norm.join(''), map };
+  }
+
+  /** 二元组 Dice 相似度（对"模型把残渣顺手写对"这类差异很宽容） */
+  function bigramDice(a, b) {
+    if (!a || !b) return 0;
+    if (a === b) return 1;
+    if (a.length < 2 || b.length < 2) return 0;
+    const bag = new Map();
+    for (let i = 0; i < a.length - 1; i++) {
+      const g = a.slice(i, i + 2);
+      bag.set(g, (bag.get(g) || 0) + 1);
+    }
+    let hit = 0;
+    for (let i = 0; i < b.length - 1; i++) {
+      const g = b.slice(i, i + 2);
+      const c = bag.get(g) || 0;
+      if (c > 0) {
+        hit++;
+        bag.set(g, c - 1);
+      }
+    }
+    return (2 * hit) / (a.length - 1 + b.length - 1);
+  }
+
+  /**
+   * 在 cleanText 里定位视觉模型给的"片段开头文字"。
+   *
+   * 为什么不能只用 indexOf：模型是**看图**写的，常把残渣顺手写对——
+   * 文本层是 "Y ̂ t = S θ (X t )"（带组合抑扬符），模型可能写 "Ŷt = Sθ(Xt)"；
+   * 空白、上下标、连字符、全角字符也常有出入。所以三级降级：
+   *   ① 原样 indexOf；② 归一化后 indexOf（带下标映射）；③ 滑窗 + 二元组 Dice ≥ 0.72。
+   * 都失败返回 -1 —— 调用方**跳过这一处手术**，绝不猜一个位置去切。
+   */
+  function locateAnchorIndex(text, anchor, from) {
+    const t = String(text == null ? '' : text);
+    const a = String(anchor == null ? '' : anchor).trim();
+    const start = Math.max(0, Number(from) || 0);
+    if (!t || !a || start >= t.length) return -1;
+
+    const exact = t.indexOf(a, start);
+    if (exact >= 0) return exact;
+
+    const nt = normalizeForMatch(t);
+    const na = normalizeForMatch(a);
+    if (na.norm.length < 2) return -1;
+
+    let nFrom = nt.map.length;
+    for (let i = 0; i < nt.map.length; i++) {
+      if (nt.map[i] >= start) {
+        nFrom = i;
+        break;
+      }
+    }
+    const at = nt.norm.indexOf(na.norm, nFrom);
+    if (at >= 0) return nt.map[at];
+
+    const lens = [na.norm.length, na.norm.length - 2, na.norm.length + 2].filter(
+      n => n >= 4 && n <= nt.norm.length
+    );
+    let best = null;
+    for (const len of lens) {
+      const step = len > 40 ? 2 : 1;
+      for (let i = nFrom; i + len <= nt.norm.length; i += step) {
+        const score = bigramDice(nt.norm.slice(i, i + len), na.norm);
+        if (!best || score > best.score) best = { start: i, score };
+        if (score >= 0.985) break;
+      }
+    }
+    if (best && best.score >= 0.72) return nt.map[best.start];
+    return -1;
+  }
+
+  /**
+   * 这一段看起来是"整段散文"吗？
+   *
+   * 用在两道护栏上（模型把它判成 figure/table、或把它归进图块时）：
+   * 图内文字、表格数据通常很短、也不以句末标点结尾。一旦把正文当图内文字剔掉，
+   * 用户在阅读视图里就**看不到这段内容了**，代价远大于"少剔一段"（最多多翻译一次）。
+   */
+  function looksLikeProseParagraph(text) {
+    const t = String(text == null ? '' : text).trim();
+    if (!t) return false;
+    if (t.length > 120) return true;
+    return t.length > 40 && /[.!?。！？]["'”’)\]]*$/.test(t);
+  }
+
+  /** 这一片字符映射涉及到的 span（去重、保持文档顺序） */
+  function spansOfCharMap(charMap) {
+    const out = [];
+    const seen = new Set();
+    (charMap || []).forEach(c => {
+      if (c && c.span && !seen.has(c.span)) {
+        seen.add(c.span);
+        out.push(c.span);
+      }
+    });
+    return out;
+  }
+
+  /** 校验句子下标与文本严格自洽（这个仓库被"下标错位"坑过多次，搬句子前一律验一遍） */
+  function sentencesConsistent(text, sents) {
+    if (!Array.isArray(sents) || sents.length === 0) return false;
+    for (const s of sents) {
+      if (!s || !Number.isFinite(s.startIdx) || !Number.isFinite(s.endIdx)) return false;
+      if (s.startIdx < 0 || s.endIdx > text.length || s.startIdx >= s.endIdx) return false;
+      if (text.slice(s.startIdx, s.endIdx) !== s.text) return false;
+    }
+    return true;
+  }
+
+  /** 切出一片：cleanText 与 charMap 严格 1:1，所以切片是精确的；首尾空白一起去掉（同步裁 charMap） */
+  function sliceParaPart(para, start, end) {
+    const text = (para && para.cleanText) || '';
+    let s = Math.max(0, Math.min(start, text.length));
+    let e = Math.max(s, Math.min(end, text.length));
+    while (s < e && /\s/.test(text[s])) s++;
+    while (e > s && /\s$/.test(text[e - 1])) e--;
+    return { start: s, end: e, text: text.slice(s, e), charMap: ((para && para.charMap) || []).slice(s, e) };
+  }
+
+  /**
+   * 造出拆分后的一片。句子与译文**从原段继承**：原段的句下标与 cleanText 严格对应，
+   * 落在这一片范围内的句子连同译文一起搬过来——这是唯一不会猜错的做法。
+   * 被切点劈成两半的句子两边都不留（宁缺毋滥），那一片会被重新翻译。
+   */
+  function buildSplitPiece(orig, slice, part, isFirst) {
+    const type = normalizeVisionType(part && part.type) || (isFirst ? orig.type || 'body' : 'body');
+    const pieceSpans = spansOfCharMap(slice.charMap);
+    // 横向范围按**这一片自己的 span** 重算（不继承整段的范围），
+    // 否则"在左侧 PDF 定位"会往整段中间跑偏。
+    let minX = orig.minX;
+    let maxX = orig.maxX;
+    const xs = [];
+    pieceSpans.forEach(sp => {
+      if (sp && Number.isFinite(sp._pdfX)) xs.push([sp._pdfX, sp._pdfX + (Number(sp._pdfW) || 0)]);
+    });
+    if (xs.length) {
+      minX = Math.min(...xs.map(x => x[0]));
+      maxX = Math.max(...xs.map(x => x[1]));
+    }
+    const piece = {
+      id: orig.id,
+      type,
+      cleanText: slice.text,
+      charMap: slice.charMap,
+      rawSpans: pieceSpans,
+      sentencesEn: [],
+      translation: '',
+      sentenceTranslations: [],
+      minX,
+      maxX,
+      visionFromSplit: true
+    };
+    if (part && part.latex) piece.visionLatex = String(part.latex).trim();
+    if (part && part.at) piece.visionSplitAt = part.at;
+    if (Array.isArray(orig.visionInline) && orig.visionInline.length) piece.visionInline = orig.visionInline.slice();
+
+    const srcSents = Array.isArray(orig.sentencesEn) ? orig.sentencesEn : [];
+    const srcTrans = Array.isArray(orig.sentenceTranslations) ? orig.sentenceTranslations : [];
+    const aligned =
+      srcSents.length > 0 && srcTrans.length === srcSents.length && !srcTrans.some(t => !t || !t.trim());
+    const kept = [];
+    let straddler = false;
+    srcSents.forEach((s, i) => {
+      const sIdx = Number.isFinite(s.startIdx) ? s.startIdx : 0;
+      const eIdx = Number.isFinite(s.endIdx) ? s.endIdx : sIdx + String(s.text || '').length;
+      if (eIdx <= slice.start || sIdx >= slice.end) return;
+      if (sIdx >= slice.start && eIdx <= slice.end) kept.push({ s, i });
+      else straddler = true;
+    });
+
+    if (!straddler && kept.length > 0) {
+      const moved = kept.map(({ s }) => ({
+        text: s.text,
+        startIdx: s.startIdx - slice.start,
+        endIdx: s.endIdx - slice.start
+      }));
+      if (sentencesConsistent(piece.cleanText, moved)) {
+        piece.sentencesEn = moved;
+        if (aligned) {
+          piece.sentenceTranslations = kept.map(({ i }) => srcTrans[i]);
+          piece.translation = piece.sentenceTranslations.join(' ');
+        }
+        return piece;
+      }
+    }
+    piece.sentencesEn = splitEnglishSentencesSmart(piece.cleanText);
+    piece.needsRetranslate = true;
+    return piece;
+  }
+
+  /**
+   * 把两段合成一段（模型判为"被错误切开的同一段"）。
+   *
+   * 【译文的处理原则】不做"两半译文硬拼"：两半各自的逐句译文与合并后的切句无法保证严格 1:1，
+   * 硬拼就会出现"看着对齐、其实错位"的假象（这个仓库最贵的一类 bug）。
+   * 于是只有两边都完整对齐、且切点确实落在句末时才搬句子；切点落在句中时把
+   * "a 的末句 + b 的首句"真正拼成一句（文本与译文一起拼）；其余情况清空译文交给队列重译。
+   */
+  function mergeParagraphs(a, b) {
+    const aText = a.cleanText || '';
+    const bText = b.cleanText || '';
+    const hyphen = /[-‐]$/.test(aText);
+    const sep = hyphen ? '' : ' ';
+    const mergedText = hyphen ? aText.slice(0, -1) + bText : `${aText} ${bText}`;
+
+    const charMap = (a.charMap || []).slice();
+    if (hyphen) {
+      charMap.pop(); // 去掉了末尾连字符，charMap 同步弹掉一个，保持 1:1
+    } else if (bText) {
+      // 合成出来的空格也要有字符映射（与 commitParagraph 的做法一致）
+      charMap.push({ span: (b.rawSpans && b.rawSpans[0]) || null, offset: 0 });
+    }
+    charMap.push(...(b.charMap || []));
+
+    const merged = Object.assign({}, a, {
+      cleanText: mergedText,
+      charMap,
+      rawSpans: (a.rawSpans || []).concat(b.rawSpans || []),
+      minX: Math.min(Number(a.minX) || 0, Number(b.minX) || 0),
+      maxX: Math.max(Number(a.maxX) || 0, Number(b.maxX) || 0),
+      sentencesEn: [],
+      translation: '',
+      sentenceTranslations: [],
+      joinedByVision: true
+    });
+
+    const aSents = Array.isArray(a.sentencesEn) ? a.sentencesEn : [];
+    const bSents = Array.isArray(b.sentencesEn) ? b.sentencesEn : [];
+    const aTrans = Array.isArray(a.sentenceTranslations) ? a.sentenceTranslations : [];
+    const bTrans = Array.isArray(b.sentenceTranslations) ? b.sentenceTranslations : [];
+    const bothAligned =
+      aSents.length > 0 &&
+      bSents.length > 0 &&
+      aTrans.length === aSents.length &&
+      bTrans.length === bSents.length &&
+      !aTrans.some(t => !t || !t.trim()) &&
+      !bTrans.some(t => !t || !t.trim());
+    const offset = hyphen ? Math.max(0, aText.length - 1) : aText.length + 1;
+
+    if (bothAligned) {
+      const aEndsSentence = /[.!?。！？]["'”’)\]]*\s*$/.test(aText);
+      let sents;
+      let trans;
+      if (aEndsSentence) {
+        sents = aSents
+          .map(s => ({ text: s.text, startIdx: s.startIdx, endIdx: s.endIdx }))
+          .concat(bSents.map(s => ({ text: s.text, startIdx: s.startIdx + offset, endIdx: s.endIdx + offset })));
+        trans = aTrans.concat(bTrans);
+      } else {
+        const joinA = aSents[aSents.length - 1];
+        const joinB = bSents[0];
+        const glued = /[-‐]$/.test(joinA.text) ? joinA.text.slice(0, -1) + joinB.text : `${joinA.text} ${joinB.text}`;
+        const gluedTrans = `${aTrans[aTrans.length - 1]}${bTrans[0]}`;
+        sents = aSents
+          .slice(0, -1)
+          .map(s => ({ text: s.text, startIdx: s.startIdx, endIdx: s.endIdx }))
+          .concat([{ text: glued, startIdx: joinA.startIdx, endIdx: joinB.endIdx + offset }])
+          .concat(
+            bSents.slice(1).map(s => ({ text: s.text, startIdx: s.startIdx + offset, endIdx: s.endIdx + offset }))
+          );
+        trans = aTrans.slice(0, -1).concat([gluedTrans]).concat(bTrans.slice(1));
+      }
+      if (sentencesConsistent(mergedText, sents)) {
+        merged.sentencesEn = sents;
+        merged.sentenceTranslations = trans;
+        merged.translation = trans.join(' ');
+        return merged;
+      }
+    }
+
+    merged.sentencesEn = splitEnglishSentencesSmart(mergedText);
+    merged.needsRetranslate = true;
+    return merged;
+  }
+
+  /**
+   * 视觉手术：按模型的判断在**本地未手术的分段**上真的做拆分/合并/改类型/改顺序/丢弃。
+   *
+   * 铁律不变：**坐标永远来自本地文本层**。这里只动 cleanText / charMap / rawSpans /
+   * sentencesEn / translation —— span 引用原样搬过去，所以划线、点中文跳英文、
+   * 导出 PDF 把高亮画回原位全部照旧精确（charMap 是逐字符的，切开后每片只覆盖自己的字符）。
+   *
+   * 传入的 list 会被**就地**修改（与 joinAcrossColumnBreak 的写法一致），调用方负责先克隆一份。
+   * 任何一处判断无法安全落地（锚点定位不到、相邻关系不可信）都**跳过那一处**并记进 notes，
+   * 绝不猜一个位置去切。
+   */
+  function visionSurgery(list, result) {
+    const stats = {
+      applied: 0,
+      typeChanged: 0,
+      orderChanged: 0,
+      merged: 0,
+      split: 0,
+      dropped: 0,
+      grouped: 0,
+      anchored: 0,
+      anchorMissed: 0,
+      inline: 0,
+      notes: []
+    };
+    const segsRaw = result && Array.isArray(result.segments) ? result.segments : [];
+    if (!Array.isArray(list) || list.length === 0 || segsRaw.length === 0) return stats;
+
+    const byId = new Map();
+    list.forEach(p => byId.set(Number(p.id), p));
+    const segs = segsRaw
+      .filter(s => s && Number.isFinite(Number(s.index)) && byId.has(Number(s.index)))
+      .map(s => Object.assign({}, s, { index: Number(s.index) }));
+    if (segs.length === 0) return stats;
+    stats.applied = segs.length;
+    const segByIndex = new Map(segs.map(s => [s.index, s]));
+
+    // ---- 1) 阅读顺序 ----
+    // ① 每条都给了 order → 按 order 排（模型显式声明了顺序）；
+    // ② 没给/给得不全 → 按回包里 segments 的**数组顺序**（提示词就要求它按阅读顺序列出，
+    //    实测数组顺序确实等于阅读顺序）。全有或全无，避免"一半按 order、一半按原位置"的混乱排序。
+    const allOrdered = segs.length > 1 && segs.every(s => Number.isFinite(Number(s.order)));
+    if (segs.length > 1) {
+      const pos = new Map();
+      if (allOrdered) {
+        segs
+          .slice()
+          .sort((a, b) => Number(a.order) - Number(b.order))
+          .forEach((s, i) => pos.set(s.index, i));
+      } else {
+        segs.forEach((s, i) => pos.set(s.index, i));
+      }
+      const before = list.map(p => p.id).join(',');
+      list.sort((x, y) => {
+        const px = pos.has(Number(x.id)) ? pos.get(Number(x.id)) : Number.MAX_SAFE_INTEGER;
+        const py = pos.has(Number(y.id)) ? pos.get(Number(y.id)) : Number.MAX_SAFE_INTEGER;
+        return px - py;
+      });
+      if (list.map(p => p.id).join(',') !== before) stats.orderChanged = 1;
+    }
+
+    // ---- 2) 拆分：把"混了多种内容"的一段按锚点切开（锚点由模型按文本层残渣写法给出）----
+    const out = [];
+    list.forEach(p => {
+      const seg = segByIndex.get(Number(p.id));
+      if (!seg) {
+        out.push({ seg: null, para: p });
+        return;
+      }
+      // parts 优先（每片自带类型与 LaTeX）；只有老式 splitAt 时按同样类型兜底拆
+      let parts = Array.isArray(seg.parts) && seg.parts.length >= 2 ? seg.parts.slice() : null;
+      if (!parts && seg.action === 'split' && Array.isArray(seg.splitAt) && seg.splitAt.length >= 1) {
+        parts = [{ type: seg.type }].concat(seg.splitAt.map(at => ({ type: seg.type, at })));
+      }
+      if (!parts || seg.action !== 'split') {
+        out.push({ seg, para: p });
+        return;
+      }
+      const cuts = [];
+      let from = 0;
+      let ok = true;
+      for (let k = 1; k < parts.length; k++) {
+        const anchor = parts[k] && parts[k].at;
+        const at = anchor ? locateAnchorIndex(p.cleanText, anchor, from) : -1;
+        if (at < 0) {
+          ok = false;
+          break;
+        }
+        cuts.push(at);
+        from = at;
+      }
+      const bounds = [0].concat(cuts).concat([(p.cleanText || '').length]);
+      const made = [];
+      if (ok) {
+        for (let k = 0; k < parts.length; k++) {
+          const sl = sliceParaPart(p, bounds[k], bounds[k + 1]);
+          if (!sl.text) continue;
+          made.push(buildSplitPiece(p, sl, parts[k], k === 0));
+        }
+      }
+      if (!ok || made.length < 2) {
+        stats.anchorMissed++;
+        stats.notes.push(
+          `一段的拆分点没能在文本层里定位（${String((parts[1] && parts[1].at) || '').slice(0, 30)}…），已跳过该处拆分`
+        );
+        out.push({ seg, para: p });
+        return;
+      }
+      stats.split++;
+      stats.anchored += cuts.length;
+      made.forEach((piece, idx) => {
+        // 模型偶尔把整段公式的 latex 放在顶层、只拆出正文片：兜底给第一片留住它，
+        // 否则那条公式就只剩残渣可看了。
+        if (idx === 0 && !piece.visionLatex && seg.latex) piece.visionLatex = String(seg.latex).trim();
+        // 行内公式替换表跟着分片走（哪一片里含那段残渣，显示层就在哪一片里替换）
+        if (Array.isArray(seg.inline) && seg.inline.length) {
+          piece.visionInline = seg.inline.slice(0, 8);
+          stats.inline++;
+        }
+        out.push({ seg: null, para: piece });
+      });
+    });
+
+    // ---- 3) 合并：模型说"这一段与紧随其后的那一段本应是同一段" ----
+    for (let i = 0; i < out.length - 1; i++) {
+      const a = out[i];
+      const b = out[i + 1];
+      if (!a.seg || a.seg.action !== 'merge_next') continue;
+      // 只合并模型明确判断过的相邻段：拆出来的片段、没被判断过的段落，邻接关系都不可信
+      if (!b || !b.seg || b.seg.action === 'split' || b.seg.action === 'drop') continue;
+      // 【护栏一：下一段必须"看起来像半句的续写"】以小写字母/数字/左括号/引号开头才算续句。
+      // 实测模型有把"本段续上一段"错标成 merge_next 的倾向（方向搞反：下一段其实是
+      // 大写开头的新段落）。本地跨栏合并一直用同一条保守判据——见 joinAcrossColumnBreak
+      // 的 looksContinuation——这里照抄，宁可漏合一次，也不能把两段正常正文粘在一起。
+      const nextText = String(b.para.cleanText || '').trim();
+      if (!/^[a-z0-9(“"'\[]/.test(nextText)) continue;
+      // 【护栏二：标题/图注/元信息不参与合并】"2 Related works" → "2.1 Semi-supervised…"
+      // 这种字面看着像续句的，其实是小节标题，永远不该合并。
+      const nextType = normalizeVisionType(b.seg.type) || b.para.type;
+      if (['heading', 'title', 'caption', 'figure-label', 'noise', 'metadata'].indexOf(nextType) >= 0) continue;
+      out.splice(i, 2, { seg: a.seg, para: mergeParagraphs(a.para, b.para) });
+      stats.merged++;
+      i--;
+    }
+
+    // ---- 4) 类型 / LaTeX / 行内公式 / 丢弃 ----
+    out.forEach(ent => {
+      const seg = ent.seg;
+      const para = ent.para;
+      if (!seg || !para) return;
+      const type = normalizeVisionType(seg.type);
+      if (type && para.type !== type) {
+        // 【护栏】模型把一整段散文判成图内文字/页眉页脚 → 保留本地类型。
+        // 正文被剔掉是不可逆的损失（阅读视图里直接看不到这段内容），而"少剔一段"最多多翻译一次。
+        if ((type === 'figure-label' || type === 'noise') && looksLikeProseParagraph(para.cleanText)) {
+          stats.notes.push(`模型把一段正文判成 ${type}（${String(para.cleanText || '').slice(0, 18)}…），已保留`);
+        } else {
+          para.type = type;
+          para.visionType = type;
+          stats.typeChanged++;
+        }
+      }
+      if (seg.latex) para.visionLatex = String(seg.latex).trim();
+      if (Array.isArray(seg.inline) && seg.inline.length) {
+        para.visionInline = seg.inline.slice(0, 8);
+        stats.inline++;
+      }
+      if (seg.why) para.visionWhy = seg.why;
+      para.visionAction = seg.action || 'keep';
+      if (seg.action === 'drop' && para.type !== 'noise') {
+        // 同一条护栏：要丢的若是明显一整段正文，宁可多留一段也不删
+        if (looksLikeProseParagraph(para.cleanText)) {
+          stats.notes.push(`模型要丢弃一段明显是正文的内容（${String(para.cleanText || '').slice(0, 18)}…），已保留`);
+        } else {
+          para.type = 'noise';
+          stats.dropped++;
+        }
+      }
+      const g = Number(seg.group);
+      if (Number.isInteger(g) && g > 0) para.visionGroup = g;
+    });
+
+    // ---- 5) 图块分组：同一 group 的成员收拢到一起，图注留成卡片、图内文字整片丢掉 ----
+    const groupIds = [];
+    out.forEach(ent => {
+      const g = ent.para ? Number(ent.para.visionGroup) : NaN;
+      if (Number.isInteger(g) && g > 0 && groupIds.indexOf(g) < 0) groupIds.push(g);
+    });
+    groupIds.forEach(g => {
+      const members = out.filter(ent => ent.para && Number(ent.para.visionGroup) === g);
+      if (members.length < 2) return;
+      // 【必须有明确的图注才敢丢】没有图注做锚点时，把"哪个是图内文字"交给模型判断太危险——
+      // 一旦把整块图注误判成图内文字就会被丢掉。所以这种情况只收拢顺序、不做任何丢弃。
+      const capEnt = members.find(ent => ent.para.type === 'caption');
+      if (!capEnt) {
+        stats.notes.push('一处图块没有标出图注，已只收拢顺序、不丢弃任何内容');
+        return;
+      }
+      members.forEach(ent => {
+        if (ent === capEnt) return;
+        const p = ent.para;
+        // 【护栏】明显是整段散文的成员不丢：图内文字/表格数据通常很短、也不以句末标点结尾。
+        // 万一模型把图下方/表下方的正文也归进同一个 group，这条能挡住"正文被当成图内文字丢掉"。
+        const t = String(p.cleanText || '').trim();
+        if (looksLikeProseParagraph(t)) {
+          stats.notes.push(`图块里有一段明显是正文（${t.slice(0, 20)}…），已保留不丢`);
+          return;
+        }
+        if (p.type !== 'figure-label' && p.type !== 'noise') {
+          p.type = 'figure-label';
+          p.visionType = 'figure-label';
+          stats.typeChanged++;
+        }
+        // 图内文字本来就不该送翻译：连它的旧译文也清掉，免得精读稿里冒出图内文字的"译文"
+        p.translation = '';
+        p.sentenceTranslations = [];
+      });
+      stats.grouped++;
+    });
+    const regrouped = [];
+    const done = new Set();
+    out.forEach(ent => {
+      const g = ent.para ? Number(ent.para.visionGroup) : NaN;
+      if (!Number.isInteger(g) || g <= 0) {
+        regrouped.push(ent);
+        return;
+      }
+      if (done.has(g)) return;
+      done.add(g);
+      out.forEach(e2 => {
+        if (e2.para && Number(e2.para.visionGroup) === g) regrouped.push(e2);
+      });
+    });
+
+    // ---- 6) 重新编号 + 把 data-para-id 改到新编号（否则点左侧 PDF 会定位到别的段落）----
+    list.length = 0;
+    regrouped.forEach(ent => list.push(ent.para));
+    let bodyCount = 0;
+    list.forEach((p, idx) => {
+      p.id = idx;
+      p.bodyIndex = undefined;
+      if (p.type === 'body') p.bodyIndex = ++bodyCount;
+      (p.rawSpans || []).forEach(sp => {
+        if (sp && typeof sp.setAttribute === 'function') sp.setAttribute('data-para-id', `${idx}`);
+      });
+    });
+    return stats;
+  }
+
+  /**
+   * 应用视觉判断结果（**只改类型 + 顺序 + 丢弃**，不动分段）。
+   *
+   * 这是"关闭视觉手术"时的路径（设置 academicReader.visionSurgery = false），
+   * 也是 1.2.0 的行为。真的合并/拆分见 visionSurgery / applyVisionStructure。
    */
   function applyVisionSegments(pageNum, result) {
     if (!result || !Array.isArray(result.segments)) return { changed: 0, applied: 0 };
@@ -2919,10 +3599,15 @@
         dropped.add(para.id);
         return;
       }
-      if (s.type && para.type !== s.type) {
-        para.type = s.type;
-        para.visionType = s.type;
-        changed++;
+      if (s.type) {
+        // 类型要收敛到阅读器自己的词汇：模型给的 figure / table（图内、表内文字）
+        // 必须落到 figure-label，否则它们照旧会被送进翻译队列。
+        const nt = normalizeVisionType(s.type);
+        if (nt && para.type !== nt) {
+          para.type = nt;
+          para.visionType = nt;
+          changed++;
+        }
       }
       // 公式的 LaTeX（模型看图写的）——卡片里直接渲染成公式，不再显示 "Y ̂ t" 这种残渣
       if (s.latex) {
@@ -2966,14 +3651,56 @@
       console.warn('[Viewer] 应用视觉结果后重绘失败:', e);
     }
     // 缓存到论文数据（同一页只花一次钱），由宿主持久化
+    cacheVisionStructure(pageNum, result);
+    return { changed, applied };
+  }
+
+  /** 克隆一份段落（视觉手术永远在本地原件上重放，所以每次都要一份互不污染的副本） */
+  function cloneParagraphs(list) {
+    return (list || []).map(p =>
+      Object.assign({}, p, {
+        charMap: (p.charMap || []).slice(),
+        rawSpans: (p.rawSpans || []).slice(),
+        sentencesEn: (p.sentencesEn || []).map(s => Object.assign({}, s)),
+        sentenceTranslations: (p.sentenceTranslations || []).slice()
+      })
+    );
+  }
+
+  /**
+   * 视觉手术要作用的"原件"：**永远是本地代码切出来的那一份**，绝不是"已经手术过的当前结果"。
+   * 这样翻页回来、缩放重渲染、手动点「视觉重排」都是幂等的 —— 同一份判断重放多少次结果都一样。
+   */
+  function visionBaseParagraphs() {
+    if (localParagraphsPage === currentPage && localParagraphsSnapshot && localParagraphsSnapshot.length) {
+      return localParagraphsSnapshot;
+    }
+    return currentParagraphs || [];
+  }
+
+  /**
+   * 视觉缓存能不能直接用？
+   * ① 协议版本必须是 2（v1 的回包里没有 parts/group/inline，套用只会得到"类型改了但没真的合并拆分"）；
+   * ② 本页没有被用户撤销过（撤销后不再自动套用，直到手动点「视觉重排」）。
+   */
+  function isUsableVisionCache(entry) {
+    if (!entry || entry.disabled) return false;
+    if (!Array.isArray(entry.segments) || entry.segments.length === 0) return false;
+    return Number(entry.version) >= 2;
+  }
+
+  /** 把视觉结果写进论文数据（同一页只花一次钱），由宿主持久化 */
+  function cacheVisionStructure(pageNum, result) {
     try {
       paperData.visionStructure = paperData.visionStructure || {};
       paperData.visionStructure[String(pageNum)] = {
-        model: result.model || '',
+        version: Number(result && result.version) || 2,
+        model: (result && result.model) || '',
         at: Date.now(),
-        columns: result.columns,
-        fixes: result.fixes || '',
-        segments: result.segments
+        columns: result && result.columns,
+        fixes: (result && result.fixes) || '',
+        segments: (result && result.segments) || [],
+        disabled: false
       };
       vscode.postMessage({
         type: 'syncVisionStructure',
@@ -2983,7 +3710,94 @@
     } catch (e) {
       /* 缓存失败不影响本次校正 */
     }
-    return { changed, applied };
+  }
+
+  /** 改动摘要（卡片区那行提示用） */
+  function summarizeVisionStats(stats) {
+    const bits = [];
+    if (stats.split) bits.push(`拆分 ${stats.split} 处`);
+    if (stats.merged) bits.push(`合并 ${stats.merged} 处`);
+    if (stats.typeChanged) bits.push(`改类型 ${stats.typeChanged} 处`);
+    if (stats.dropped) bits.push(`丢弃 ${stats.dropped} 段`);
+    if (bits.length === 0 && stats.orderChanged) bits.push('调整了阅读顺序');
+    if (stats.anchorMissed) bits.push(`${stats.anchorMissed} 处拆分点没定位到`);
+    return bits.length ? bits.join(' / ') : '无需改动';
+  }
+
+  /**
+   * 应用视觉判断（**手术版**，设置 academicReader.visionSurgery 默认开）：
+   * 真的按模型的判断合并/拆分，再改类型/顺序/丢弃，然后重绘卡片并缓存结果。
+   */
+  function applyVisionStructure(pageNum, result) {
+    if (!result || !Array.isArray(result.segments)) return { changed: 0, applied: 0, stats: null, summary: '' };
+    const list = cloneParagraphs(visionBaseParagraphs());
+    if (list.length === 0) return { changed: 0, applied: 0, stats: null, summary: '' };
+
+    const stats = visionSurgery(list, result);
+
+    // 拆分时从原段继承过来的逐句译文要写进缓存：否则缩放/翻页重渲染后按新指纹查不到，
+    // 这些片段会被重新翻译一遍（白花钱，而且用户会觉得"译文自己没了"）。
+    list.forEach(p => {
+      if (!p || !p.translation) return;
+      try {
+        const key = getParaCacheKey(pageNum, p);
+        paperData.translations = paperData.translations || {};
+        paperData.translations[key] = p.translation;
+        if (Array.isArray(p.sentenceTranslations) && p.sentenceTranslations.length) {
+          paperData.sentenceTranslations = paperData.sentenceTranslations || {};
+          paperData.sentenceTranslations[key] = p.sentenceTranslations;
+        }
+      } catch (e) {
+        /* 写缓存失败不影响本次手术 */
+      }
+    });
+
+    currentParagraphs = list;
+    try {
+      renderTranslationCards(pageNum, currentParagraphs);
+      renderNotesList();
+    } catch (e) {
+      console.warn('[Viewer] 视觉手术后重绘失败:', e);
+    }
+    cacheVisionStructure(pageNum, result);
+    // 归档快照要跟着改，否则导出的「全文双语精读稿」里还是旧的分段
+    try {
+      archivePageParagraphs(pageNum, currentParagraphs);
+    } catch (e) {
+      /* 归档失败只影响导出 */
+    }
+
+    const changed = stats.typeChanged + stats.merged + stats.split + stats.dropped + stats.orderChanged;
+    return { applied: stats.applied, changed, stats, summary: summarizeVisionStats(stats) };
+  }
+
+  /**
+   * 撤销本页视觉改动：回到本地代码切出来的分段，并让本页**不再自动套用**视觉结果
+   * （否则用户一缩放、一重渲染，视觉结果又自动回来了，"撤销"就成了摆设）。
+   * 想重新判断就点卡片区的「视觉重排」——那是手动触发，会重新问一次。
+   */
+  function undoVisionStructure(pageNum) {
+    if (localParagraphsPage !== pageNum || !localParagraphsSnapshot || localParagraphsSnapshot.length === 0) return false;
+    const list = cloneParagraphs(localParagraphsSnapshot);
+    currentParagraphs = list;
+    try {
+      paperData.visionStructure = paperData.visionStructure || {};
+      const entry = paperData.visionStructure[String(pageNum)];
+      if (entry) {
+        entry.disabled = true;
+        vscode.postMessage({ type: 'syncVisionStructure', page: pageNum, structure: entry });
+      }
+    } catch (e) {
+      /* 记不住"已撤销"只影响体验，不影响本次恢复 */
+    }
+    try {
+      renderTranslationCards(pageNum, currentParagraphs);
+      renderNotesList();
+      archivePageParagraphs(pageNum, currentParagraphs);
+    } catch (e) {
+      console.warn('[Viewer] 撤销视觉改动后重绘失败:', e);
+    }
+    return true;
   }
 
   /**
@@ -3160,7 +3974,7 @@
       <div class="sentence-pair-row" data-sent-idx="0" title="点击在左侧 PDF 中高亮">
         <div class="sent-num">·</div>
         <div class="sent-content">
-          <div class="sent-en">${escapeHtml(text)}</div>
+          <div class="sent-en">${renderEnTextHtml(text, para && para.visionInline)}</div>
         </div>
       </div>`;
   }
@@ -3202,7 +4016,7 @@
         <div class="sent-num">1</div>
         <div class="sent-content">
           <div class="sent-zh">${escapeHtml(cachedTrans)}</div>
-          <div class="sent-en">${escapeHtml(para.cleanText)}</div>
+          <div class="sent-en">${renderEnTextHtml(para.cleanText, para.visionInline)}</div>
         </div>
       </div>`;
     }
@@ -3233,7 +4047,7 @@
             <div class="sentence-pair-row" data-sent-idx="${idx}" title="点击可在左侧 PDF 中高亮此句">
               <div class="sent-num">${idx + 1}</div>
               <div class="sent-content">
-                <div class="sent-en">${escapeHtml(sent.text)}</div>
+                <div class="sent-en">${renderEnTextHtml(sent.text, para.visionInline)}</div>
               </div>
               <div class="sent-row-actions">
                 <button class="btn-row-ai" data-sent-idx="${idx}" title="针对此句向 AI 导师提问">AI</button>
@@ -3253,7 +4067,7 @@
           <div class="sent-num">${idx + 1}</div>
           <div class="sent-content">
             <div class="sent-zh">${escapeHtml(zh)}</div>
-            <div class="sent-en">${escapeHtml(sent.text)}</div>
+            <div class="sent-en">${renderEnTextHtml(sent.text, para.visionInline)}</div>
           </div>
           <div class="sent-row-actions">
             <button class="btn-row-ai" data-sent-idx="${idx}" title="针对此句向 AI 导师提问">AI</button>
@@ -3766,7 +4580,7 @@
             <button class="btn-card-action btn-copy-flow-zh" title="复制中文">译文</button>
           </div>
         </div>
-        <div class="article-section-en">${escapeHtml(para.cleanText)}</div>
+        <div class="article-section-en">${renderEnTextHtml(para.cleanText, para.visionInline)}</div>
         <div class="article-section-zh" id="flowTrans_${pageNum}_${para.id}">
           ${cachedTrans ? escapeHtml(cachedTrans) : `<span class="trans-loading"><span class="mini-spinner"></span> 正在请求翻译...</span>`}
         </div>
@@ -3795,10 +4609,16 @@
 
   function formatOriginalParagraph(para) {
     if (!para.sentencesEn || para.sentencesEn.length === 0) {
-      return escapeHtml(para.cleanText);
+      return renderEnTextHtml(para.cleanText, para.visionInline);
     }
     return para.sentencesEn
-      .map((s, idx) => `<span class="en-sentence" data-sent-idx="${idx}" title="点击在原件中单独高亮此句">${escapeHtml(s.text)}</span>`)
+      .map(
+        (s, idx) =>
+          `<span class="en-sentence" data-sent-idx="${idx}" title="点击在原件中单独高亮此句">${renderEnTextHtml(
+            s.text,
+            para.visionInline
+          )}</span>`
+      )
       .join(' ');
   }
 
@@ -5757,6 +6577,27 @@
     }
   }
 
+  /**
+   * 批注 → 段落：**引文文字是稳定标识，段落编号只做兜底**。
+   *
+   * 为什么：视觉手术会合并/拆分段落并重新编号，历史批注里存的 paraIndex 很可能
+   * 已经指到另一个段落上（症状是"点批注跳到别的段"）。引文文字不会因为重新编号而失效。
+   */
+  function findParaForAnnotation(annot) {
+    const list = currentParagraphs || [];
+    if (!annot) return null;
+    const text = annot.text || '';
+    const matches = para =>
+      !!para && !!text && ((para.cleanText || '').includes(text) || text.includes(para.cleanText || ''));
+    const byId = annot.paraIndex !== undefined ? list.find(p => p.id === annot.paraIndex) : null;
+    if (byId && (!text || matches(byId))) return byId;
+    if (text) {
+      const byText = list.find(matches);
+      if (byText) return byText;
+    }
+    return byId || null;
+  }
+
   function renderPageAnnotations(pageNum, annotLayerDiv) {
     annotLayerDiv.innerHTML = '';
     const pageAnnots = paperData.annotations.filter((a) => a.page === pageNum);
@@ -5768,12 +6609,8 @@
     pageAnnots.forEach((annot) => {
       // 自动修复：若缺少 rects，利用当前页面已解析的段落与句子自动补全物理高亮矩形
       if ((!annot.rects || annot.rects.length === 0) && pageWrapper && currentParagraphs && currentParagraphs.length > 0) {
-        let matchedPara = (annot.paraIndex !== undefined)
-          ? currentParagraphs.find(p => p.id === annot.paraIndex)
-          : null;
-        if (!matchedPara && annot.text) {
-          matchedPara = currentParagraphs.find(p => (p.cleanText || '').includes(annot.text) || annot.text.includes(p.cleanText || ''));
-        }
+        // 引文文字优先、编号兜底：视觉手术重新编号后，编号可能已经指到别的段（见 findParaForAnnotation）
+        const matchedPara = findParaForAnnotation(annot);
         if (matchedPara) {
           let matchedSentIdx = undefined;
           if (matchedPara.sentencesEn) {
@@ -6097,12 +6934,7 @@
         }
 
         // 2. 若缺少 rects（如历史遗留数据），智能查找对应段落/句子并定位
-        let matchedPara = (annot.paraIndex !== undefined)
-          ? currentParagraphs.find(p => p.id === annot.paraIndex)
-          : null;
-        if (!matchedPara && annot.text) {
-          matchedPara = currentParagraphs.find(p => (p.cleanText || '').includes(annot.text) || annot.text.includes(p.cleanText || ''));
-        }
+        const matchedPara = findParaForAnnotation(annot);
 
         if (matchedPara) {
           let matchedSentIdx = undefined;
@@ -6580,6 +7412,73 @@ let aiPresetQuestion = '';
     }
     const escaped = escapeHtml(displayMode ? `$$${src}$$` : `$${src}$`);
     return `<span class="md-math md-math-fallback">${escaped}</span>`;
+  }
+
+  /** 纯文本里夹 $...$ / $$...$$ / \(...\) / \[...\] 的渲染（先转义纯文本，再把公式塞回去） */
+  function renderTextWithMath(text) {
+    const maths = [];
+    let s = escapeHtml(String(text == null ? '' : text));
+    const stash = (tex, display) => {
+      maths.push(renderMathSpan(tex, display));
+      return `\u0000M${maths.length - 1}\u0000`;
+    };
+    s = s.replace(/\$\$([^$]+?)\$\$/g, (m, tex) => stash(tex, true));
+    s = s.replace(/\\\[([\s\S]+?)\\\]/g, (m, tex) => stash(tex, true));
+    s = s.replace(/\\\(([\s\S]+?)\\\)/g, (m, tex) => stash(tex, false));
+    // 单个 $ 必须成对、不跨行，**且内容确实像公式**：否则 "价格 $5 和 $6" 这种
+    // 普通文本会被当成公式渲染（正文里出现 $ 的概率虽低，但一旦错就很显眼）。
+    s = s.replace(/\$([^$\n]+?)\$/g, (m, tex) => (looksLikeMath(tex) ? stash(tex, false) : m));
+    return s.replace(/\u0000M(\d+)\u0000/g, (m, i) => maths[Number(i)]);
+  }
+
+  /** 这段内容看起来像公式吗（用于行内 `$...$` 的取舍，避免把普通文本当公式） */
+  function looksLikeMath(tex) {
+    const t = String(tex == null ? '' : tex).trim();
+    if (!t) return false;
+    if (/[\\^_{}=]/.test(t)) return true;
+    return /^[A-Za-z]{1,3}$/.test(t); // "$R$" / "$x$" 这种单字母变量
+  }
+
+  /**
+   * 英文原文里的行内公式渲染（**只影响显示**：charMap 坐标与送翻译的原文都不变，
+   * 所以划线高亮、点中文跳英文、逐句对齐一律不受影响）。
+   *
+   * 两个来源：① 视觉模型给的替换表（find = 文本层残渣写法，latex = 可渲染写法）；
+   * ② 文本里本来就写成 $...$ / \(...\) 的。
+   * 替换表是先按 find 在原文里定位、再按区间拼接，所以绝不会动到定位之外的字。
+   */
+  function renderEnTextHtml(text, inline) {
+    const src = String(text == null ? '' : text);
+    if (!src) return '';
+    const reps = [];
+    (Array.isArray(inline) ? inline : []).forEach(item => {
+      const find = item && item.find ? String(item.find) : '';
+      const latex = item && item.latex ? String(item.latex) : '';
+      if (!find || !latex || find.length < 2) return;
+      // 过长的 find 会把"逐字替换"变成"整句重排"（实测模型会这么标）→ 这种直接不采纳。
+      // 判据：超过 30 字，或占了这段原文的一半以上（后者挡住"整段就一句公式"的情况）。
+      const maxFind = Math.min(30, Math.max(8, src.length * 0.5));
+      if (find.length > maxFind) return;
+      const at = locateAnchorIndex(src, find, 0);
+      if (at < 0) return;
+      if (reps.some(r => at < r.end && at + find.length > r.start)) return;
+      reps.push({ start: at, end: at + find.length, latex });
+    });
+    reps.sort((a, b) => a.start - b.start);
+    if (reps.length === 0) return renderTextWithMath(src);
+
+    let out = '';
+    let cursor = 0;
+    reps.forEach(r => {
+      out += renderTextWithMath(src.slice(cursor, r.start));
+      out += `<span class="vision-inline-math" title="行内公式（视觉模型从页面图像转写，仅影响显示）">${renderMathSpan(
+        r.latex,
+        false
+      )}</span>`;
+      cursor = r.end;
+    });
+    out += renderTextWithMath(src.slice(cursor));
+    return out;
   }
 
   function renderInlineMarkdown(text) {
@@ -7128,6 +8027,8 @@ let aiPresetQuestion = '';
     if (msg.answerStyle) aiStyle = msg.answerStyle;
     // 版面分割引擎（vision / auto / local）
     if (msg.segmentationEngine) visionEngine = msg.segmentationEngine;
+    // 视觉手术开关（关掉 = 只改类型/顺序/丢弃，不动分段）
+    if (msg.visionSurgery !== undefined) visionSurgeryAllowed = msg.visionSurgery !== false;
     syncAiStyleButtons();
     // 引擎标识变化 → 此后段落用新引擎重新翻译（旧引擎的缓存键不再命中）
     if (msg.engineTag && msg.engineTag !== currentEngineTag) {

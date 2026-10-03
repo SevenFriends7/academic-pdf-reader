@@ -1,0 +1,509 @@
+{
+  "ok": true,
+  "generatedAt": "2026-10-03T08:55:27.820Z",
+  "page": 6,
+  "model": "deepseek-flash",
+  "endpoint": "https://api.deepseek.com/v1",
+  "image": {
+    "path": "D:\\kx\\上海交大\\academic-pdf-reader\\scratch\\vision\\cycle_p6_full.png",
+    "bytes": 416246
+  },
+  "storeFile": "paper_1f6c2345c825e6b5dac7170135b540b1.json",
+  "promptChars": 5480,
+  "attempts": [
+    {
+      "round": 1,
+      "maxTokens": 16000,
+      "ms": 824,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 3400,
+        "completion_tokens": 2167,
+        "total_tokens": 5567,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 1577
+        },
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 3400
+      },
+      "reasoningChars": 5432,
+      "contentChars": 1602,
+      "parsed": true,
+      "error": null
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 3400,
+    "completion_tokens": 2167,
+    "total_tokens": 5567,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 1577
+    },
+    "prompt_cache_hit_tokens": 0,
+    "prompt_cache_miss_tokens": 3400
+  },
+  "latencyMs": 824,
+  "fixes": "把被误判为标题的表头与两表各行按表分组，并归并题注",
+  "localSegments": [
+    {
+      "id": 0,
+      "type": "heading",
+      "cleanText": "Method"
+    },
+    {
+      "id": 1,
+      "type": "body",
+      "cleanText": "RGMP [1] DMM-Net [8] AGSS-VOS [3] FEELVOS [7] Official STM [5] OnAVOS [9] PReMVOS [4] STM-cycle (Ours) STM-cycle+GC (Ours) Method Method with cyclic scheme as “STM-cycle”."
+    },
+    {
+      "id": 2,
+      "type": "heading",
+      "cleanText": "4.2 Main results"
+    },
+    {
+      "id": 3,
+      "type": "body",
+      "cleanText": "validation Extra data OL J (%) F (%) J & F (%) FPS X 64.8 68.6 66.7 3.6 X 68.1 73.3 70.7 X 64.9 69.9 67.4 10 X 69.1 74.0 71.5 2 X 79.2 84.3 81.8 6.3 X X 61.0 66.1 63.6 0.04 X X 73.9 81.7 77.8 0.03 68.7 74.7 71.7 38 X 69.3 75.3 72.3 9.3 test-dev Extra data OL J (%) F (%) J & F (%) FPS − 5"
+    },
+    {
+      "id": 4,
+      "type": "figure-label",
+      "cleanText": "RVOS [23] RGMP [1] AGSS-VOS [3] FEELVOS [7] OnAVOS [9] PReMVOS [4] STM-cycle (Ours) STM-cycle+GC (Ours) 48.0 52.6 50.3 22.7 X 51.3 54.4 52.8 2.4 X 54.8 59.7 57.2 10 X 55.2 60.5 57.8 1.8 X X 53.4 59.6 56.9 0.03 X X 67.5 75.7 71.6 0.02 55.1 60.5 57.8 31 X 55.3 62 58.6 6.9"
+    },
+    {
+      "id": 5,
+      "type": "caption",
+      "cleanText": "Table 1: Comparison with state-of-the-art method on DAVIS17 validation and test-dev set. “Extra data” indicates the method is pretrained with extra data with mask annotations. “OL” denotes online learning or update process. “GC” is short for gradient correction."
+    },
+    {
+      "id": 6,
+      "type": "body",
+      "cleanText": "Extra data OL J S (%) J U (%) F S (%) F U (%) G (%) FPS"
+    },
+    {
+      "id": 7,
+      "type": "figure-label",
+      "cleanText": "RVOS [23] S2S [11] RGMP [1] X DMM-Net [8] X AGSS-VOS [3] X Official STM [5] X S2S [11] OSVOS [2] X MaskTrack [6] X OnAVOS [9] X DMM-Net [8] X STM-cycle(Ours) STM-cycle+GC(Ours) 63.6 45.5 67.2 51.0 56.8 24 66.7 48.2 65.5 50.3 57.6 6 59.5 45.2 53.8 7 58.3 41.6 60.7 46.3 51.7 12 71.3 65.5 75.2 73.1 71.3 12.5 79.7 84.2 72.8 80.9 79.4 6.3 X 71.0 55.5 70.0 61.2 64.4 0.06 X 59.8 54.2 60.5 60.7 58.8 X 59.9 45.0 59.5 47.9 53.1 0.05 X 60.1 46.6 62.7 51.4 55.2 0.05 X 60.3 50.6 63.5 57.4 58.0 71.7 61.4 75.8 70.4 69.9 43 X 72.2 62.8 76.3 71.9 70.8 13.8"
+    },
+    {
+      "id": 8,
+      "type": "caption",
+      "cleanText": "Table 2: Comparison with state-of-the-art method on Youtube-VOS validation set. The subscript S and U denote the seen and unseen categories. G is the global mean. “-” indicates unavailable results."
+    },
+    {
+      "id": 9,
+      "type": "body",
+      "cleanText": "to the time-consuming gradient correction process, we take the lightweight design by reducing the intermediate feature dimension, resizing the input to half of the original work and upsampling the output to original size by nearest interpolation. For ease of representation, we denote the one trained Implementation details. The training and inference procedures are deployed on an NVIDIA TITAN Xp GPU. Within an epoch, for each video sequence, we randomly sample 3 frames as the training samples; the frame with the smallest timestamp is regarded as the initial reference frame. Similar to [5], the maximum temporal interval of sampling increases by 5 every 20 training epochs. We set the hyperparameters as γ = 1. 0, N = 10, K = 5, and M = 50. The Resnet50 [20] pretrained on ImageNet [21] is adopted as our backbone in baseline. The network is trained with a batch size of 4 for 240 epochs in total and is optimized by the Adam optimizer [22] of learning rate 10 and β 1 = 0. 9, β 2 = 0. 999. In both training and inference stages, the input frames are resized to the resolution of 240 × 427. The final output is upsampled to the original resolution by nearest interpolation. For simplicity, we directly use X t and Y ̂ t to construct the cyclic reference sets."
+    },
+    {
+      "id": 10,
+      "type": "body",
+      "cleanText": "DAVIS17. The evaluation results on DAVIS17 validation and test-dev set are reported in Table 1. From this table, we observe that our model trained with cyclic loss outperforms most of the offline"
+    }
+  ],
+  "rawResponse": {
+    "segments": [
+      {
+        "i": 0,
+        "type": "table",
+        "order": 1,
+        "group": 1,
+        "action": "keep",
+        "why": "表1表头行",
+        "latex": null,
+        "parts": [],
+        "inline": []
+      },
+      {
+        "i": 1,
+        "type": "table",
+        "order": 2,
+        "group": 1,
+        "action": "keep",
+        "why": "表1数据行",
+        "latex": null,
+        "parts": [],
+        "inline": []
+      },
+      {
+        "i": 3,
+        "type": "table",
+        "order": 3,
+        "group": 1,
+        "action": "keep",
+        "why": "表1分组行",
+        "latex": null,
+        "parts": [],
+        "inline": []
+      },
+      {
+        "i": 4,
+        "type": "table",
+        "order": 4,
+        "group": 1,
+        "action": "keep",
+        "why": "表1test-dev行",
+        "latex": null,
+        "parts": [],
+        "inline": []
+      },
+      {
+        "i": 5,
+        "type": "table_caption",
+        "order": 5,
+        "group": 1,
+        "action": "keep",
+        "why": "表1题注",
+        "latex": null,
+        "parts": [],
+        "inline": []
+      },
+      {
+        "i": 6,
+        "type": "table",
+        "order": 6,
+        "group": 2,
+        "action": "keep",
+        "why": "表2表头行",
+        "latex": null,
+        "parts": [],
+        "inline": []
+      },
+      {
+        "i": 7,
+        "type": "table",
+        "order": 7,
+        "group": 2,
+        "action": "keep",
+        "why": "表2数据行",
+        "latex": null,
+        "parts": [],
+        "inline": []
+      },
+      {
+        "i": 8,
+        "type": "table_caption",
+        "order": 8,
+        "group": 2,
+        "action": "keep",
+        "why": "表2题注",
+        "latex": null,
+        "parts": [],
+        "inline": []
+      },
+      {
+        "i": 9,
+        "type": "body",
+        "order": 9,
+        "group": null,
+        "action": "split",
+        "why": "两段正文被并成一片",
+        "latex": null,
+        "parts": [
+          {
+            "type": "body",
+            "at": "to the time-consuming gradient"
+          },
+          {
+            "type": "body",
+            "at": "Implementation details. The training"
+          }
+        ],
+        "inline": [
+          {
+            "find": "X t and Y ̂ t",
+            "latex": "X_t \\text{ and } \\hat{Y}_t"
+          },
+          {
+            "find": "γ = 1. 0",
+            "latex": "\\gamma = 1.0"
+          },
+          {
+            "find": "β 1 = 0. 9",
+            "latex": "\\beta_1 = 0.9"
+          },
+          {
+            "find": "β 2 = 0. 999",
+            "latex": "\\beta_2 = 0.999"
+          }
+        ]
+      },
+      {
+        "i": 2,
+        "type": "heading",
+        "order": 10,
+        "group": null,
+        "action": "keep",
+        "why": "小节标题",
+        "latex": null,
+        "parts": [],
+        "inline": []
+      },
+      {
+        "i": 10,
+        "type": "body",
+        "order": 11,
+        "group": null,
+        "action": "keep",
+        "why": "正文段首",
+        "latex": null,
+        "parts": [],
+        "inline": []
+      }
+    ],
+    "fixes": "把被误判为标题的表头与两表各行按表分组，并归并题注"
+  },
+  "checks": {
+    "numbering": {
+      "localCount": 11,
+      "returnedCount": 11,
+      "uniqueI": 11,
+      "missingI": [],
+      "duplicateI": [],
+      "extraI": [],
+      "orderSequence": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11
+      ],
+      "orderIsSequence": true
+    },
+    "groups": {
+      "groupCount": 2,
+      "groups": [
+        {
+          "group": "1",
+          "size": 5,
+          "members": [
+            {
+              "i": 0,
+              "type": "table",
+              "order": 1,
+              "action": "keep",
+              "head": "Method"
+            },
+            {
+              "i": 1,
+              "type": "table",
+              "order": 2,
+              "action": "keep",
+              "head": "RGMP [1] DMM-Net [8] AGSS-VOS "
+            },
+            {
+              "i": 3,
+              "type": "table",
+              "order": 3,
+              "action": "keep",
+              "head": "validation Extra data OL J (%)"
+            },
+            {
+              "i": 4,
+              "type": "table",
+              "order": 4,
+              "action": "keep",
+              "head": "RVOS [23] RGMP [1] AGSS-VOS [3"
+            },
+            {
+              "i": 5,
+              "type": "table_caption",
+              "order": 5,
+              "action": "keep",
+              "head": "Table 1: Comparison with state"
+            }
+          ],
+          "hasCaption": true,
+          "types": [
+            "table",
+            "table_caption"
+          ]
+        },
+        {
+          "group": "2",
+          "size": 3,
+          "members": [
+            {
+              "i": 6,
+              "type": "table",
+              "order": 6,
+              "action": "keep",
+              "head": "Extra data OL J S (%) J U (%) "
+            },
+            {
+              "i": 7,
+              "type": "table",
+              "order": 7,
+              "action": "keep",
+              "head": "RVOS [23] S2S [11] RGMP [1] X "
+            },
+            {
+              "i": 8,
+              "type": "table_caption",
+              "order": 8,
+              "action": "keep",
+              "head": "Table 2: Comparison with state"
+            }
+          ],
+          "hasCaption": true,
+          "types": [
+            "table",
+            "table_caption"
+          ]
+        }
+      ],
+      "singletons": [],
+      "typeCounts": [
+        {
+          "group": "1",
+          "size": 5,
+          "typeCounts": {
+            "table": 4,
+            "table_caption": 1
+          }
+        },
+        {
+          "group": "2",
+          "size": 3,
+          "typeCounts": {
+            "table": 2,
+            "table_caption": 1
+          }
+        }
+      ],
+      "captionWithoutGroup": [],
+      "bboxPresent": [],
+      "columnsPresent": 0
+    },
+    "mergeNext": {
+      "count": 0,
+      "rows": [],
+      "keepButLooksLikeContinuation": [
+        {
+          "i": 3,
+          "startsLowercaseOrDigit": true,
+          "head": "validation Extra data OL J (%) F (%) J & F (%) FPS"
+        },
+        {
+          "i": 2,
+          "startsLowercaseOrDigit": true,
+          "head": "4.2 Main results"
+        }
+      ],
+      "adjacentCandidates": []
+    },
+    "anchors": {
+      "counts": {
+        "total": 2,
+        "exactStrict": 2,
+        "exactLoose": 0,
+        "fuzzy": 0,
+        "fail": 0,
+        "absent": 0,
+        "located": 2,
+        "locateRate": 1
+      },
+      "rows": [
+        {
+          "i": 9,
+          "partIndex": 0,
+          "anchor": "to the time-consuming gradient",
+          "type": "body",
+          "method": "exact-strict",
+          "fuzzyScore": null
+        },
+        {
+          "i": 9,
+          "partIndex": 1,
+          "anchor": "Implementation details. The training",
+          "type": "body",
+          "method": "exact-strict",
+          "fuzzyScore": null
+        }
+      ]
+    },
+    "inline": {
+      "total": 4,
+      "found": 4,
+      "notFound": 0,
+      "overLimit": 0,
+      "lenMin": 8,
+      "lenMax": 13,
+      "lenMedian": 12,
+      "rows": [
+        {
+          "i": 9,
+          "find": "X t and Y ̂ t",
+          "len": 13,
+          "overLimit": false,
+          "inCleanText": true,
+          "latex": "X_t \\text{ and } \\hat{Y}_t"
+        },
+        {
+          "i": 9,
+          "find": "γ = 1. 0",
+          "len": 8,
+          "overLimit": false,
+          "inCleanText": true,
+          "latex": "\\gamma = 1.0"
+        },
+        {
+          "i": 9,
+          "find": "β 1 = 0. 9",
+          "len": 10,
+          "overLimit": false,
+          "inCleanText": true,
+          "latex": "\\beta_1 = 0.9"
+        },
+        {
+          "i": 9,
+          "find": "β 2 = 0. 999",
+          "len": 12,
+          "overLimit": false,
+          "inCleanText": true,
+          "latex": "\\beta_2 = 0.999"
+        }
+      ]
+    }
+  },
+  "summary": {
+    "numberingOk": true,
+    "groupCount": 2,
+    "singletonGroups": [],
+    "captionWithoutGroup": [],
+    "mergeNextCount": 0,
+    "keepButLooksLikeContinuation": 2,
+    "anchorCount": 2,
+    "anchorLocated": 2,
+    "anchorFailed": 0,
+    "anchorRate": 1,
+    "inlineCount": 4,
+    "inlineFound": 4,
+    "inlineOverLimit": 0,
+    "bboxPresent": [],
+    "columnsPresent": 0,
+    "totalMs": 9115
+  },
+  "consoleNotes": {
+    "task": "任务 B group 成组（cycle.pdf 第 6 页，真调 API）",
+    "groupVerdict": "**group 在真实素材上第一次被验证通过**（此前只有单元测试覆盖）。选页依据：第 1~6 页里只有第 6 页含 `figure-label` 类型分段（2 条），且是唯一存在\"同一图块 ≥2 个文本层分段\"的页；其余页的题注段都是单成员。",
+    "groupsFound": "给 2 个 group、0 个单元素组：group1 = 4 条 table([0][1][3][4]) + 1 条 table_caption([5] Table 1)，共 5 员；group2 = 2 条 table([6][7]) + 1 条 table_caption([8] Table 2)，共 3 员。图内/表内文字与题注确实同组，且没有把两张表混成一组。",
+    "captionTypeCorrect": "两个题注都标成 table_caption；captionWithoutGroup = 0。",
+    "minorIssue": "[0]\"Method\" 与 [2]\"4.2 Main results\" 都被标成 table：前者其实是 Table 2 的列头行（应属 group2），后者是正文章节标题（应属 heading）。这影响的是 type 与个别归属，不影响\"成组\"这个结论。",
+    "splitBonus": "[9] 被判 split：parts = body(\"to the time-consuming gradient…\") + body(\"Implementation details. The training…\")，锚点均精确命中——这是跨语义边界的真实拆分（前一段结尾 + 新小节开头被并成一段）。",
+    "inlineQuality": "4 条 inline 全部命中且**全部 ≤20 字**（长度 8/10/12/13，中位 12）：X t and Y ̂ t、γ = 1. 0、β 1 = 0. 9、β 2 = 0. 999，LaTeX 也都对（\\gamma = 1.0、\\beta_1 = 0.9、\\beta_2 = 0.999）。收紧后的 find 约束这次完全守住。",
+    "anchors": "2/2 精确命中（均在 [9] 的 parts 里），0 模糊 0 失败。"
+  }
+}

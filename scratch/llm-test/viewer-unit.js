@@ -1364,5 +1364,313 @@ console.log('\n===== T20 公式段落识别 =====');
   checkTrue('Markdown 精读稿对公式段写"无需翻译"', /公式\/符号段落，无需翻译/.test(code));
 })();
 
+// ---------- 21. 视觉手术：真的按模型判断合并 / 拆分（纯函数，直接从真实源码抽出） ----------
+console.log('\n===== T21 视觉手术（合并 / 拆分 / 图块 / 锚点定位） =====');
+(function visionSurgeryTest() {
+  const start = code.indexOf('  function normalizeVisionType(t) {');
+  const end = code.indexOf('  function applyVisionSegments(pageNum, result) {');
+  checkTrue('能从真实源码里抽出手术这一段（含锚点定位与全部辅助函数）', start > 0 && end > start);
+  if (start < 0 || end <= start) return;
+
+  // eslint-disable-next-line no-new-func
+  const mkSurgery = new Function(
+    'splitEnglishSentencesSmart',
+    `${code.slice(start, end)}
+     return { visionSurgery, locateAnchorIndex, normalizeVisionType, sentencesConsistent, mergeParagraphs };`
+  );
+  const M = mkSurgery(T.splitEnglishSentencesSmart);
+
+  const spanStub = () => ({ attrs: {}, setAttribute(k, v) { this.attrs[k] = v; } });
+  const mkPara = (id, type, text, translations) => {
+    const charMap = [];
+    const spans = [];
+    for (let i = 0; i < text.length; i++) {
+      const sp = spanStub();
+      spans.push(sp);
+      charMap.push({ span: sp, offset: i });
+    }
+    return {
+      id,
+      type,
+      cleanText: text,
+      charMap,
+      rawSpans: spans,
+      sentencesEn: T.splitEnglishSentencesSmart(text),
+      sentenceTranslations: Array.isArray(translations) ? translations : [],
+      translation: ''
+    };
+  };
+  const consistent = list =>
+    list.every(p => p.cleanText.length === p.charMap.length) &&
+    list.every(p => (p.sentencesEn || []).every(s => p.cleanText.slice(s.startIdx, s.endIdx) === s.text));
+  const texts = list => list.map(p => p.cleanText);
+
+  // ---- 锚点定位：文本层残渣（组合抑扬符）vs 模型"顺手写对"的写法 ----
+  const residue = 'L cycle,t = L (Y \u0302 t, Y t) + L (Y \u0302 1, Y 1) (3) In implementation, we utilize';
+  checkTrue(
+    '锚点精确定位（照抄残渣写法）',
+    M.locateAnchorIndex(residue, 'In implementation, we utilize') === residue.indexOf('In implementation')
+  );
+  checkTrue(
+    '锚点归一化定位（模型把 "Y ̂" 写成 "Ŷ"、去掉空白也能找到）',
+    M.locateAnchorIndex(residue, 'L cycle,t=L(Ŷt,Yt)') === 0,
+    String(M.locateAnchorIndex(residue, 'L cycle,t=L(Ŷt,Yt)'))
+  );
+  checkTrue('锚点模糊定位（掉几个字符也能找到大致位置）', M.locateAnchorIndex(residue, 'In implementaton, we utilze') >= 0);
+  checkTrue('定位不到时返回 -1（调用方据此跳过该处手术，绝不猜位置）', M.locateAnchorIndex(residue, '完全不相干的一段文字') === -1);
+
+  // ---- 拆分：正文 + 公式 + 正文 ----
+  (function splitTest() {
+    const p = mkPara(
+      0,
+      'body',
+      'As shown below. L cycle,t = L (Y \u0302 t, Y t) (2) In implementation, we utilize the combination of two losses.'
+    );
+    const list = [p];
+    const stats = M.visionSurgery(list, {
+      segments: [
+        {
+          index: 0,
+          type: 'body',
+          action: 'split',
+          parts: [
+            { type: 'body' },
+            { type: 'formula', at: 'L cycle,t = L (Y \u0302 t, Y t) (2)', latex: '\\mathcal{L}_{cycle,t}' },
+            { type: 'body', at: 'In implementation' }
+          ]
+        }
+      ]
+    });
+    checkTrue('一段被拆成三段', list.length === 3, texts(list).map(t => t.slice(0, 22)).join(' | '));
+    checkTrue('每片的类型来自 parts（中间那片是公式）', list[1].type === 'formula' && list[1].visionLatex === '\\mathcal{L}_{cycle,t}');
+    checkTrue('首片与末片是正文', list[0].type === 'body' && list[2].type === 'body');
+    checkTrue('切出来的文本拼回去等于原文', texts(list).join(' ') === p.cleanText.replace(/\s+/g, ' '), texts(list).join(' | '));
+    checkTrue('不变量：charMap 与文本 1:1、句子下标自洽', consistent(list));
+    checkTrue('id 重新编号（0..n-1）', list.map(x => x.id).join(',') === '0,1,2');
+    checkTrue('统计里记下拆分处数', stats.split === 1 && stats.split !== 0);
+
+    // 拆分继承逐句译文：原段已对齐时，落在各片里的句子连同译文一起搬过来
+    const q = mkPara(0, 'body', 'First sentence here. Second sentence follows.');
+    q.sentenceTranslations = ['第一句在这里。', '第二句跟在后面。'];
+    const list2 = [q];
+    M.visionSurgery(list2, {
+      segments: [{ index: 0, type: 'body', action: 'split', parts: [{ type: 'body' }, { type: 'body', at: 'Second sentence follows.' }] }]
+    });
+    checkTrue('拆分后各片继承自己那几句的译文（不重译、不串句）', list2.length === 2 && list2[1].sentenceTranslations[0] === '第二句跟在后面。', JSON.stringify(list2[1].sentenceTranslations));
+    checkTrue('继承来的句子下标在新片里依然自洽', consistent(list2));
+
+    // 切点落在句子中间 → 两边都不留半句，交给翻译队列重译（宁可重译也不贴半句译文）
+    const r = mkPara(0, 'body', 'The appearance of the target object during test time.');
+    r.sentenceTranslations = ['测试时间内目标对象的外观。'];
+    const list3 = [r];
+    M.visionSurgery(list3, {
+      segments: [{ index: 0, type: 'body', action: 'split', parts: [{ type: 'body' }, { type: 'body', at: 'target object during test time.' }] }]
+    });
+    checkTrue(
+      '切点落在句中 → 不留半句译文（那片标成需重译）',
+      list3.length === 2 && list3.every(x => !x.sentenceTranslations.length) && list3.every(x => x.needsRetranslate === true)
+    );
+    checkTrue('切点落在句中时句子下标仍严格自洽', consistent(list3));
+
+    // 锚点定位不到 → 跳过该处手术，段落原样保留
+    const s = mkPara(0, 'body', 'Some ordinary paragraph without any formula inside.');
+    const list4 = [s];
+    const stats4 = M.visionSurgery(list4, {
+      segments: [{ index: 0, type: 'body', action: 'split', parts: [{ type: 'body' }, { type: 'body', at: '完全定位不到的文字' }] }]
+    });
+    checkTrue('锚点定位不到 → 不拆（段落数量不变）', list4.length === 1 && texts(list4)[0] === s.cleanText);
+    checkTrue('并且如实记下"跳过了这一处"', stats4.anchorMissed === 1 && stats4.notes.length === 1, JSON.stringify(stats4.notes));
+  })();
+
+  // ---- 合并：跨栏半句 ----
+  (function mergeTest() {
+    const a = mkPara(0, 'body', 'A related work fine-tunes deep network models on the initial object mask to remember the appearance of the', [
+      '相关工作在首帧的目标掩码上微调深度网络，以记住'
+    ]);
+    const b = mkPara(1, 'body', 'target object [2,34,26,14,26,11,18] during the test time.', ['测试时间内的目标对象外观。']);
+    const list = [a, b];
+    const stats = M.visionSurgery(list, {
+      segments: [
+        { index: 0, type: 'body', order: 1, action: 'merge_next' },
+        { index: 1, type: 'body', order: 2, action: 'keep' }
+      ]
+    });
+    checkTrue('两段合并成一段', list.length === 1);
+    checkTrue(
+      '合并后的文本是完整句子',
+      /appearance of the target object \[2,34,26,14,26,11,18\] during the test time\.$/.test(list[0].cleanText),
+      list[0].cleanText.slice(-80)
+    );
+    checkTrue('合并后句子下标与文本严格自洽（跨栏半句被真正拼成一句）', consistent(list));
+    checkTrue('合并后只剩一句（半句不再单独成句）', list[0].sentencesEn.length === 1, JSON.stringify(list[0].sentencesEn.map(s => s.text.slice(0, 24))));
+    checkTrue('两句译文被拼到同一句上（不是丢掉重来）', list[0].sentenceTranslations.length === 1 && /相关工作/.test(list[0].sentenceTranslations[0]) && /目标对象外观/.test(list[0].sentenceTranslations[0]), JSON.stringify(list[0].sentenceTranslations));
+    checkTrue('合并后 span 重新挂到存活段落的 id', list[0].rawSpans.every(sp => String(sp.attrs['data-para-id']) === '0'));
+    checkTrue('统计里记下合并处数', stats.merged === 1);
+
+    // 反例：下一段被判定要拆 → 不合并（拆分语义优先，避免"一半合一半拆"）
+    const c = mkPara(0, 'body', 'ends mid sentence', ['半句']);
+    const d = mkPara(1, 'body', 'Some. Other.');
+    const list2 = [c, d];
+    M.visionSurgery(list2, {
+      segments: [
+        { index: 0, type: 'body', order: 1, action: 'merge_next' },
+        { index: 1, type: 'body', order: 2, action: 'split', parts: [{ type: 'body' }, { type: 'body', at: 'Other.' }] }
+      ]
+    });
+    checkTrue(
+      '下一段还要拆 → 不与它合并（拆分优先，且合并落在拆出来的碎片上语义不清）',
+      list2.length === 3 && texts(list2)[0] === 'ends mid sentence',
+      texts(list2).join(' | ')
+    );
+
+    // 反例：模型没判断过的相邻段（没有编号）→ 邻接关系不可信，不合并
+    const e = mkPara(0, 'body', 'ends mid sentence too');
+    const f = mkPara(1, 'body', 'not judged by the model.');
+    const list3 = [e, f];
+    M.visionSurgery(list3, { segments: [{ index: 0, type: 'body', action: 'merge_next' }] });
+    checkTrue('只合并模型明确判断过的相邻段', list3.length === 2);
+
+    // 护栏一：下一段以大写开头 = 新段落的开头（模型有把"本段续上一段"错标成 merge_next 的倾向）
+    const g = mkPara(0, 'body', 'background camel will serve as the foundation for our');
+    const h = mkPara(1, 'body', 'Based on these observations, we design a new module.');
+    const list4 = [g, h];
+    M.visionSurgery(list4, {
+      segments: [
+        { index: 0, type: 'body', order: 1, action: 'merge_next', why: '小写起首，上页续句' },
+        { index: 1, type: 'body', order: 2, action: 'keep' }
+      ]
+    });
+    checkTrue('下一段以大写开头 → 不合并（实测模型会在这里给假 merge_next）', list4.length === 2, texts(list4).join(' | '));
+
+    // 护栏二：下一段是小节标题 → 不合并（"2 Related works" → "2.1 Semi-supervised…" 字面很像续句）
+    const k = mkPara(0, 'body', '2 Related works');
+    const l = mkPara(1, 'body', '2.1 Semi-supervised video object segmentation.');
+    const list5 = [k, l];
+    M.visionSurgery(list5, {
+      segments: [
+        { index: 0, type: 'heading', order: 1, action: 'merge_next' },
+        { index: 1, type: 'heading', order: 2, action: 'keep' }
+      ]
+    });
+    checkTrue('下一段是标题/图注类 → 不合并', list5.length === 2, texts(list5).join(' | '));
+  })();
+
+  // ---- 图块分组：图注留下、图内文字剔出正文 ----
+  (function groupTest() {
+    const list = [
+      mkPara(0, 'caption', 'Figure 2: Overview of the framework.'),
+      mkPara(1, 'body', 'Segmentation Network'),
+      mkPara(2, 'body', 'Loss'),
+      mkPara(3, 'body', 'Real body paragraph that must stay.')
+    ];
+    const stats = M.visionSurgery(list, {
+      segments: [
+        { index: 0, type: 'figure_caption', order: 1, group: 1, action: 'keep' },
+        { index: 1, type: 'figure', order: 2, group: 1, action: 'keep' },
+        { index: 2, type: 'figure', order: 3, group: 1, action: 'keep' },
+        { index: 3, type: 'body', order: 4, action: 'keep' }
+      ]
+    });
+    checkTrue(
+      '图内文字被剔成 figure-label（不翻译、不出卡片）',
+      list.filter(p => p.type === 'figure-label').length === 2,
+      list.map(p => p.type).join(',')
+    );
+    checkTrue('图注仍是 caption（保留为一张卡片）', list[0].type === 'caption');
+    checkTrue('图块成员排在一起', list.slice(0, 3).every(p => p.type !== 'body'), list.map(p => p.type).join(','));
+    checkTrue('正文段落没被误伤', list[3].type === 'body');
+    checkTrue('统计里记下图块数', stats.grouped === 1);
+
+    // 护栏：模型把图下方的正文也归进同一 group 时，正文不能被当成图内文字丢掉
+    const list3 = [
+      mkPara(0, 'caption', 'Figure 3: Another framework.'),
+      mkPara(1, 'body', 'Segmentation Network'),
+      mkPara(
+        2,
+        'body',
+        'We further observe that the cyclic mechanism works well across all evaluated datasets, and the improvement is consistent.'
+      )
+    ];
+    const stats3 = M.visionSurgery(list3, {
+      segments: [
+        { index: 0, type: 'figure_caption', order: 1, group: 2, action: 'keep' },
+        { index: 1, type: 'figure', order: 2, group: 2, action: 'keep' },
+        { index: 2, type: 'figure', order: 3, group: 2, action: 'keep' }
+      ]
+    });
+    checkTrue(
+      '图块里明显是正文的成员不被丢掉（宁可少删，不能删错）',
+      list3[2].type === 'body' && /We further observe/.test(list3[2].cleanText),
+      list3.map(p => p.type).join(',')
+    );
+    checkTrue('并且如实记下"已保留"', stats3.notes.some(n => /明显是正文/.test(n)), JSON.stringify(stats3.notes));
+
+    // 没有图注做锚点 → 只收拢顺序，什么都不丢
+    const list2 = [mkPara(0, 'body', 'Axis label'), mkPara(1, 'body', 'Legend item')];
+    const stats2 = M.visionSurgery(list2, {
+      segments: [
+        { index: 0, type: 'figure', order: 1, group: 3, action: 'keep' },
+        { index: 1, type: 'figure', order: 2, group: 3, action: 'keep' }
+      ]
+    });
+    checkTrue('图块里没标出图注 → 不做任何丢弃（宁可少删，不能删错）', list2.every(p => p.type === 'figure-label' || p.type === 'body'));
+    checkTrue('并且如实记下"只收拢顺序"', stats2.notes.some(n => /没有标出图注/.test(n)), JSON.stringify(stats2.notes));
+  })();
+
+  // ---- 类型收敛 / 丢弃 / 阅读顺序 ----
+  (function typeAndOrderTest() {
+    checkTrue('figure / table → figure-label（否则图内文字照旧被送翻译）', M.normalizeVisionType('figure') === 'figure-label' && M.normalizeVisionType('TABLE') === 'figure-label');
+    checkTrue('figure_caption → caption', M.normalizeVisionType('figure_caption') === 'caption');
+    checkTrue('page_number / header / footer → noise', M.normalizeVisionType('page_number') === 'noise' && M.normalizeVisionType('footer') === 'noise');
+    checkTrue('formula / formula_inline 原样保留', M.normalizeVisionType('formula') === 'formula' && M.normalizeVisionType('formula_inline') === 'formula_inline');
+    checkTrue('不认识的类型不硬套（返回空串）', M.normalizeVisionType('whatever') === '');
+
+    const list = [
+      mkPara(0, 'body', 'first paragraph here.'),
+      mkPara(1, 'body', 'PDF-4'),
+      mkPara(2, 'body', 'second paragraph here.')
+    ];
+    M.visionSurgery(list, {
+      segments: [
+        { index: 2, type: 'body', order: 1, action: 'keep' },
+        { index: 0, type: 'body', order: 2, action: 'keep' },
+        { index: 1, type: 'page_number', order: 3, action: 'drop' }
+      ]
+    });
+    checkTrue('阅读顺序按 order 重排', texts(list)[0].indexOf('second') === 0, texts(list).join(' | '));
+    checkTrue('判定丢弃的段落标成 noise', list.some(p => p.type === 'noise' && /PDF-4/.test(p.cleanText)));
+
+    // 模型不给 order（或给得不全）→ 按回包里 segments 的数组顺序（提示词要求它按阅读顺序列出）
+    const list2 = [mkPara(0, 'body', 'aaa.'), mkPara(1, 'body', 'bbb.')];
+    M.visionSurgery(list2, {
+      segments: [
+        { index: 1, type: 'body', action: 'keep' },
+        { index: 0, type: 'body', action: 'keep' }
+      ]
+    });
+    checkTrue('没有 order 时按回包数组顺序（= 模型给的阅读顺序）', texts(list2)[0].indexOf('bbb') === 0, texts(list2).join(' | '));
+  })();
+
+  // ---- 接线检查：手术永远在"本地原件"上重放，且能撤销 ----
+  checkTrue('手术作用于本地原件而不是"已手术过的当前结果"', /function visionBaseParagraphs\(\)/.test(code) && /localParagraphsSnapshot/.test(code));
+  checkTrue('渲染完成时留档本地原件', /localParagraphsSnapshot = cloneParagraphs\(paras\)/.test(code));
+  checkTrue('重复应用不会叠加（每次先克隆原件）', /const list = cloneParagraphs\(visionBaseParagraphs\(\)\)/.test(code));
+  checkTrue('提供撤销入口（并记住本页别再自动套用）', /function undoVisionStructure\(pageNum\)/.test(code) && /entry\.disabled = true/.test(code));
+  checkTrue('撤销后本页不再自动套用视觉结果', /cached\.disabled\) return;/.test(code));
+  checkTrue('v1 协议缓存判废（缺 parts/group/inline）', /function isUsableVisionCache\(entry\)/.test(code) && /Number\(entry\.version\) >= 2/.test(code));
+  checkTrue('请求视觉时发的是本地未手术的分段', /localParagraphsPage === pageNum && localParagraphsSnapshot \? localParagraphsSnapshot/.test(code));
+  checkTrue('手术抛异常时回退到"只改类型"的老路径', /视觉手术失败，回退到只改类型/.test(code));
+  checkTrue('设置项可关闭手术（关掉 = 只改类型/顺序/丢弃）', /visionSurgeryAllowed \? applyVisionStructure\(page, result\) : applyVisionSegments\(page, result\)/.test(code));
+  checkTrue('行内公式只在显示层替换（原文/坐标不动）', /function renderEnTextHtml\(text, inline\)/.test(code));
+  checkTrue('卡片里的英文原文走行内公式渲染', /div class="sent-en">\$\{renderEnTextHtml\(sent\.text, para\.visionInline\)\}/.test(code));
+  // 视觉手术会重新编号 → 批注不能只按编号找段落（否则"点批注跳到别的段"）
+  checkTrue(
+    '批注定位改成"引文文字优先、编号兜底"',
+    /function findParaForAnnotation\(annot\)/.test(code) &&
+      /if \(byId && \(!text \|\| matches\(byId\)\)\) return byId;/.test(code) &&
+      (code.match(/const matchedPara = findParaForAnnotation\(annot\);/g) || []).length === 2
+  );
+})();
+
 console.log(`\n===== 结果: ${pass} 通过 / ${fail} 失败 =====`);
 process.exit(fail > 0 || loadError ? 1 : 0);

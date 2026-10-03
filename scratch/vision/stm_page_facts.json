@@ -1,0 +1,859 @@
+{
+  "pdf": "D:\\kx\\上海交大\\梯度校正测验\\梯度校正测验\\STM.pdf",
+  "pageCount": 10,
+  "pagesSummary": [
+    {
+      "page": 1,
+      "lines": 67,
+      "captionCount": 1,
+      "captions": [
+        "Figure 1: Previous DNN-based algorithms extract features"
+      ]
+    },
+    {
+      "page": 2,
+      "lines": 74,
+      "captionCount": 0,
+      "captions": []
+    },
+    {
+      "page": 3,
+      "lines": 77,
+      "captionCount": 1,
+      "captions": [
+        "Figure 2: Overview of our framework. Our network consists of two encoders each for the memory and the query fr"
+      ]
+    },
+    {
+      "page": 4,
+      "lines": 130,
+      "captionCount": 1,
+      "captions": [
+        "Figure 3: Detailed implementation of the space-time mem?ory read operation using basic tensor operations as de"
+      ]
+    },
+    {
+      "page": 5,
+      "lines": 80,
+      "captionCount": 0,
+      "captions": []
+    },
+    {
+      "page": 6,
+      "lines": 82,
+      "captionCount": 3,
+      "captions": [
+        "Table 1: The quantitative evaluation of multi-object video",
+        "Table 2: The quantitative evaluation on DAVIS-2016 valida?tion set. OL indicates online learning. (+YV) indica",
+        "Table 3: The quantitative evaluation on DAVIS-2017 val?idation set. OL indicates online learning. (+YV) indica"
+      ]
+    },
+    {
+      "page": 7,
+      "lines": 58,
+      "captionCount": 3,
+      "captions": [
+        "Figure 4: The qualitative results on Youtube-VOS and DAVIS. Frames are sampled at important moments (e.g. befo",
+        "Table 4: Training data analysis on Youtube-VOS and",
+        "Table 5: Memory management analysis on the validation"
+      ]
+    },
+    {
+      "page": 8,
+      "lines": 74,
+      "captionCount": 3,
+      "captions": [
+        "Figure 5: Visualization of our space-time read operation. We first compute the similarity scores in Eq. (2) fo",
+        "Figure 6: Visual comparisons of the results with and with?out using the intermediate frame memories.",
+        "Figure 7: Jaccard score distribution on DAVIS-2017."
+      ]
+    },
+    {
+      "page": 9,
+      "lines": 94,
+      "captionCount": 0,
+      "captions": []
+    },
+    {
+      "page": 10,
+      "lines": 45,
+      "captionCount": 0,
+      "captions": []
+    }
+  ],
+  "targetPage": 6,
+  "targetLineCount": 82,
+  "targetCaptions": [
+    "Table 1: The quantitative evaluation of multi-object video",
+    "Table 2: The quantitative evaluation on DAVIS-2016 valida?tion set. OL indicates online learning. (+YV) indicates the",
+    "Table 3: The quantitative evaluation on DAVIS-2017 val?idation set. OL indicates online learning. (+YV) indicates"
+  ],
+  "targetLines": [
+    {
+      "line": 0,
+      "text": "Seen Unseen",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 1,
+      "text": "Overall J F J F",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 2,
+      "text": "OSMN [40] 51.2 60.0 60.1 40.6 44.0",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 3,
+      "text": "MSK [26] 53.1 59.9 59.5 45.0 47.9",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 4,
+      "text": "RGMP [24] 53.8 59.5 - 45.2 -",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 5,
+      "text": "OnAVOS [34] 55.2 60.1 62.7 46.6 51.4",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 6,
+      "text": "RVOS [32] 56.8 63.6 67.2 45.5 51.0",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 7,
+      "text": "OSVOS [2] 58.8 59.8 60.5 54.2 60.7",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 8,
+      "text": "S2S [38] 64.4 71.0 70.0 55.5 61.2",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 9,
+      "text": "A-GAME [13] 66.1 67.8 - 60.8 -",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 10,
+      "text": "PreMVOS [20] 66.9 71.4 75.9 56.5 63.7",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 11,
+      "text": "BoLTVOS [35] 71.1 71.6 - 64.3 -",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 12,
+      "text": "Ours 79.4 79.7 84.2 72.8 80.9",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 13,
+      "text": "Table 1: The quantitative evaluation of multi-object video",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": true
+    },
+    {
+      "line": 14,
+      "text": "object segmentation on Youtube-VOS [38] validation set.",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": false,
+      "isCaption": false
+    },
+    {
+      "line": 15,
+      "text": "Results for other methods are directly copied from [37, 13,",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 16,
+      "text": "32, 35].",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": false,
+      "isCaption": false
+    },
+    {
+      "line": 17,
+      "text": "OL J Mean F Mean Time",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 18,
+      "text": "S2S (+YV) [38] X 79.1 - 9s",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 19,
+      "text": "MSK [26] X 79.7 75.4 12s",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 20,
+      "text": "OSVOS [2] X 79.8 80.6 9s",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 21,
+      "text": "MaskRNN [11] X 80.7 80.9 -",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 22,
+      "text": "VideoMatch [12] 81.0 - 0.32s",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 23,
+      "text": "FEELVOS (+YV) [33] 81.1 82.2 0.45s",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 24,
+      "text": "RGMP [24] 81.5 82.0 0.13s",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 25,
+      "text": "A-GAME (+YV) [13] 82.0 82.2 0.07s",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 26,
+      "text": "FAVOS [4] 82.4 79.5 1.8s",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 27,
+      "text": "LSE [6] X 82.9 80.3 -",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 28,
+      "text": "CINN [1] X 83.4 85.0 >30s",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 29,
+      "text": "PReMVOS [20] X 84.9 88.6 >30s",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 30,
+      "text": "OSVOSS [21] X 85.6 86.4 4.5s",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 31,
+      "text": "OnAVOS [34] X 86.1 84.9 13s",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 32,
+      "text": "DyeNet [18] X 86.2 - 2.32s",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 33,
+      "text": "Ours 84.8 88.1 0.16s",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 34,
+      "text": "Ours (+YV) 88.7 89.9 0.16s",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 35,
+      "text": "Table 2: The quantitative evaluation on DAVIS-2016 valida?tion set. OL indicates online learning. (+YV) indicates the",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": true
+    },
+    {
+      "line": 36,
+      "text": "use of Youtube-VOS for training. Methods with J Mean",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 37,
+      "text": "below 79 are omitted due to the space limit and the com?plete table is available in the supplementary material.",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": false,
+      "isCaption": false
+    },
+    {
+      "line": 38,
+      "text": "4.2. DAVIS",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 39,
+      "text": "Single object (DAVIS-2016). DAVIS-2016 [27] is one of",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 40,
+      "text": "the most popular benchmark datasets for video object seg?mentation tasks. We use the validation set that contains 20",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 41,
+      "text": "videos annotated with high-quality masks each for a single",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 42,
+      "text": "OL J Mean F Mean",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 43,
+      "text": "OSMN [40] 52.5 57.1",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 44,
+      "text": "FAVOS [4] 54.6 61.8",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 45,
+      "text": "VidMatch [12] 56.5 68.2",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 46,
+      "text": "OSVOS [2] X 56.6 63.9",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 47,
+      "text": "MaskRNN [11] X 60.5 -",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 48,
+      "text": "OnAVOS [34] X 64.5 71.2",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 49,
+      "text": "OSVOSS [2] X 64.7 71.3",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 50,
+      "text": "RGMP [24] 64.8 68.6",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 51,
+      "text": "CINN [1] X 67.2 74.2",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 52,
+      "text": "A-GAME (+YV) [13] 67.2 72.7",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 53,
+      "text": "FEELVOS (+YV) [33] 69.1 74.0",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 54,
+      "text": "DyeNet [18] X *74.1",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 55,
+      "text": "PReMVOS [20] X 73.9 81.7",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 56,
+      "text": "Ours 69.2 74.0",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 57,
+      "text": "Ours (+YV) 79.2 84.3",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 58,
+      "text": "Table 3: The quantitative evaluation on DAVIS-2017 val?idation set. OL indicates online learning. (+YV) indicates",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": true
+    },
+    {
+      "line": 59,
+      "text": "the use of Youtube-VOS for training. *: average of J Mean",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 60,
+      "text": "and F Mean.",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": false,
+      "isCaption": false
+    },
+    {
+      "line": 61,
+      "text": "target object. We compare our method with state-of-the-art",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 62,
+      "text": "methods in Table 2. In the table, we indicate the use of",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 63,
+      "text": "online learning and provide approximate runtimes of each",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 64,
+      "text": "method. Most of the previous top-performing methods rely",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 65,
+      "text": "on online learning that severely harms the running speed.",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": false,
+      "isCaption": false
+    },
+    {
+      "line": 66,
+      "text": "Our method achieves the best accuracy among all compet?ing methods without online learning, and shows competitive",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 67,
+      "text": "results with the top-performing online learning based meth?ods while running in a fraction of time. Our method trained",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 68,
+      "text": "with additional data from Youtube-VOS outperforms all the",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 69,
+      "text": "methods by a large margin.",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": false,
+      "isCaption": false
+    },
+    {
+      "line": 70,
+      "text": "Multiple objects (DAVIS-2017). DAVIS-2017 [28] is a",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 71,
+      "text": "multi-object extension of DAVIS-2016. The validation set",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 72,
+      "text": "consists of 59 objects in 30 videos. In Table Table 3, we",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 73,
+      "text": "report the results of multi-object video segmentation on the",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 74,
+      "text": "validation set. Again, our method shows the best perfor?mance among fast methods without online learning. With",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 75,
+      "text": "additional Youtube-VOS data, our method largely outper?forms all the previous state-of-the-art methods including the",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 76,
+      "text": "2018 DAVIS challenge winner [20]. Our results on the test?dev set is included in the supplementary materials.",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": false,
+      "isCaption": false
+    },
+    {
+      "line": 77,
+      "text": "The large performance leap by using additional training",
+      "startsWithLowercaseOrDigitOrParen": false,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 78,
+      "text": "data indicates that DAVIS is too small to train a general?izable deep network due to over-fitting. It also explains",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 79,
+      "text": "why top performing online learning methods on the DAVIS",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 80,
+      "text": "benchmark do not show good performance on the large?scale Youtube-VOS benchmark. Online learning methods",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 81,
+      "text": "are hardly aided by large training data. Those methods usu?ally require an extensive parameter search (e.g. data syn?9231",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    }
+  ],
+  "candidateContinuationLines": [
+    {
+      "line": 14,
+      "text": "object segmentation on Youtube-VOS [38] validation set.",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": false,
+      "isCaption": false
+    },
+    {
+      "line": 16,
+      "text": "32, 35].",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": false,
+      "isCaption": false
+    },
+    {
+      "line": 36,
+      "text": "use of Youtube-VOS for training. Methods with J Mean",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 37,
+      "text": "below 79 are omitted due to the space limit and the com?plete table is available in the supplementary material.",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": false,
+      "isCaption": false
+    },
+    {
+      "line": 38,
+      "text": "4.2. DAVIS",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 40,
+      "text": "the most popular benchmark datasets for video object seg?mentation tasks. We use the validation set that contains 20",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 41,
+      "text": "videos annotated with high-quality masks each for a single",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 59,
+      "text": "the use of Youtube-VOS for training. *: average of J Mean",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 60,
+      "text": "and F Mean.",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": false,
+      "isCaption": false
+    },
+    {
+      "line": 61,
+      "text": "target object. We compare our method with state-of-the-art",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 62,
+      "text": "methods in Table 2. In the table, we indicate the use of",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 63,
+      "text": "online learning and provide approximate runtimes of each",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 64,
+      "text": "method. Most of the previous top-performing methods rely",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 65,
+      "text": "on online learning that severely harms the running speed.",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": false,
+      "isCaption": false
+    },
+    {
+      "line": 67,
+      "text": "results with the top-performing online learning based meth?ods while running in a fraction of time. Our method trained",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 68,
+      "text": "with additional data from Youtube-VOS outperforms all the",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 69,
+      "text": "methods by a large margin.",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": false,
+      "isCaption": false
+    },
+    {
+      "line": 71,
+      "text": "multi-object extension of DAVIS-2016. The validation set",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 72,
+      "text": "consists of 59 objects in 30 videos. In Table Table 3, we",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 73,
+      "text": "report the results of multi-object video segmentation on the",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 74,
+      "text": "validation set. Again, our method shows the best perfor?mance among fast methods without online learning. With",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 75,
+      "text": "additional Youtube-VOS data, our method largely outper?forms all the previous state-of-the-art methods including the",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 76,
+      "text": "2018 DAVIS challenge winner [20]. Our results on the test?dev set is included in the supplementary materials.",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": false,
+      "isCaption": false
+    },
+    {
+      "line": 78,
+      "text": "data indicates that DAVIS is too small to train a general?izable deep network due to over-fitting. It also explains",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 79,
+      "text": "why top performing online learning methods on the DAVIS",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 80,
+      "text": "benchmark do not show good performance on the large?scale Youtube-VOS benchmark. Online learning methods",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    },
+    {
+      "line": 81,
+      "text": "are hardly aided by large training data. Those methods usu?ally require an extensive parameter search (e.g. data syn?9231",
+      "startsWithLowercaseOrDigitOrParen": true,
+      "endsWithoutTerminalPunct": true,
+      "isCaption": false
+    }
+  ],
+  "note": "这些是 PDF 文本层的原始行，不是产品生成的本地分段；产品会按自己的规则合并/分类后再交给视觉模型。"
+}

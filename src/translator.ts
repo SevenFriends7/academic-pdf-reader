@@ -90,6 +90,24 @@ export interface ParagraphTranslation {
   note?: string;
 }
 
+/** `action=split` 时：拆出来的**每一片**（顺序即阅读顺序） */
+export interface VisionPart {
+  /** 这一片的真实类型 */
+  type: string;
+  /** 这一片开头的原文文字（**按文本层残渣写法**给出，webview 据此在 cleanText 上定位切点；第一片可省） */
+  at?: string;
+  /** 这一片是公式时，看图转写的 LaTeX */
+  latex?: string;
+}
+
+/** 正文里夹着的行内公式：把文本层残渣替换成可渲染的 LaTeX（只影响显示） */
+export interface VisionInlineMath {
+  /** 必须在该段 cleanText 里**逐字出现**的残渣子串 */
+  find: string;
+  /** 可渲染的 LaTeX */
+  latex: string;
+}
+
 /** 视觉模型对"本地某一段"的判断 */
 export interface VisionSegment {
   /** 与请求里 segments[].id 对应的编号 */
@@ -98,17 +116,28 @@ export interface VisionSegment {
   type: string;
   /** 阅读顺序（1 起） */
   order?: number;
-  /** 建议动作：保留 / 与下一段合并 / 需要拆分 / 丢弃（页眉页脚页码等） */
+  /**
+   * 图块编号：同一张图/表的**图内文字与它的图注**共享同一个正整数。
+   * webview 据此把图注留成一张卡片、把图内文字整片丢掉，并让它们排在一起。
+   */
+  group?: number;
+  /** 建议动作：保留 / 与**紧随其后的那一段**合并 / 需要拆分 / 丢弃（页眉页脚页码等） */
   action?: 'keep' | 'merge_next' | 'split' | 'drop';
   /** 一句话理由（模型给的） */
   why?: string;
   /** 公式的 LaTeX 转写（模型看图写的；文本层抽不出可渲染的 LaTeX） */
   latex?: string;
-  /** action=split 时：新片段开头的原文文字（据此在 charMap 上找切点） */
+  /** action=split 时：拆出来的每一片（含各自的类型与 LaTeX） */
+  parts?: VisionPart[];
+  /** action=split 时：新片段开头的原文文字（旧协议字段，仍解析；无 parts 时按它兜底拆分） */
   splitAt?: string[];
+  /** 段内行内公式的替换表（显示层渲染，不动坐标、不改送翻译的原文） */
+  inline?: VisionInlineMath[];
 }
 
 export interface VisionSegmentationResult {
+  /** 协议版本：2 起才有 parts/group/inline（旧缓存据此判废，见 webview 的 isUsableVisionCache） */
+  version: number;
   /** 模型判断的栏数（1/2/3…） */
   columns?: number;
   segments: VisionSegment[];
@@ -118,6 +147,9 @@ export interface VisionSegmentationResult {
   totalMs: number;
   usage?: { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number };
 }
+
+/** 视觉协议版本（升协议必须同时升它，否则旧缓存会被当成新结果用） */
+export const VISION_PROTOCOL_VERSION = 2;
 
 export interface AcademicAnswer {
   answer: string;
@@ -1771,16 +1803,27 @@ ${rawText.slice(0, 8000)}
     const prompt =
       `这是论文第 ${opts.pageNum} 页的图像，下面还有一份程序给出的分段结果（顺序与类型可能有错）。\n` +
       `请结合图像判断，只输出 JSON：\n` +
-      `{"columns":1,"segments":[{"i":0,"type":"figure|table|caption|body|heading|formula|formula_inline|header|footer|reference|page_number|noise","order":1,"action":"keep|merge_next|split|drop","why":"15 字内","latex":"仅公式类需要：把公式转写成 LaTeX（不要 $ 包裹、不要 \\\\begin{equation}）","splitAt":["仅 action=split 需要：新片段开头的原文文字（照抄图像，10~40 字）"]}],"fixes":"一句话总结你改了什么"}\n` +
+      `{"segments":[{"i":0,"type":"figure|table|figure_caption|caption|body|heading|title|abstract|keywords|metadata|significance|formula|formula_inline|reference|footnote|header|footer|page_number|noise","order":1,"group":null,"action":"keep|merge_next|split|drop","why":"10 字内","latex":"仅公式类需要","parts":[{"type":"这一片的类型","at":"这一片开头的原文文字","latex":"仅公式片需要"}],"inline":[{"find":"文本层里逐字出现的残渣子串（≤20 字）","latex":"可渲染的 LaTeX"}]}],"fixes":"一句话总结你改了什么"}\n` +
       `规则：\n` +
-      `- 每个 i 都必须出现一次，不要新增、不要漏掉；i 必须与下面列表的编号一致。\n` +
-      `- type 按你判断的**真实**类型（列表里给的是程序的判断，可能错）。\n` +
-      `- 独立成行的公式标 formula；公式与句子混排标 formula_inline；图像/表格**内部**的文字标 figure/table。\n` +
+      `- **segments 数组请按你判断的阅读顺序排列**；每个 i 都必须恰好出现一次，不要新增、不要漏掉，i 必须与下面列表的编号一致。\n` +
+      `- type 按你判断的**真实**类型（列表里给的是程序的判断，可能错）。图像/表格**内部**的文字标 figure/table；图注、表注那一块标 figure_caption。\n` +
       `- 页眉、页脚、页码标 header/footer/page_number，并给 action "drop"。\n` +
-      `- 若某段其实是上一段的续句（被错误切开），给它 action "merge_next"。\n` +
-      `- 若一段里混了"正文 + 独立公式 + 正文"，给 action "split"，并在 splitAt 里按顺序给出每个新片段开头的原文文字。\n` +
+      `- action 只在确实需要动分段时给，其余一律 "keep"：\n` +
+      `  · **续句**：只有当**本段与紧随其后的那一段本是一段**（本段被从中间切开）时才给 "merge_next"。判据：\n` +
+      `    **下一段的开头是小写字母、数字或左括号**（新段落不会从半句中间接续），且本段结尾没有句末标点。\n` +
+      `    · 下一段以**大写字母**开头，或它是标题/图注/表格/元信息 → **不得给 merge_next**（那是新段落）。\n` +
+      `    · 若只是"本段续自上一段"（例如跨页续接、上页末尾的半句续到本页），**不要**在本段给 merge_next：\n` +
+      `      方向反了会把两段正常正文粘在一起，而且上一段根本不在这份列表里、本来就合不了。\n` +
+      `  · 这一段里混了多种内容（典型："正文 + 独立公式 + 正文"）→ "split"，并在 parts 里**按阅读顺序**列出每一片：\n` +
+      `    type 是这一片的真实类型；at 是这一片开头在**本地文本层里的原文文字**（照抄下面列表的写法，不要按你在图像上看到的排版写法写），10~40 字，第一片可以不给；\n` +
+      `    是公式的那一片还要给 latex。\n` +
+      `  · 同一段不要同时给 merge_next 和 split。\n` +
+      `- group：同一张图/表的**图内文字与它的图注**给同一个正整数（同一页内唯一），不同图块用不同数字；独立成段的内容给 null。\n` +
       `- **公式一定要给 latex**：图片是唯一可靠的来源，程序从文本层抽出的是 "Y ̂ t" 这种残渣，无法渲染。\n` +
       `  例如图像上的 Ŷ_t = L(Ŷ_t, Y_t) + L(Ŷ_1, Y_1) 要写成 \\hat{Y}_t = \\mathcal{L}(\\hat{Y}_t, Y_t) + \\mathcal{L}(\\hat{Y}_1, Y_1)。\n` +
+      `- inline：该段正文里夹着的**行内公式**，若文本层抽出来是残渣（如 "Y ̂ t"、"L cycle,t"、"S θ"）就给替换项：\n` +
+      `  find 必须是该段文本里**逐字出现**的子串（照抄下面列表）、**不超过 20 个字符**，latex 是可渲染的 LaTeX。\n` +
+      `  **不要给整句或整段公式**（那是 split 该做的事），没有合适的就给 []。\n` +
       `- 不要翻译，不要复述原文，不要解释。\n\n` +
       `程序的分段结果：\n${numbered}`;
 
@@ -1788,15 +1831,18 @@ ${rawText.slice(0, 8000)}
       '你是学术论文版面分析器。只输出 JSON，不要 markdown 代码块，不要解释，不翻译原文。';
 
     const images = [{ mimeType: opts.mimeType || 'image/jpeg', base64: opts.imageBase64 }];
-    const budget = Math.max(1500, Math.min(16000, cfg.get<number>('visionMaxTokens', 8000)));
+    // 默认 16000：实测 deepseek-flash 这类推理型视觉模型在 8000 时会把预算全花在推理上、
+    // 正文 0 字符（那 8000 token 照样计费），加倍重试是必然的第二次往返 —— 不如一开始就够。
+    const budget = Math.max(1500, Math.min(16000, cfg.get<number>('visionMaxTokens', 16000)));
 
     /**
      * 空回答自动加倍重试。
      *
      * 推理型视觉模型（如 deepseek-flash）会把 max_tokens 先花在推理上；
      * 预算不够时 finish_reason=length、content 为空，看起来像"模型没回答"。
-     * 实测同一页 2600 必空、4000 时好时坏、8000 稳定 —— 所以直接翻倍重试一次，
-     * 而不是把这个坑甩给用户（他还得去设置里改数字）。
+     * 实测该模型在同一页给 8000 时依然**全是 reasoning、正文 0 字符**（那 8000 token 照样计费），
+     * 16000 才稳定给出结果 —— 所以默认预算已经是 16000，这里再兜一层"加倍重试一次"，
+     * 免得把这个坑甩给用户（他还得自己进设置改数字）。
      */
     const callWithBudget = async (maxOut: number) => {
       if (useOpenAI) {
@@ -1847,6 +1893,13 @@ ${rawText.slice(0, 8000)}
       const isEmpty = e instanceof LlmError && e.kind === 'empty';
       if (!isEmpty) throw e;
       const bigger = Math.min(16000, budget * 2);
+      // 已经是上限就不再原样重发一次（同一提示、温度 0，结果只会一样，还多烧一次 token）
+      if (bigger <= budget) {
+        throw new LlmError({
+          kind: 'empty',
+          apiMessage: `视觉模型在 ${budget} token 预算下没有给出任何内容（推理型模型可能把预算全花在推理上）。请在设置里换一个视觉模型，或把「视觉最大输出 token」调到更高。`
+        });
+      }
       this.log(`视觉分割返回空（多半是推理吃光了 ${budget} token），加倍到 ${bigger} 重试一次`);
       res = await callWithBudget(bigger);
     }
@@ -1904,6 +1957,7 @@ ${rawText.slice(0, 8000)}
     const allowed = new Set([
       'figure',
       'table',
+      'figure_caption',
       'caption',
       'body',
       'heading',
@@ -1921,6 +1975,34 @@ ${rawText.slice(0, 8000)}
       'footnote',
       'significance'
     ]);
+    /** 一部分一段的 LaTeX 与类型 —— 拆分点由 webview 在文本层里定位，这里只做形状与取值校验 */
+    const cleanParts = (raw: any): VisionPart[] | undefined => {
+      if (!Array.isArray(raw)) return undefined;
+      const parts: VisionPart[] = [];
+      for (const p of raw) {
+        if (!p) continue;
+        const t = String(p?.type || '');
+        parts.push({
+          type: allowed.has(t) ? t : 'body',
+          at: typeof p?.at === 'string' && p.at.trim() ? p.at.trim().slice(0, 200) : undefined,
+          latex: typeof p?.latex === 'string' && p.latex.trim() ? p.latex.trim().slice(0, 600) : undefined
+        });
+      }
+      return parts.length >= 2 ? parts : undefined;
+    };
+    /** 行内公式替换表：find 必须足够长才可能定位得到，太短的（如单个字符）直接丢 */
+    const cleanInline = (raw: any): VisionInlineMath[] | undefined => {
+      if (!Array.isArray(raw)) return undefined;
+      const list: VisionInlineMath[] = [];
+      for (const it of raw) {
+        const find = typeof it?.find === 'string' ? it.find.trim() : '';
+        const latex = typeof it?.latex === 'string' ? it.latex.trim() : '';
+        if (find.length < 2 || !latex) continue;
+        list.push({ find: find.slice(0, 120), latex: latex.slice(0, 600) });
+        if (list.length >= 8) break;
+      }
+      return list.length > 0 ? list : undefined;
+    };
     const rawSegs = Array.isArray(parsed?.segments) ? parsed.segments : [];
     const segments: VisionSegment[] = [];
     for (const s of rawSegs) {
@@ -1928,26 +2010,33 @@ ${rawText.slice(0, 8000)}
       if (!Number.isFinite(i)) continue;
       const type = String(s?.type || '');
       const action = String(s?.action || 'keep');
+      const group = Number(s?.group);
       segments.push({
         index: i,
         type: allowed.has(type) ? type : 'body',
         order: Number.isFinite(Number(s?.order)) ? Number(s.order) : undefined,
+        // 图块编号：只接受正整数（模型偶尔给 "1a" / 0 / null，一律当"没有分组"）
+        group: Number.isInteger(group) && group > 0 ? group : undefined,
         action: (['keep', 'merge_next', 'split', 'drop'].includes(action) ? action : 'keep') as VisionSegment['action'],
         why: typeof s?.why === 'string' ? s.why.slice(0, 60) : undefined,
         // 公式的 LaTeX 转写：文本层给不出（抽出来是 "Y ̂ t" 这种残渣），只有图像可靠
         latex: typeof s?.latex === 'string' && s.latex.trim() ? s.latex.trim().slice(0, 600) : undefined,
+        // 拆分：优先用 v2 的 parts（每片自带类型与 LaTeX）；只有老式 splitAt 时留空，由 webview 兜底
+        parts: cleanParts(s?.parts),
         // 拆分点：新片段开头的原文文字，webview 据此在 charMap 上找切点
         splitAt: Array.isArray(s?.splitAt)
           ? s.splitAt
               .filter((t: any) => typeof t === 'string' && t.trim())
               .map((t: string) => t.trim().slice(0, 200))
-          : undefined
+          : undefined,
+        inline: cleanInline(s?.inline)
       });
     }
     if (segments.length === 0) {
       throw new LlmError({ kind: 'empty', model, apiMessage: '视觉回包里没有任何分段（segments 为空）' });
     }
     return {
+      version: VISION_PROTOCOL_VERSION,
       columns: Number.isFinite(Number(parsed?.columns)) ? Number(parsed.columns) : undefined,
       segments,
       fixes: typeof parsed?.fixes === 'string' ? parsed.fixes.slice(0, 200) : undefined,
