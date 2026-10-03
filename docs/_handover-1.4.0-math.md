@@ -40,7 +40,7 @@ KaTeX 语法校验、单元测试、门禁全都是绿的——所以"看图"这
 | `npm run test:init`（jsdom 冒烟） | ✅ 无异常 |
 | `npm run test:html`（真实宿主 HTML） | ✅ 通过 |
 | `npm run test:pdf` | 50 通过 / 0 失败 |
-| `node scratch/math_layer_test.js`（**新增**数学层回归） | **48 通过 / 0 失败** |
+| `node scratch/math_layer_test.js`（**新增**数学层回归） | **50 通过 / 0 失败** |
 | `node scratch/math_latex_verify.js` | 481 条公式，空 0、KaTeX 语法错 0 |
 | `node scratch/math_audit.js --all` | 481 条，无高危可疑模式 |
 | `tsc --noEmit` / `lint` / `scan_secrets` / 安装产物冒烟 | 全绿 |
