@@ -1111,7 +1111,7 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
           </div>
           <div style="display: flex; align-items: center; gap: 4px;">
             <!-- 视觉重排本页：把本页图像 + 本地分段编号交给视觉模型，由它判断类型/顺序（坐标仍来自文本层） -->
-            <button id="visionRestructureBtn" class="btn-secondary btn-vision-restructure" title="请视觉模型重新判断本页版面：哪些是正文/图注/图内文字/公式、阅读顺序如何，以及哪两段本是一段（跨栏被切开）、哪一段里混着正文+公式+正文。代码据此真的合并/拆分，改错了可以「撤销本页视觉改动」。坐标仍来自本地文本层，划线不受影响">
+            <button id="visionRestructureBtn" class="btn-secondary btn-vision-restructure" title="请视觉模型重新判断本页版面：哪些是正文/图注/图内文字/公式、阅读顺序如何，以及哪两段本是一段（跨栏被切开）、哪一段里混着正文+公式+正文。代码据此真的合并/拆分。坐标仍来自本地文本层，划线不受影响。注意：每一页在渲染时已默认做过一次，这里是手动重判（忽略缓存，重新问一次）">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
               视觉重排
             </button>

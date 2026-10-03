@@ -94,7 +94,6 @@
    *
    * 为什么必须留着它：视觉结果永远在它之上重放，所以翻页回来、缩放重渲染、
    * 手动点「视觉重排」都是幂等的 —— 否则第二次会把同一处合并/拆分再叠加一遍。
-   * 它也是「撤销本页视觉改动」要恢复的目标。
    */
   let localParagraphsSnapshot = null;
   let localParagraphsPage = 0;
@@ -802,12 +801,9 @@
           }
           const summary = applied.summary || `校正 ${applied.changed} 处`;
           showVisionBadge(
-            `视觉重排完成：${model} 判断 ${applied.applied} 段 · ${summary}${fixes ? ` · ${fixes}` : ''}`,
-            undefined,
-            visionSurgeryAllowed ? { label: '撤销本页视觉改动', onClick: () => doUndoVision(page) } : undefined
+            `视觉重排完成：${model} 判断 ${applied.applied} 段 · ${summary}${fixes ? ` · ${fixes}` : ''}`
           );
-          // 有「撤销」按钮时不自动消失（否则用户还没看清按钮就没了）
-          if (!visionSurgeryAllowed) setTimeout(() => showVisionBadge(''), 8000);
+          setTimeout(() => showVisionBadge(''), 8000);
           vscode.postMessage({
             type: 'showToast',
             message: `视觉重排：${summary}（${model}）`,
@@ -973,8 +969,8 @@
 
   // ====================== 核心：学术文献双栏高保真版面解析器 ======================
   function buildAcademicLayout(pageNum, textContent, textDivs, viewport) {
-    // 视觉状态条属于"这一帧的这一页"：换页或重渲染时先清掉旧的（否则翻页后会留着上一页的
-    // 改动摘要与「撤销本页视觉改动」按钮，点下去撤销的是别的页）。
+    // 视觉状态条属于"这一帧的这一页"：换页或重渲染时先清掉旧的，
+    // 否则翻页后还留着上一页的改动摘要（看起来像本页的结论）。
     // 视觉请求还在飞时保留进度提示；结果回来命中缓存/新结果时会重新显示。
     if (!visionPending.has(pageNum)) showVisionBadge('');
 
@@ -1894,24 +1890,17 @@
     });
 
     currentParagraphs = paras;
-    // 本地原件留档：视觉手术每次都在它之上重放（幂等），「撤销本页视觉改动」也回到它
+    // 本地原件留档：视觉手术每次都在它之上重放（幂等），所以同一份判断重放多少次结果都一样
     localParagraphsSnapshot = cloneParagraphs(paras);
     localParagraphsPage = pageNum;
     renderTranslationCards(pageNum, currentParagraphs);
 
     // 视觉分割：本地结果先显示，随后请视觉模型判断版面并校正（坐标不受影响）。
-    // 默认 vision（每页都问）；auto 只在本地判据可疑时问；local 从不问。
+    // **默认每一页都问**（engine=vision）；auto 只在本地判据可疑时问；local 从不问。
+    // 这里不再有任何"这一页被撤销过"的短路——撤销功能已移除，历史留下的 disabled 标记一律忽略。
     try {
       const engine = visionEngine;
-      const cachedEntry = paperData.visionStructure && paperData.visionStructure[String(pageNum)];
-      const undone = !!(cachedEntry && cachedEntry.disabled);
-      if (undone && (engine === 'vision' || engine === 'auto')) {
-        // 用户撤销过这一页：不再自动套用，但要让他知道"现在用的是本地分段"以及怎么找回视觉判断
-        showVisionBadge('本页视觉改动已被你撤销（当前用本地代码的分段）', undefined, {
-          label: '重新判断版面',
-          onClick: () => void requestVisionSegmentation(pageNum, { manual: true })
-        });
-      } else if (engine === 'vision' || (engine === 'auto' && looksLowConfidence(paras))) {
+      if (engine === 'vision' || (engine === 'auto' && looksLowConfidence(paras))) {
         // 用 setTimeout 让本页先画出来，避免请求把首屏拖慢
         setTimeout(() => {
           if (currentPage === pageNum) void requestVisionSegmentation(pageNum, { manual: false });
@@ -2895,16 +2884,12 @@
 
     const cached = paperData.visionStructure && paperData.visionStructure[String(pageNum)];
     // 用户撤销过本页 → 不再自动套用（手动点「视觉重排」才会重新问一次）
-    if (!opts.manual && cached && cached.disabled) return;
     if (!opts.manual && isUsableVisionCache(cached)) {
       const applied = visionSurgeryAllowed ? applyVisionStructure(pageNum, cached) : applyVisionSegments(pageNum, cached);
       showVisionBadge(
-        `已用缓存的视觉结果校正本页（${cached.model || '视觉模型'}）：${
-          applied.summary || `校正 ${applied.changed} 处`
-        }`,
-        undefined,
-        visionSurgeryAllowed ? { label: '撤销本页视觉改动', onClick: () => doUndoVision(pageNum) } : undefined
+        `已用缓存的视觉结果校正本页（${cached.model || '视觉模型'}）：${applied.summary || `校正 ${applied.changed} 处`}`
       );
+      setTimeout(() => showVisionBadge(''), 6000);
       return;
     }
 
@@ -2934,28 +2919,17 @@
     }
   }
 
-  /** 「撤销本页视觉改动」按钮的处理：恢复本地分段 + 记住"本页别再自动套用" */
-  function doUndoVision(pageNum) {
-    if (!undoVisionStructure(pageNum)) {
-      showVisionBadge('没有可撤销的视觉改动', 'error');
-      return;
-    }
-    showVisionBadge('已撤销本页视觉改动：恢复本地分段，本页不再自动套用视觉结果（点「视觉重排」可重新判断）');
-    setTimeout(() => showVisionBadge(''), 12000);
-    try {
-      vscode.postMessage({ type: 'showToast', message: '已撤销本页视觉改动（恢复本地分段）', level: 'info' });
-    } catch (e) {
-      /* 提示失败不影响撤销 */
-    }
-  }
-
   /**
    * 卡片区顶部的小状态条（视觉进度/结果提示）。
+   *
+   * 【为什么没有「撤销」按钮了】视觉重排是**默认每一页都做**的分段依据，撤销属于多余的岔路：
+   * 留着它反而带来一个隐蔽的坏行为——撤销会往缓存里写 `disabled`，那页从此不再自动重排。
+   * 现在一律默认套用视觉结果；不想要就整体关掉 `academicReader.visionSurgery`。
+   *
    * @param {string} text 传空串即移除
    * @param {string} [level] 'error' 时标红
-   * @param {{label: string, onClick: Function}} [action] 可选的按钮（如「撤销本页视觉改动」）
    */
-  function showVisionBadge(text, level, action) {
+  function showVisionBadge(text, level) {
     let el = document.getElementById('visionStatusBadge');
     if (!text) {
       if (el) el.remove();
@@ -2969,22 +2943,7 @@
       if (host && host.parentNode) host.parentNode.insertBefore(el, host);
       else document.body.appendChild(el);
     }
-    el.innerHTML = '';
-    const span = document.createElement('span');
-    span.className = 'vision-status-text';
-    span.textContent = text;
-    el.appendChild(span);
-    if (action && action.label) {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'vision-status-action';
-      btn.textContent = action.label;
-      btn.addEventListener('click', e => {
-        e.stopPropagation();
-        action.onClick();
-      });
-      el.appendChild(btn);
-    }
+    el.textContent = text;
     el.classList.toggle('vision-status-error', level === 'error');
   }
 
@@ -3698,11 +3657,13 @@
 
   /**
    * 视觉缓存能不能直接用？
-   * ① 协议版本必须是 2（v1 的回包里没有 parts/group/inline，套用只会得到"类型改了但没真的合并拆分"）；
-   * ② 本页没有被用户撤销过（撤销后不再自动套用，直到手动点「视觉重排」）。
+   * 只认协议版本 ≥2（v1 的回包里没有 parts/group/inline，套用只会得到"类型改了但没真的合并拆分"）。
+   *
+   * 历史遗留的 `disabled` 标记**一律忽略**：那是早期"本页别再自动套用"那个开关写下的，
+   * 现在视觉重排是默认行为，不该有哪一页被永久排除在外。
    */
   function isUsableVisionCache(entry) {
-    if (!entry || entry.disabled) return false;
+    if (!entry) return false;
     if (!Array.isArray(entry.segments) || entry.segments.length === 0) return false;
     return Number(entry.version) >= 2;
   }
@@ -3717,8 +3678,7 @@
         at: Date.now(),
         columns: result && result.columns,
         fixes: (result && result.fixes) || '',
-        segments: (result && result.segments) || [],
-        disabled: false
+        segments: (result && result.segments) || []
       };
       vscode.postMessage({
         type: 'syncVisionStructure',
@@ -3787,35 +3747,6 @@
 
     const changed = stats.typeChanged + stats.merged + stats.split + stats.dropped + stats.orderChanged;
     return { applied: stats.applied, changed, stats, summary: summarizeVisionStats(stats) };
-  }
-
-  /**
-   * 撤销本页视觉改动：回到本地代码切出来的分段，并让本页**不再自动套用**视觉结果
-   * （否则用户一缩放、一重渲染，视觉结果又自动回来了，"撤销"就成了摆设）。
-   * 想重新判断就点卡片区的「视觉重排」——那是手动触发，会重新问一次。
-   */
-  function undoVisionStructure(pageNum) {
-    if (localParagraphsPage !== pageNum || !localParagraphsSnapshot || localParagraphsSnapshot.length === 0) return false;
-    const list = cloneParagraphs(localParagraphsSnapshot);
-    currentParagraphs = list;
-    try {
-      paperData.visionStructure = paperData.visionStructure || {};
-      const entry = paperData.visionStructure[String(pageNum)];
-      if (entry) {
-        entry.disabled = true;
-        vscode.postMessage({ type: 'syncVisionStructure', page: pageNum, structure: entry });
-      }
-    } catch (e) {
-      /* 记不住"已撤销"只影响体验，不影响本次恢复 */
-    }
-    try {
-      renderTranslationCards(pageNum, currentParagraphs);
-      renderNotesList();
-      archivePageParagraphs(pageNum, currentParagraphs);
-    } catch (e) {
-      console.warn('[Viewer] 撤销视觉改动后重绘失败:', e);
-    }
-    return true;
   }
 
   /**

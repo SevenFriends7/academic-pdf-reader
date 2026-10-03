@@ -3544,21 +3544,6 @@ body.theme-paper-dark .article-section-zh {
   color: var(--danger, #ef4444);
   border-color: var(--danger, #ef4444);
 }
-.vision-status-badge .vision-status-action {
-  flex: 0 0 auto;
-  font-size: 11.5px;
-  font-family: inherit;
-  color: var(--text-primary, inherit);
-  background: transparent;
-  border: 1px solid var(--border-color);
-  border-radius: 4px;
-  padding: 2px 8px;
-  cursor: pointer;
-}
-.vision-status-badge .vision-status-action:hover {
-  border-color: var(--accent-color, #0b578a);
-  color: var(--accent-color, #0b578a);
-}
 
 /* 行内公式（视觉模型把文本层残渣转写成 LaTeX，只影响显示） */
 .vision-inline-math {

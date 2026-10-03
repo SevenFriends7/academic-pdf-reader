@@ -172,7 +172,6 @@ const exposed =
     //  - applyVisionStructure / undoVisionStructure / visionSurgery：手术路径（真的合并/拆分）
     applyVisionSegments,
     applyVisionStructure,
-    undoVisionStructure,
     visionSurgery,
     locateAnchorIndex,
     isUsableVisionCache,
@@ -364,9 +363,14 @@ console.log('\n[视觉分割：把模型的版面判断应用到本页段落]');
     'v2 缓存可用（version=2 + segments）',
     S.isUsableVisionCache({ version: 2, segments: [{ index: 0, type: 'body' }] }) === true
   );
+  // 撤销功能已移除：历史遗留的 disabled 标记必须被忽略，否则那一页会永远不再自动重排
   check(
-    '用户撤销过本页的缓存不再自动套用',
-    S.isUsableVisionCache({ version: 2, disabled: true, segments: [{ index: 0, type: 'body' }] }) === false
+    '历史遗留的 disabled 标记被忽略（那页照样套用视觉结果）',
+    S.isUsableVisionCache({ version: 2, disabled: true, segments: [{ index: 0, type: 'body' }] }) === true
+  );
+  check(
+    '代码里不再有任何撤销入口（默认每页都套用，不留岔路）',
+    !/undoVisionStructure|doUndoVision|撤销本页视觉改动/.test(fs.readFileSync(VIEWER, 'utf8'))
   );
 
   // 缓存命中时不应再发请求（由 requestVisionSegmentation 读取缓存分支保证）
@@ -642,20 +646,7 @@ console.log('\n[视觉手术：按模型判断合并续句、拆开"正文+公�
     `${S.getParagraphs().length} 段`
   );
   check('缓存里记下协议版本（v1 缓存据此判废）', ((S.getVisionStructureCache() || {})['1'] || {}).version === 2);
-
-  // 撤销：回到本地分段，并记住"本页别再自动套用"
-  const beforeUndoMsgs = postedMessages.length;
-  const undone = S.undoVisionStructure(1);
-  check('撤销本页视觉改动 → 恢复本地代码切出来的分段', undone === true && S.getParagraphs().length === local.length, `${S.getParagraphs().length} vs ${local.length}`);
-  check(
-    '撤销后文本与本地原件逐段一致（工整地回到原样）',
-    S.getParagraphs().map(p => p.cleanText).join('\n') === local.map(p => p.cleanText).join('\n')
-  );
-  check(
-    '撤销被记住（写进缓存 disabled，否则一缩放视觉结果又自动回来了）',
-    ((S.getVisionStructureCache() || {})['1'] || {}).disabled === true &&
-      postedMessages.slice(beforeUndoMsgs).some(m => m.type === 'syncVisionStructure' && m.structure && m.structure.disabled === true)
-  );
+  check('缓存里不再写 disabled 字段（撤销功能已移除）', (S.getVisionStructureCache() || {})['1'].disabled === undefined);
 }
 
 // ------------------------------------------------------------------ 归档回填的内容指纹护栏

@@ -1678,9 +1678,21 @@ console.log('\n===== T21 视觉手术（合并 / 拆分 / 图块 / 锚点定位�
   checkTrue('手术作用于本地原件而不是"已手术过的当前结果"', /function visionBaseParagraphs\(\)/.test(code) && /localParagraphsSnapshot/.test(code));
   checkTrue('渲染完成时留档本地原件', /localParagraphsSnapshot = cloneParagraphs\(paras\)/.test(code));
   checkTrue('重复应用不会叠加（每次先克隆原件）', /const list = cloneParagraphs\(visionBaseParagraphs\(\)\)/.test(code));
-  checkTrue('提供撤销入口（并记住本页别再自动套用）', /function undoVisionStructure\(pageNum\)/.test(code) && /entry\.disabled = true/.test(code));
-  checkTrue('撤销后本页不再自动套用视觉结果', /cached\.disabled\) return;/.test(code));
-  checkTrue('v1 协议缓存判废（缺 parts/group/inline）', /function isUsableVisionCache\(entry\)/.test(code) && /Number\(entry\.version\) >= 2/.test(code));
+  // 撤销功能已移除：默认每页都套用视觉重排，不留"这一页被排除在外"的岔路
+  checkTrue(
+    '代码里不再有任何撤销入口',
+    !/undoVisionStructure|doUndoVision|撤销本页视觉改动/.test(code) && !/vision-status-action/.test(code)
+  );
+  checkTrue(
+    '历史遗留的 disabled 标记被忽略（不再短路）',
+    /function isUsableVisionCache\(entry\)/.test(code) && !/entry\.disabled\) return false/.test(code) && !/cached\.disabled\) return;/.test(code)
+  );
+  checkTrue(
+    '每一页都默认调度视觉重排（没有"撤销过就跳过"的分支）',
+    /if \(engine === 'vision' \|\| \(engine === 'auto' && looksLowConfidence\(paras\)\)\)/.test(code) &&
+      !/const undone = /.test(code)
+  );
+  checkTrue('v1 协议缓存判废（缺 parts/group/inline）', /Number\(entry\.version\) >= 2/.test(code));
   checkTrue('请求视觉时发的是本地未手术的分段', /localParagraphsPage === pageNum && localParagraphsSnapshot \? localParagraphsSnapshot/.test(code));
   checkTrue('手术抛异常时回退到"只改类型"的老路径', /视觉手术失败，回退到只改类型/.test(code));
   checkTrue('设置项可关闭手术（关掉 = 只改类型/顺序/丢弃）', /visionSurgeryAllowed \? applyVisionStructure\(page, result\) : applyVisionSegments\(page, result\)/.test(code));
