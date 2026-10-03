@@ -99,7 +99,7 @@ const code = fs.readFileSync(VIEWER, 'utf8');
 const tail = '})();';
 const idx = code.lastIndexOf(tail);
 if (idx < 0) throw new Error('找不到 IIFE 结尾');
-const exposed = code.slice(0, idx) + '\n  window.__SMOKE__ = { ensureAllToolbarsExist };\n' + code.slice(idx);
+const exposed = code.slice(0, idx) + '\n  window.__SMOKE__ = { ensureAllToolbarsExist, openAiAssistantModal };\n' + code.slice(idx);
 
 let error = null;
 try {
@@ -132,6 +132,18 @@ try {
   } else {
     throw new Error('未能取得 ensureAllToolbarsExist（暴露点失效，冒烟测试形同虚设）');
   }
+
+  // 再模拟一次"从笔记卡片点问AI"：它会打开问答弹窗
+  if (window.__SMOKE__ && typeof window.__SMOKE__.openAiAssistantModal === 'function') {
+    window.__SMOKE__.openAiAssistantModal({
+      selectedText: '示例引文',
+      contextText: '示例上下文',
+      presetQuestion: '这是一个测试问题',
+      page: 1
+    });
+  } else {
+    throw new Error('未能取得 openAiAssistantModal');
+  }
 } catch (e) {
   error = e;
 }
@@ -163,7 +175,12 @@ checks.forEach(([label, sel]) => {
   console.log(`   ${ok ? '✅' : '❌'} ${label} 已创建`);
 });
 console.log(`   提示条容器：${document.getElementById('readerToast') ? '✅' : '（首次提示时才创建，正常）'}`);
-console.log(`   问答弹窗的风格控件：${document.querySelector('#aiModalStyleSlot .ai-style-switch') ? '✅ 已创建' : '（首次打开弹窗时创建，正常）'}`);
+const modalSlot = document.querySelector('#aiModalStyleSlot .ai-style-switch');
+console.log(`   问答弹窗的风格控件：${modalSlot ? '✅ 已创建' : '❌ 打开弹窗后仍未创建'}`);
+if (!modalSlot) {
+  console.log('      —— 从笔记卡片点问AI 打开的就是这个弹窗，缺控件就是用户反馈的问题');
+  miss++;
+}
 
 if (miss > 0) {
   console.log('\n⚠️ 初始化未抛异常，但有界面元素没建出来 —— 可能仍有问题');

@@ -1288,6 +1288,13 @@ console.log('\n===== T19 提示条自动消失 与 聚焦条跟随 =====');
   checkTrue('滚回可视区则恢复显示', /bar\.style\.display = 'flex';\s*\n\s*bar\.style\.visibility/.test(code));
   checkTrue('改动窗口尺寸也重算', /addEventListener\('resize', requestFocusBarReposition\)/.test(code));
   checkTrue('页面被销毁后不再定位（避免报错）', /pageWrapper\.isConnected/.test(code));
+
+  // —— 最外层错误可视化：初始化崩溃时必须在界面上看得见 ——
+  checkTrue('注册了全局错误兜底（window error）', /window\.addEventListener\('error', e => reportFatalError/.test(code));
+  checkTrue('注册了未处理的 Promise 拒绝兜底', /addEventListener\('unhandledrejection', e => reportFatalError/.test(code));
+  checkTrue('错误会画在界面上（不是只打日志）', /document\.getElementById\('fatalErrorBox'\)/.test(code) && /box\.textContent =/.test(code));
+  checkTrue('同时回报给扩展侧', /type: 'webviewFatal'/.test(code));
+  checkTrue('宿主侧记录该错误', /case 'webviewFatal'/.test(ext));
 })();
 
 console.log(`\n===== 结果: ${pass} 通过 / ${fail} 失败 =====`);

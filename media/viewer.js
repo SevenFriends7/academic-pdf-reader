@@ -2,6 +2,41 @@
 (function () {
   const vscode = acquireVsCodeApi();
 
+  // ====================== 最外层错误可视化（必须放在最前面） ======================
+  // 初始化一旦抛异常，用户看到的只是"PDF 空白"，而开发者拿不到任何信息——
+  // 我们为此反复猜了好几轮。这里在任何业务代码之前注册兜底：
+  // 把错误直接画在界面上，同时回报给扩展侧写进日志。
+  function reportFatalError(kind, err) {
+    try {
+      const msg = (err && (err.message || (err.reason && err.reason.message))) || String(err);
+      const stack = (err && err.stack) || '';
+      let box = document.getElementById('fatalErrorBox');
+      if (!box) {
+        box = document.createElement('div');
+        box.id = 'fatalErrorBox';
+        box.style.cssText =
+          'position:fixed;left:16px;right:16px;bottom:16px;z-index:2147483647;' +
+          'background:#5a1d1d;color:#fff;border:1px solid #ff6b6b;border-radius:8px;padding:12px 14px;' +
+          'font:12px/1.6 Consolas,Menlo,monospace;white-space:pre-wrap;max-height:40vh;overflow:auto;' +
+          'box-shadow:0 8px 30px rgba(0,0,0,.45)';
+        (document.body || document.documentElement).appendChild(box);
+      }
+      box.textContent =
+        `[${kind}] ${msg}\n\n${stack}\n\n` +
+        '请把上面这段内容发给开发者。\n' +
+        '也可以在命令面板运行「Developer: Open Webview Developer Tools」查看 Console。';
+      try {
+        vscode.postMessage({ type: 'webviewFatal', message: `${kind}: ${msg}\n${stack}` });
+      } catch {
+        /* 极端情况下 vscode 可能还没准备好，忽略即可 */
+      }
+    } catch {
+      /* 兜底里再出错就放弃，绝不因此再抛一次 */
+    }
+  }
+  window.addEventListener('error', e => reportFatalError('error', e.error || e.message));
+  window.addEventListener('unhandledrejection', e => reportFatalError('promise', e.reason));
+
   if (window.pdfjsLib) {
     window.pdfjsLib.GlobalWorkerOptions.workerSrc = window.PDF_WORKER_URL || './pdfjs/pdf.worker.min.js';
   }

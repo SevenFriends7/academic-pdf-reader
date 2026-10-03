@@ -375,6 +375,17 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
           vscode.window.showErrorMessage(message.message);
           break;
         }
+
+        case 'webviewFatal': {
+          // webview 侧发生未捕获异常：它会把错误画在界面上，这里再写一份到扩展日志，
+          // 便于事后排查（命令面板 → Developer: Show Logs → Extension Host）。
+          const text = String(message.message || '未知错误');
+          console.error('[Bilingual Paper Reader] webview fatal:', text);
+          vscode.window.showErrorMessage(
+            '阅读器初始化出错，界面右下角有详细信息；也可在「Developer: Show Logs → Extension Host」查看日志。'
+          );
+          break;
+        }
       }
     });
 
