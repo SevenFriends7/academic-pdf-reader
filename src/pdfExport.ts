@@ -128,7 +128,9 @@ export function findCjkFontPath(override?: string): string | undefined {
     '/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf',
     '/usr/share/fonts/opentype/noto/NotoSerifCJKsc-Regular.otf',
     '/usr/share/fonts/truetype/arphic/ukai.ttf',
-    '/usr/share/fonts/truetype/arphic/uming.ttf'
+    '/usr/share/fonts/truetype/arphic/uming.ttf',
+    // Ubuntu 的 fonts-droid-fallback：单体 TTF 且带完整汉字，CI 里就是靠它跑中文路径
+    '/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf'
   );
 
   for (const p of candidates) {

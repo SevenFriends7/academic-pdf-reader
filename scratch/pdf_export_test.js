@@ -208,7 +208,12 @@ function makePaperData() {
 
   console.log('\n[1] 结构');
   check('导出了全部原文页（用户要求"所有页"）', result.sourcePages === 3, `实际 ${result.sourcePages} 页`);
-  check('生成了附录页（译文与笔记）', result.appendixPages >= 1, `附录 ${result.appendixPages} 页`);
+  if (result.fontPath) {
+    check('生成了译文页（高光译文）', result.appendixPages >= 1, `译文页 ${result.appendixPages} 页`);
+  } else {
+    // CI（ubuntu）默认没有中文字体：这时必须"如实降级"而不是报错，也不是硬塞空页
+    check('本机没有中文字体 → 不生成译文页（如实降级，符合预期）', result.appendixPages === 0);
+  }
   check('四条高亮（共 4 个矩形）都画上去了', result.drawnAnnotations === 4, `实际 ${result.drawnAnnotations}`);
   check('输出是合法 PDF', result.bytes.length > 2000 && String.fromCharCode(...result.bytes.slice(0, 5)) === '%PDF-');
 
@@ -424,11 +429,19 @@ function makePaperData() {
   const providerSrc = fs.readFileSync(path.join(ROOT, 'src', 'pdfEditorProvider.ts'), 'utf8');
   const extensionSrc = fs.readFileSync(path.join(ROOT, 'src', 'extension.ts'), 'utf8');
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
-  check(
-    '返回结果里带"译文覆盖了哪几页"',
-    Array.isArray(result.translatedPages) && result.translatedPages.includes(1) && result.translatedPages.includes(3),
-    JSON.stringify(result.translatedPages)
-  );
+  if (result.fontPath) {
+    check(
+      '返回结果里带"译文覆盖了哪几页"',
+      Array.isArray(result.translatedPages) && result.translatedPages.includes(1) && result.translatedPages.includes(3),
+      JSON.stringify(result.translatedPages)
+    );
+  } else {
+    check(
+      '无中文字体时"已覆盖译文"必为空集（不能假报覆盖）',
+      Array.isArray(result.translatedPages) && result.translatedPages.length === 0,
+      JSON.stringify(result.translatedPages)
+    );
+  }
   check(
     '返回结果里带"哪些高光页还没有译文"（第 2 页那条高光没译过）',
     Array.isArray(result.pagesWithoutTranslation) && result.pagesWithoutTranslation.includes(2),
