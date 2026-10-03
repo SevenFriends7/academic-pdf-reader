@@ -10,6 +10,8 @@ Thumbs.db
 
 # ---- 本地开发/测试临时产物（测试脚本本身要提交，但产物不提交）----
 scratch/dstest/build/
+scratch/.build/
+scratch/example-高光批注.pdf
 scratch/_pipeline_snip.js
 scratch/installed_viewer.js
 scratch/vsce-test.vsix

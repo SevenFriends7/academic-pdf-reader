@@ -39,7 +39,7 @@ export function activate(context: vscode.ExtensionContext) {
   );
   context.subscriptions.push(openCmd);
 
-  // 注册命令：导出笔记为 Markdown
+  // 注册命令：导出笔记为 Markdown（全文双语精读稿）
   const exportCmd = vscode.commands.registerCommand(
     'academicReader.exportNotesMarkdown',
     async () => {
@@ -47,6 +47,15 @@ export function activate(context: vscode.ExtensionContext) {
     }
   );
   context.subscriptions.push(exportCmd);
+
+  // 注册命令：导出「高光批注 PDF」（全篇原文 + 高亮画回原位 + 译文与笔记附录）
+  const exportPdfCmd = vscode.commands.registerCommand(
+    'academicReader.exportAnnotatedPdf',
+    async () => {
+      await provider.exportAnnotatedPdf();
+    }
+  );
+  context.subscriptions.push(exportPdfCmd);
 
   // 注册命令：快速配置 Google Gemini API Key
   const setGeminiKeyCmd = vscode.commands.registerCommand(

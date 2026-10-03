@@ -6030,7 +6030,8 @@
   });
 
   dom.exportNotesBtn.addEventListener('click', () => {
-    vscode.postMessage({ type: 'exportMarkdown' });
+    // 交给宿主弹一个小菜单：① 全文双语精读稿（Markdown） ② 高光批注 PDF
+    vscode.postMessage({ type: 'exportNotes' });
   });
 
   const handleOpenSettings = () => {

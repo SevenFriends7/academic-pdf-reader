@@ -7,7 +7,7 @@
     "color": "#0b578a",
     "theme": "dark"
   },
-  "version": "0.5.12",
+  "version": "0.5.13",
   "publisher": "paper-reader",
   "license": "MIT",
   "repository": {
@@ -87,6 +87,11 @@
       {
         "command": "academicReader.exportNotesMarkdown",
         "title": "导出全文双语精读稿（原文 + 译文 + 批注 + AI 答疑）",
+        "category": "文献阅读 (Academic Reader)"
+      },
+      {
+        "command": "academicReader.exportAnnotatedPdf",
+        "title": "导出高光批注 PDF（全篇原文 + 译文与笔记附录）",
         "category": "文献阅读 (Academic Reader)"
       },
       {
@@ -211,6 +216,11 @@
           "default": "deepseek-chat",
           "description": "大模型名称 (例如 deepseek-chat, gpt-4o-mini 等)"
         },
+        "academicReader.pdfExportFontPath": {
+          "type": "string",
+          "default": "",
+          "description": "导出高光批注 PDF 时嵌进 PDF 的中文字体文件（.ttf/.otf）。留空则自动探测系统字体（Windows 黑体/宋体、macOS Arial Unicode、Linux Noto）。指定时请填单体字体文件的绝对路径——.ttc 字体集合无法嵌入。"
+        },
         "academicReader.autoTranslate": {
           "type": "boolean",
           "default": true,
@@ -220,7 +230,7 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
+    "vscode:prepublish": "node esbuild.js --minify",
     "compile": "node esbuild.js",
     "watch": "node esbuild.js --watch",
     "package": "node package-vsix.js",
@@ -233,15 +243,18 @@
     "test": "node scratch/llm-test/viewer-unit.js",
     "test:init": "node scratch/smoke_init.js",
     "test:html": "node scratch/host_html_smoke.js",
+    "test:pdf": "node scratch/pdf_export_test.js",
     "lint": "npx --yes eslint@8 --no-eslintrc -c .eslintrc.json media/viewer.js",
     "prevsix": "node scratch/check_version.js"
   },
   "devDependencies": {
+    "@pdf-lib/fontkit": "^1.1.1",
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.80.0",
     "esbuild": "^0.20.0",
     "eslint": "^8.57.1",
     "jsdom": "^24.1.3",
+    "pdf-lib": "^1.17.1",
     "pdfjs-dist": "3.11.174",
     "typescript": "^5.3.3"
   }

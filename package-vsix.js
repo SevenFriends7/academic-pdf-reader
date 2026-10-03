@@ -5,8 +5,9 @@ const { execSync } = require('child_process');
 function buildVsix() {
   console.log('[vsix] Starting VSIX package creation...');
 
-  // 1. 确保最新编译
-  execSync('node esbuild.js', { stdio: 'inherit' });
+  // 1. 确保最新编译（发布用压缩构建，与本机安装保持一致：
+  //    pdf-lib + fontkit 不压缩会让 extension.js 从 175KB 涨到 2.8MB）
+  execSync('node esbuild.js --minify', { stdio: 'inherit' });
 
   const distDir = path.join(__dirname, 'dist');
   const mediaDir = path.join(__dirname, 'media');

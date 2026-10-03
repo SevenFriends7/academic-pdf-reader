@@ -3,6 +3,7 @@ import * as path from 'path';
 import { PaperTranslator, applyTermGlossary } from './translator';
 import { LlmError, DEFAULT_TRANSLATION_MODEL } from './llmClient';
 import { NotesStorageManager, PaperMetadata } from './notesStorage';
+import { buildAnnotatedPdf } from './pdfExport';
 
 /**
  * 段落内容指纹：FNV-1a + 长度。
@@ -378,7 +379,20 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
          * 宿主只负责问路径、写文件、打开。按钮与命令面板走的是同一条路。
          */
         case 'exportMarkdown': {
+          // 兼容：旧版 webview 的按钮发的是这个消息，仍然走 Markdown 文稿
           this.requestReadingDoc(webviewPanel.webview);
+          break;
+        }
+
+        /** 「导出笔记」按钮：让用户挑 Markdown 精读稿 还是 高光批注 PDF */
+        case 'exportNotes': {
+          await this.showExportMenu(webviewPanel.webview);
+          break;
+        }
+
+        /** 命令面板触发的 PDF 导出 */
+        case 'exportPdf': {
+          await this.exportAnnotatedPdf();
           break;
         }
 
@@ -684,6 +698,96 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
       return;
     }
     this.requestReadingDoc(this.currentActiveWebview);
+  }
+
+  /**
+   * 导出「高光批注 PDF」。
+   *
+   * 形态：**原封不动的全部原文页**（高亮按原坐标画回原位，颜色/透明度/混合模式与阅读器一致）
+   * ＋ 附录页（按页给出原文 → 译文，带同色标记条，其下是批注与 AI 答疑）。
+   * 原文页用 copyPages 原样搬运，所以是矢量的、可搜索的，体积也小。
+   */
+  public async exportAnnotatedPdf(): Promise<void> {
+    const uri = this.currentActiveDocUri;
+    const paperData = this.currentActivePaperData;
+    if (!uri || !paperData) {
+      vscode.window.showWarningMessage('当前没有处于激活状态的文献阅读窗口，请先打开一篇 PDF。');
+      return;
+    }
+
+    try {
+      const done = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: '正在生成高光批注 PDF…', cancellable: false },
+        async () => {
+          const originalBytes = await vscode.workspace.fs.readFile(uri);
+          const cfg = vscode.workspace.getConfiguration('academicReader');
+          const result = await buildAnnotatedPdf({
+            originalBytes,
+            paperData,
+            paperName: path.basename(uri.fsPath),
+            fontPathOverride: cfg.get<string>('pdfExportFontPath', ''),
+            includeAllPages: true
+          });
+
+          const baseName = path.basename(uri.fsPath, path.extname(uri.fsPath));
+          const defaultUri = vscode.Uri.file(path.join(path.dirname(uri.fsPath), `${baseName}-高光批注.pdf`));
+          const target = await vscode.window.showSaveDialog({
+            defaultUri,
+            saveLabel: '导出 PDF',
+            filters: { PDF: ['pdf'] }
+          });
+          if (!target) return;
+
+          await vscode.workspace.fs.writeFile(target, result.bytes);
+          const summary = [
+            `原文 ${result.sourcePages} 页`,
+            result.appendixPages > 0 ? `译文附录 ${result.appendixPages} 页` : '',
+            `高亮 ${result.drawnAnnotations} 条`
+          ]
+            .filter(Boolean)
+            .join(' · ');
+          vscode.window.showInformationMessage(`高光批注 PDF 已导出：${path.basename(target.fsPath)}（${summary}）`);
+          result.warnings.forEach(w => vscode.window.showWarningMessage(w));
+          // 用系统默认阅读器打开（不占用编辑器，也避免"导出完又被自己的阅读器当成新论文打开"）
+          try {
+            await vscode.env.openExternal(target);
+          } catch {
+            /* 打开失败不影响导出结果 */
+          }
+        }
+      );
+      void done;
+    } catch (e: any) {
+      vscode.window.showErrorMessage(`导出高光批注 PDF 失败：${e?.message || e}`);
+    }
+  }
+
+  /**
+   * 「导出笔记」按钮的菜单：两条出口（Markdown 精读稿 / 高光批注 PDF）。
+   * 这两个功能形态差别很大，用菜单比塞两个工具栏按钮清楚。
+   */
+  private async showExportMenu(webview: vscode.Webview): Promise<void> {
+    const pick = await vscode.window.showQuickPick(
+      [
+        {
+          label: '$(markdown) 全文双语精读稿（Markdown）',
+          detail: '原文 / 译文 / 我的批注 / AI 答疑 按段落交织，Obsidian 友好',
+          key: 'md'
+        },
+        {
+          label: '$(file-pdf) 高光批注 PDF（全篇原文 + 译文附录）',
+          detail: '原文页原样保留、高亮画回原位；后面附逐页译文与笔记',
+          key: 'pdf'
+        }
+      ],
+      { title: '导出笔记', placeHolder: '选择导出格式' }
+    );
+    if (!pick) return;
+    if (pick.key === 'pdf') {
+      await this.exportAnnotatedPdf();
+    } else {
+      this.requestReadingDoc(webview);
+    }
   }
 
   /** 请 webview 生成精读稿（结果通过 saveReadingDoc 消息回来） */
