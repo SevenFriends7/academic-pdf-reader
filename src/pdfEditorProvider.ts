@@ -26,6 +26,8 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
   private storageManager: NotesStorageManager;
   private currentActiveDocUri: vscode.Uri | undefined;
   private currentActivePaperData: PaperMetadata | undefined;
+  /** 当前激活阅读窗口的 webview：命令面板触发导出时需要它生成文稿 */
+  private currentActiveWebview: vscode.Webview | undefined;
 
   /**
    * 翻译请求合并队列。
@@ -89,6 +91,14 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
     _token: vscode.CancellationToken
   ): Promise<void> {
     this.currentActiveDocUri = document.uri;
+    // 记住当前 webview：命令面板的「导出笔记」也要能触达它（精读稿由 webview 侧生成，
+    // 因为只有它手里有段落切分、句级译文和 AI 答疑上下文）
+    this.currentActiveWebview = webviewPanel.webview;
+    webviewPanel.onDidDispose(() => {
+      if (this.currentActiveWebview === webviewPanel.webview) {
+        this.currentActiveWebview = undefined;
+      }
+    });
 
     webviewPanel.webview.options = {
       enableScripts: true,
@@ -351,8 +361,50 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
           break;
         }
 
+        /**
+         * AI 答疑记录落盘。
+         * webview 每完成一次回答就发一条；以前问答只活在 webview 内存里，关窗即失。
+         */
+        case 'recordAiQa': {
+          if (message.item && message.item.answer) {
+            await this.storageManager.appendAiQa(document.uri, paperData, message.item);
+          }
+          break;
+        }
+
+        /**
+         * 导出「全文双语精读稿」。
+         * 文稿由 webview 侧生成（只有它手里有段落切分、句级译文与答疑上下文），
+         * 宿主只负责问路径、写文件、打开。按钮与命令面板走的是同一条路。
+         */
         case 'exportMarkdown': {
-          await this.exportCurrentNotes();
+          this.requestReadingDoc(webviewPanel.webview);
+          break;
+        }
+
+        case 'saveReadingDoc': {
+          if (message.errorText) {
+            vscode.window.showErrorMessage(`生成精读稿失败：${message.errorText}`);
+            break;
+          }
+          await this.saveReadingDoc(document.uri, String(message.markdown || ''), message.suggestedName);
+          break;
+        }
+
+        /**
+         * 段落快照落盘（webview 每解析完一页发一次）。
+         * 有了它，下次打开插件直接导出精读稿也仍然是"整篇"，而不是只剩最后一页。
+         */
+        case 'syncPageArchive': {
+          if (message.page && Array.isArray(message.paragraphs) && message.paragraphs.length > 0) {
+            paperData.pageArchive = paperData.pageArchive || {};
+            paperData.pageArchive[String(message.page)] = message.paragraphs;
+            try {
+              await this.storageManager.savePaperData(document.uri, paperData);
+            } catch (err: any) {
+              console.warn('[AcademicReader] 保存段落快照失败:', err?.message);
+            }
+          }
           break;
         }
 
@@ -618,17 +670,55 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
     return `调用失败：${msg}`;
   }
 
+  /**
+   * 导出当前文献的「全文双语精读稿」。
+   *
+   * 真正生成文稿的是 webview（见 viewer.js 的 buildReadingDocMarkdown）：
+   * 段落切分、句级译文对齐、批注挂段落、AI 答疑挂句子，这些信息只有它手里有。
+   * 宿主这里只负责转发请求，收到 markdown 后再问路径写盘。
+   * 命令面板（academicReader.exportNotesMarkdown）与阅读器里的「导出笔记」按钮共用它。
+   */
   public async exportCurrentNotes(): Promise<void> {
-    if (!this.currentActiveDocUri || !this.currentActivePaperData) {
-      vscode.window.showWarningMessage('当前没有处于激活状态的文献阅读窗口！');
+    if (!this.currentActiveDocUri || !this.currentActiveWebview) {
+      vscode.window.showWarningMessage('当前没有处于激活状态的文献阅读窗口，请先打开一篇 PDF。');
       return;
     }
-    const resultUri = await this.storageManager.exportToMarkdown(
-      this.currentActiveDocUri,
-      this.currentActivePaperData
+    this.requestReadingDoc(this.currentActiveWebview);
+  }
+
+  /** 请 webview 生成精读稿（结果通过 saveReadingDoc 消息回来） */
+  private requestReadingDoc(webview: vscode.Webview): void {
+    webview.postMessage({ type: 'buildReadingDoc' });
+  }
+
+  /**
+   * 把 webview 生成好的精读稿写盘。
+   * 用「另存为」对话框而不是直接写到 PDF 旁边：文献目录通常是要保持干净的，
+   * 用户也可能想把精读稿放进自己的笔记库。
+   */
+  private async saveReadingDoc(pdfUri: vscode.Uri, markdown: string, suggestedName?: string): Promise<void> {
+    if (!markdown.trim()) {
+      vscode.window.showWarningMessage('精读稿是空的：请先翻阅几页，让插件解析并翻译段落。');
+      return;
+    }
+    const baseName = path.basename(pdfUri.fsPath, path.extname(pdfUri.fsPath));
+    const defaultUri = vscode.Uri.file(
+      path.join(path.dirname(pdfUri.fsPath), suggestedName || `${baseName}-双语精读稿.md`)
     );
-    if (resultUri) {
-      vscode.window.showInformationMessage(`文献研读笔记已导出至: ${path.basename(resultUri.fsPath)}`);
+    const target = await vscode.window.showSaveDialog({
+      defaultUri,
+      saveLabel: '导出精读稿',
+      filters: { Markdown: ['md'] }
+    });
+    if (!target) return;
+
+    try {
+      await vscode.workspace.fs.writeFile(target, Buffer.from(markdown, 'utf8'));
+      const doc = await vscode.workspace.openTextDocument(target);
+      await vscode.window.showTextDocument(doc, { preview: false });
+      vscode.window.showInformationMessage(`双语精读稿已导出：${path.basename(target.fsPath)}`);
+    } catch (e: any) {
+      vscode.window.showErrorMessage(`导出精读稿失败：${e?.message || e}`);
     }
   }
 

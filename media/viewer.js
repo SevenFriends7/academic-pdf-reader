@@ -61,6 +61,19 @@
   let currentTextContent = null;
   let paperData = { annotations: [], translations: {}, sentenceTranslations: {} };
   let currentParagraphs = [];
+
+  /**
+   * 每页段落快照 —— 「导出全文双语精读稿」的数据源。
+   *
+   * 为什么必须单独留一份：`currentParagraphs` 只保存**当前页**，一翻页就被整段替换。
+   * 而导出要按页把「原文段 → 译文 → 我的批注 → AI 答疑」交织成一篇可读文稿，
+   * 所以翻过的每一页都得留住。
+   *
+   * 只取轻量字段：**绝不保存 rawSpans / charMap**——那里是 DOM 元素，
+   * 留着会把已经销毁页面的节点全部钉在内存里（读几十页就是明显的内存泄漏）。
+   * 译文在快照时可能还没到，收到后由 updateArchivedParagraph() 回填。
+   */
+  const pageParaArchive = new Map();
   let activeHighlightCard = null;
   let selectedHighlightColor = 'yellow';
   let currentSelectionInfo = null;
@@ -607,6 +620,32 @@
         showReaderToast(msg.message, msg.level);
         break;
       }
+
+      /**
+       * 宿主请求生成「全文双语精读稿」。
+       * 「导出笔记」按钮与命令面板命令都走这里，保证只有一条导出实现。
+       */
+      case 'buildReadingDoc': {
+        let markdown = '';
+        let errorText = '';
+        try {
+          markdown = buildReadingDocMarkdown();
+        } catch (e) {
+          errorText = (e && e.message) || String(e);
+          console.error('[Viewer] 生成双语精读稿失败:', e);
+        }
+        try {
+          vscode.postMessage({
+            type: 'saveReadingDoc',
+            markdown,
+            errorText,
+            suggestedName: suggestedReadingDocName()
+          });
+        } catch (e) {
+          console.error('[Viewer] 回传精读稿失败:', e);
+        }
+        break;
+      }
       case 'initPdfData': {
         if (msg.fileName) {
           dom.paperTitle.textContent = msg.fileName;
@@ -614,6 +653,18 @@
         }
         if (msg.paperData) {
           paperData = msg.paperData;
+          // AI 答疑记录随论文数据一起回来（旧版没有这个字段）
+          paperData.aiQa = Array.isArray(paperData.aiQa) ? paperData.aiQa : [];
+          // 以往翻过的页的段落也一起回来：导出全文精读稿不依赖"这次翻了哪些页"
+          if (paperData.pageArchive && typeof paperData.pageArchive === 'object') {
+            Object.keys(paperData.pageArchive).forEach(k => {
+              const pageNum = Number(k);
+              const archived = paperData.pageArchive[k];
+              if (Number.isFinite(pageNum) && Array.isArray(archived) && archived.length > 0) {
+                pageParaArchive.set(pageNum, archived);
+              }
+            });
+          }
           // 引擎标识要在任何翻译查找之前就位，否则会命中上一个引擎的缓存
           if (msg.engineTag) currentEngineTag = msg.engineTag;
           updateNotesBadge();
@@ -1765,6 +1816,8 @@
     });
 
     currentParagraphs = paras;
+    // 留一份本页段落的轻量快照，供「导出全文双语精读稿」使用（翻页后 currentParagraphs 会被替换）
+    archivePageParagraphs(pageNum, paras);
     renderTranslationCards(pageNum, currentParagraphs);
 
     // 把本页正文同步给扩展，供 AI 问答做全文检索（旧版问答只能看到一个段落）
@@ -2355,6 +2408,342 @@
     if (list.some(s => !s || !s.trim())) return null;
 
     return list;
+  }
+
+  // ====================== 导出「全文双语精读稿」的数据准备 ======================
+  /**
+   * 归档一页的段落（renderPage 解析完就调用一次）。
+   * 只留轻量字段，rawSpans/charMap 是 DOM 元素，绝不能留。
+   */
+  function archivePageParagraphs(pageNum, paras) {
+    try {
+      const snapshot = (paras || [])
+        .filter(p => p && typeof p.cleanText === 'string' && p.cleanText.trim())
+        .map(p => ({
+          id: p.id,
+          type: p.type || 'body',
+          cleanText: p.cleanText,
+          sentencesEn: (p.sentencesEn || []).map(s => ({ text: s.text })),
+          translation: p.translation || '',
+          sentenceTranslations: Array.isArray(p.sentenceTranslations) ? p.sentenceTranslations.slice() : []
+        }));
+      if (snapshot.length === 0) return;
+      pageParaArchive.set(pageNum, snapshot);
+      // 同步给宿主持久化。否则下次打开插件再导出，只有"这次翻过的那一页"，
+      // 精读稿会莫名其妙变薄——读者会以为导出坏了。
+      try {
+        vscode.postMessage({ type: 'syncPageArchive', page: pageNum, paragraphs: snapshot });
+      } catch (e) {
+        /* 同步失败不影响本次会话内导出 */
+      }
+    } catch (e) {
+      console.warn('[Viewer] 归档本页段落失败（只影响导出）:', e);
+    }
+  }
+
+  /** 译文到达后回填归档，否则导出时只会看到"未翻译" */
+  function updateArchivedParagraph(pageNum, paraId, patch) {
+    const list = pageParaArchive.get(pageNum);
+    if (!list) return;
+    const hit = list.find(p => p.id === paraId);
+    if (!hit) return;
+    if (patch.translation) hit.translation = patch.translation;
+    if (patch.sentenceTranslations && patch.sentenceTranslations.length > 0) {
+      hit.sentenceTranslations = patch.sentenceTranslations.slice();
+    }
+  }
+
+  /**
+   * 导出一段段落译文：依次尝试内存里的值 → 带引擎标识的缓存键 → 旧的无标识键。
+   * 三种都试是有原因的：缓存写入用的是 getParaCacheKey()（含引擎标识），
+   * 而 findCachedTranslation() 只查无标识键——只查一种就会漏掉刚翻好的段落。
+   */
+  function resolveArchivedTranslation(pageNum, para) {
+    if (para.translation) return para.translation;
+    const sig = getParaSig(para.cleanText || '');
+    if (!sig) return '';
+    const tagged = getParaCacheKey(pageNum, para);
+    const untagged = `${pageNum}_${sig}`;
+    return paperData.translations[tagged] || paperData.translations[untagged] || '';
+  }
+
+  /** 句级对齐译文（只有句数严格相等且无空项才算数，与界面上的判据一致） */
+  function resolveArchivedSentences(pageNum, para) {
+    const en = para.sentencesEn || [];
+    if (en.length === 0) return null;
+    let list = para.sentenceTranslations && para.sentenceTranslations.length ? para.sentenceTranslations : null;
+    if (!list) {
+      const sig = getParaSig(para.cleanText || '');
+      if (sig) {
+        const tagged = getParaCacheKey(pageNum, para);
+        const untagged = `${pageNum}_${sig}`;
+        list =
+          (paperData.sentenceTranslations && paperData.sentenceTranslations[tagged]) ||
+          (paperData.sentenceTranslations && paperData.sentenceTranslations[untagged]) ||
+          null;
+      }
+    }
+    if (!Array.isArray(list) || list.length !== en.length) return null;
+    if (list.some(s => !s || !String(s).trim())) return null;
+    return list;
+  }
+
+  /**
+   * 记录一条 AI 答疑。
+   *
+   * 由 handleAiQuestionDone() 统一调用——弹窗与批注气泡两条入口都经过它，
+   * 所以不会漏记。落进 paperData.aiQa 后同步给宿主持久化（关窗不再丢）。
+   */
+  function recordAiQa(entry) {
+    const answer = (entry && entry.answer) || '';
+    if (!answer.trim()) return;
+    paperData.aiQa = Array.isArray(paperData.aiQa) ? paperData.aiQa : [];
+    const record = {
+      id: `qa_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      page: entry.page || currentPage,
+      selectedText: entry.selectedText || '',
+      question: entry.question || '',
+      answer,
+      style: entry.style || aiStyle || '',
+      model: entry.model || '',
+      at: Date.now()
+    };
+    paperData.aiQa.push(record);
+    // 只留最近 200 条，避免论文 JSON 无限膨胀
+    if (paperData.aiQa.length > 200) paperData.aiQa = paperData.aiQa.slice(-200);
+    try {
+      vscode.postMessage({ type: 'recordAiQa', item: record });
+    } catch (e) {
+      console.warn('[Viewer] 同步 AI 答疑失败（本次仍能导出）:', e);
+    }
+  }
+
+  // ====================== 导出「全文双语精读稿」 ======================
+  /** Markdown 引用块：逐行加 `> `，保留原文里的换行 */
+  function mdQuote(text) {
+    return String(text || '')
+      .split('\n')
+      .map(l => `> ${l}`.trimEnd())
+      .join('\n');
+  }
+
+  /**
+   * 多行引用：多句时用 `> - ` 列表项。
+   *
+   * 为什么不用 `> 句一\n> 句二`：Markdown 会把相邻的引用行当成**同一段**，
+   * 渲染出来两个英文句子被粘成一行，逐句对照就废了。
+   * 列表项天然各自成行，也可以和中文侧一一对上。
+   */
+  function mdQuoteLines(lines) {
+    const arr = (lines || []).map(l => String(l || '').trim()).filter(Boolean);
+    if (arr.length === 0) return '';
+    if (arr.length === 1) return `> ${arr[0]}`;
+    return arr.map(l => `> - ${l}`).join('\n');
+  }
+
+  /** 批次：把页码数组压成 "1–3, 7" 这种可读区间 */
+  function formatPageRanges(pages) {
+    const sorted = [...new Set(pages)].filter(n => Number.isFinite(n)).sort((a, b) => a - b);
+    if (sorted.length === 0) return '（无）';
+    const parts = [];
+    let start = sorted[0];
+    let prev = sorted[0];
+    for (let i = 1; i <= sorted.length; i++) {
+      const cur = sorted[i];
+      if (cur === prev + 1) {
+        prev = cur;
+        continue;
+      }
+      parts.push(start === prev ? `${start}` : `${start}–${prev}`);
+      start = cur;
+      prev = cur;
+    }
+    return parts.join(', ');
+  }
+
+  const ANNOT_COLOR_LABEL = {
+    yellow: '🟨 核心要点',
+    green: '🟩 论据/数据',
+    blue: '🟦 方法/公式',
+    pink: '🟥 疑难/待查'
+  };
+  const PARA_TYPE_LABEL = {
+    title: '文献标题',
+    metadata: '作者信息',
+    abstract: '摘要',
+    keywords: '关键词',
+    heading: '章节标题',
+    caption: '图表题注',
+    footnote: '脚注',
+    significance: '意义声明'
+  };
+
+  /** 导出文件名：<论文名>-双语精读稿.md（宿主只用它当默认名，用户可在另存为对话框里改） */
+  function suggestedReadingDocName() {
+    const t = (((dom.paperTitle && dom.paperTitle.textContent) || '论文').trim() || '论文').replace(/\.pdf$/i, '');
+    return `${t.replace(/[\\/:*?"<>|]/g, '_')}-双语精读稿.md`;
+  }
+
+  /**
+   * 生成全文双语精读稿。
+   *
+   * 与旧版"导出笔记"的根本区别：旧版只把 annotations 按页罗列，没批注就是空文件；
+   * 这里以**你读过的每一页的段落**为骨架，把原文、译文、我的批注、AI 答疑
+   * 交织在同一段之下，导出的是一份能直接读、能归档、能给别人的文稿。
+   */
+  function buildReadingDocMarkdown() {
+    const paperTitle = ((dom.paperTitle && dom.paperTitle.textContent) || '未命名文献').trim();
+    const baseName = paperTitle.replace(/\.pdf$/i, '');
+    const now = new Date();
+    const stamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(
+      now.getDate()
+    ).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    const timeOf = t => {
+      const d = new Date(t || Date.now());
+      return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(
+        d.getHours()
+      ).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    };
+
+    const annotations = Array.isArray(paperData.annotations) ? paperData.annotations : [];
+    const aiQa = Array.isArray(paperData.aiQa) ? paperData.aiQa : [];
+
+    // 收录范围 = 翻阅过的页 ∪ 有批注/答疑的页（有后者但没译文时也要出，那是用户自己的东西）
+    const pages = new Set([...pageParaArchive.keys()]);
+    annotations.forEach(a => pages.add(a.page));
+    aiQa.forEach(q => pages.add(q.page));
+    const pageList = [...pages].filter(n => Number.isFinite(n)).sort((a, b) => a - b);
+
+    const totalPagesText = Number.isFinite(totalPages) && totalPages > 0 ? `共 ${totalPages} 页` : '';
+    const engineText = currentEngineTag ? `翻译引擎 ${currentEngineTag}` : '';
+
+    let md = '---\n';
+    md += `title: "${baseName}"\n`;
+    md += `source: ${paperTitle}\n`;
+    md += `generated: ${stamp}\n`;
+    if (engineText) md += `engine: ${currentEngineTag}\n`;
+    md += `pages: ${formatPageRanges(pageList)}${totalPagesText ? ` / ${totalPagesText}` : ''}\n`;
+    md += `annotations: ${annotations.length}\n`;
+    md += `ai_qa: ${aiQa.length}\n`;
+    md += '---\n\n';
+
+    md += `# ${baseName} · 双语精读稿\n\n`;
+    md += `> 由「文献对照翻译阅读器」导出 · ${stamp}\n`;
+    md += `> 收录第 ${formatPageRanges(pageList)} 页${totalPagesText ? `（${totalPagesText}）` : ''}`;
+    md += ` · 批注 ${annotations.length} 条 · AI 答疑 ${aiQa.length} 条`;
+    md += engineText ? ` · ${engineText}\n` : '\n';
+    md += `>\n> 未翻阅的页面不会自动翻译，因此不在本文档中；翻译与批注都会自动保存，下次继续读同一篇即可补齐。\n\n`;
+
+    if (pageList.length === 0) {
+      md += `*这份文稿还什么都没有：请先在左侧翻几页，让插件解析并翻译段落，再回来导出。*\n`;
+      return md;
+    }
+
+    // 目录
+    md += `## 目录\n\n`;
+    pageList.forEach(p => {
+      const paraCount = (pageParaArchive.get(p) || []).filter(x => x.type !== 'figure-label').length;
+      const notes = annotations.filter(a => a.page === p).length;
+      const qas = aiQa.filter(q => q.page === p).length;
+      const bits = [`${paraCount} 段`, notes ? `${notes} 批注` : '', qas ? `${qas} 答疑` : ''].filter(Boolean);
+      md += `- [第 ${p} 页](#第-${p}-页) —— ${bits.join(' · ')}\n`;
+    });
+    md += `\n---\n\n`;
+
+    /** 已挂到某个段落上的批注 / 答疑，避免重复输出 */
+    const usedAnnotIds = new Set();
+    const usedQaIds = new Set();
+
+    pageList.forEach(pageNum => {
+      const paras = (pageParaArchive.get(pageNum) || []).filter(p => p.type !== 'figure-label');
+      const pageAnnotations = annotations.filter(a => a.page === pageNum);
+      const pageQa = aiQa.filter(q => q.page === pageNum);
+
+      md += `## 第 ${pageNum} 页\n\n`;
+
+      if (paras.length === 0) {
+        md += `*（这一页没有留存段落：可能是只标了批注，或本页内容为图表）*\n\n`;
+      }
+
+      let ordinal = 0;
+      paras.forEach(para => {
+        const sourceText = (para.cleanText || '').trim();
+        if (!sourceText) return;
+        const translation = resolveArchivedTranslation(pageNum, para);
+        const sentences = resolveArchivedSentences(pageNum, para);
+        const label = PARA_TYPE_LABEL[para.type] || '';
+
+        if (para.type === 'title') {
+          md += `### ${sourceText}\n\n`;
+        } else if (para.type === 'heading') {
+          md += `### ${sourceText}\n\n`;
+        } else {
+          ordinal++;
+          md += `#### ${label ? `${label} · ` : ''}¶${ordinal}\n\n`;
+        }
+
+        // 原文 / 译文：对齐时逐句成行（方便逐句精读对照），否则整段
+        const enLines = para.sentencesEn && para.sentencesEn.length ? para.sentencesEn.map(s => s.text) : [sourceText];
+        if (para.type === 'title' || para.type === 'heading') {
+          if (translation) md += `${mdQuote(translation)}\n\n`;
+        } else {
+          md += `**原文**\n\n${mdQuoteLines(enLines)}\n\n`;
+          if (translation) {
+            const zhLines = sentences && sentences.length === enLines.length ? sentences : [translation];
+            md += `**译文**\n\n${mdQuoteLines(zhLines)}\n\n`;
+          } else {
+            md += `**译文**\n\n*（本段尚未翻译）*\n\n`;
+          }
+        }
+
+        // 挂在这一段上的批注
+        pageAnnotations
+          .filter(a => a.paraIndex !== undefined && a.paraIndex === para.id)
+          .forEach(a => {
+            usedAnnotIds.add(a.id);
+            md += `**📌 我的批注 · ${ANNOT_COLOR_LABEL[a.color] || '📌 高亮'} · ${timeOf(a.timestamp)}**\n\n`;
+            if (a.note && a.note.trim()) {
+              md += `${a.note.trim()}\n\n`;
+            } else {
+              md += `*（只有高亮，没有写批注）*\n\n`;
+            }
+          });
+
+        // 挂在这一段上的 AI 答疑
+        pageQa
+          .filter(q => q.selectedText && sourceText.includes(q.selectedText.slice(0, 40)))
+          .forEach(q => {
+            usedQaIds.add(q.id);
+            md += `**🤖 AI 答疑 · ${timeOf(q.at)}${q.model ? ` · ${q.model}` : ''}**\n\n`;
+            md += `**问**：${q.question}\n\n`;
+            md += `**答**：\n\n${q.answer}\n\n`;
+          });
+      });
+
+      // 没挂上段落的批注 / 答疑（跨页、整页心得、手动改过段落切分等）
+      const orphans = pageAnnotations.filter(a => !usedAnnotIds.has(a.id));
+      const orphanQa = pageQa.filter(q => !usedQaIds.has(q.id));
+      if (orphans.length || orphanQa.length) {
+        md += `### 本页其它记录\n\n`;
+        orphans.forEach(a => {
+          usedAnnotIds.add(a.id);
+          md += `**📌 我的批注 · ${ANNOT_COLOR_LABEL[a.color] || '📌 高亮'} · ${timeOf(a.timestamp)}**\n\n`;
+          md += `> ${String(a.text || '').replace(/\n/g, '\n> ')}\n\n`;
+          if (a.note && a.note.trim()) md += `${a.note.trim()}\n\n`;
+        });
+        orphanQa.forEach(q => {
+          usedQaIds.add(q.id);
+          md += `**🤖 AI 答疑 · ${timeOf(q.at)}${q.model ? ` · ${q.model}` : ''}**\n\n`;
+          if (q.selectedText) md += `> 针对：${q.selectedText.replace(/\n/g, ' ').slice(0, 200)}\n\n`;
+          md += `**问**：${q.question}\n\n`;
+          md += `**答**：\n\n${q.answer}\n\n`;
+        });
+      }
+
+      md += `---\n\n`;
+    });
+
+    return md;
   }
 
   /** 图表内部标签（轴标签/图例/子图编号）：只展示原文，不送翻译 */
@@ -3085,6 +3474,8 @@
         paperData.sentenceTranslations = paperData.sentenceTranslations || {};
         paperData.sentenceTranslations[key] = sentenceTranslations;
       }
+      // 归档快照同步回填，否则导出精读稿时这些段落会显示"未翻译"
+      updateArchivedParagraph(page, paraIndex, { translation: translated, sentenceTranslations });
       paperData.alignment = paperData.alignment || {};
       paperData.alignment[key] = { aligned: !!aligned, mode: mode || '', note: note || '', model: model || '' };
 
@@ -3163,6 +3554,8 @@
         currentParagraphs[idx].translation = p.translation;
         const cacheKey = getParaCacheKey(msg.page, currentParagraphs[idx]);
         paperData.translations[cacheKey] = p.translation;
+        // 同一段落可能已经被归档过（先渲染后解析），这里补上译文
+        updateArchivedParagraph(msg.page, currentParagraphs[idx].id, { translation: p.translation });
         const textEl = document.getElementById(`transText_${msg.page}_${currentParagraphs[idx].id}`);
         if (textEl) {
           textEl.innerHTML = formatTranslatedParagraph(p.translation, currentParagraphs[idx]);
@@ -6215,6 +6608,18 @@ let aiPresetQuestion = '';
   function handleAiQuestionDone(msg) {
     const req = aiPending.get(msg.requestId);
     aiPending.delete(msg.requestId);
+    // 落盘一条答疑记录：以前 AI 讲解只活在内存里，关掉阅读器就没了。
+    // 这里是**所有** AI 入口（问答弹窗 / 批注气泡）的唯一收口，所以不会漏。
+    if (req && msg.answer && String(msg.answer).trim()) {
+      recordAiQa({
+        page: req.page,
+        selectedText: req.selectedText || '',
+        question: req.question || '',
+        answer: msg.answer,
+        model: msg.model || '',
+        style: req.answerStyle || aiStyle || ''
+      });
+    }
     if (req && req.onDone) req.onDone(msg);
   }
 

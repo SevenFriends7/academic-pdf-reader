@@ -132,7 +132,9 @@ try {
   window.__EXT_VERSION__ = '';
 }
 
-const vscode = { postMessage() {}, setState() {}, getState: () => null };
+// 记录 webview → 宿主的消息，用来验证"段落快照/答疑有没有真的交给宿主持久化"
+const postedMessages = [];
+const vscode = { postMessage(m) { postedMessages.push(m); }, setState() {}, getState: () => null };
 const pdfjsLib = {
   GlobalWorkerOptions: {},
   getDocument: () => ({
@@ -152,7 +154,16 @@ const idx = code.lastIndexOf(tail);
 if (idx < 0) throw new Error('找不到 IIFE 结尾');
 const exposed =
   code.slice(0, idx) +
-  '\n  window.__SMOKE__ = { ensureAllToolbarsExist, openAiAssistantModal };\n' +
+  `\n  window.__SMOKE__ = {
+    ensureAllToolbarsExist,
+    openAiAssistantModal,
+    // 导出「全文双语精读稿」的真实实现（不是复制一份逻辑来测，而是直接调它）
+    buildReadingDocMarkdown,
+    archivePageParagraphs,
+    recordAiQa,
+    seedPaperData: pd => { paperData = pd; },
+    seedMeta: opts => { if (opts && Number.isFinite(opts.totalPages)) totalPages = opts.totalPages; }
+  };\n` +
   code.slice(idx);
 
 let error = null;
@@ -244,6 +255,118 @@ check(
 
 console.log('\n[批注便签气泡 —— 另一种 AI 提问入口]');
 check('回答风格切换控件存在于 AI 提问栏旁', !!document.querySelector('.ai-style-switch-annot'));
+
+// ------------------------------------------------------------------ 导出「全文双语精读稿」
+console.log('\n[导出「全文双语精读稿」—— 调的是 viewer.js 里的真实实现]');
+const S = window.__SMOKE__;
+const now = Date.now();
+S.seedMeta({ totalPages: 11 });
+S.seedPaperData({
+  annotations: [
+    {
+      id: 'a1',
+      page: 1,
+      text: 'In this paper, we address several inadequacies of current video object segmentation pipelines.',
+      color: 'yellow',
+      note: '这句是全文动机：现有流程的不足。',
+      paraIndex: 0,
+      timestamp: now
+    },
+    {
+      id: 'a2',
+      page: 2,
+      text: '这是一条没挂上段落的批注（例如段落切分变了）',
+      color: 'pink',
+      note: '',
+      paraIndex: 99,
+      timestamp: now
+    }
+  ],
+  translations: {},
+  sentenceTranslations: {},
+  aiQa: []
+});
+S.archivePageParagraphs(1, [
+  {
+    id: 0,
+    type: 'body',
+    cleanText: 'In this paper, we address several inadequacies of current video object segmentation pipelines.',
+    sentencesEn: [{ text: 'In this paper, we address several inadequacies of current video object segmentation pipelines.' }],
+    translation: '在本文中，我们解决了当前视频目标分割流程的若干不足。',
+    sentenceTranslations: ['在本文中，我们解决了当前视频目标分割流程的若干不足。']
+  },
+  {
+    id: 1,
+    type: 'figure-label',
+    cleanText: 'IoU mIoU',
+    sentencesEn: [{ text: 'IoU mIoU' }],
+    translation: '',
+    sentenceTranslations: []
+  }
+]);
+S.archivePageParagraphs(2, [
+  { id: 0, type: 'heading', cleanText: '3 Method', sentencesEn: [], translation: '3 方法', sentenceTranslations: [] },
+  {
+    id: 1,
+    type: 'body',
+    cleanText: 'First, a cyclic mechanism is incorporated. Next, we introduce a correction module.',
+    sentencesEn: [
+      { text: 'First, a cyclic mechanism is incorporated.' },
+      { text: 'Next, we introduce a correction module.' }
+    ],
+    translation: '首先，引入循环机制。接下来，我们引入一个校正模块。',
+    sentenceTranslations: ['首先，引入循环机制。', '接下来，我们引入一个校正模块。']
+  }
+]);
+// 一条能挂回段落的答疑（selectedText 出现在该段原文里），走"交织进正文"的路
+S.recordAiQa({
+  page: 1,
+  selectedText: 'In this paper, we address several inadequacies',
+  question: '这句话的核心动机是什么？',
+  answer: '因为现有流程依赖**参考掩码**，起始帧一有误差就会一路传播。',
+  model: 'deepseek-chat'
+});
+// 一条挂不上段落的答疑（选中的句子不在留存段落里），走"本页其它记录"的路
+S.recordAiQa({
+  page: 2,
+  selectedText: '某句已经不在留存段落里的话',
+  question: '这里的符号是什么意思？',
+  answer: '这是……',
+  model: 'deepseek-chat'
+});
+const md = S.buildReadingDocMarkdown();
+// DUMP_DOC=1 时把生成的文稿原样打印出来，方便人眼审阅排版
+if (process.env.DUMP_DOC === '1') {
+  console.log('\n----- 生成的精读稿开始 -----\n' + md + '----- 生成的精读稿结束 -----\n');
+}
+check('文稿以 YAML front-matter 开头', md.startsWith('---\n') && /^title: /m.test(md), '可被 Obsidian 等直接识别');
+check('front-matter 记录了收录范围与统计', /^pages: 1–2 \/ 共 11 页$/m.test(md) && /^ai_qa: 2$/m.test(md));
+check('有目录与页锚点', md.includes('## 目录') && md.includes('(#第-1-页)'));
+check('原文进正文', md.includes('> In this paper, we address several inadequacies'));
+check('译文进正文', md.includes('> 在本文中，我们解决了当前视频目标分割流程的若干不足。'));
+check('章节标题作为小节标题渲染', md.includes('### 3 Method') && md.includes('> 3 方法'));
+check('我的批注挂在对应段落之下', md.includes('📌 我的批注') && md.includes('这句是全文动机'));
+check('AI 答疑的问与答都进正文', md.includes('这句话的核心动机是什么？') && md.includes('参考掩码'));
+check(
+  '挂不上段落的批注/答疑进「本页其它记录」而不是丢掉',
+  md.includes('本页其它记录') && md.includes('这是一条没挂上段落的批注') && md.includes('这里的符号是什么意思？')
+);
+check('图表内部标签不进正文（那是坐标轴文字，不是论文内容）', !md.includes('IoU mIoU'));
+check(
+  '多句段落逐句成行（Markdown 不会把相邻引用行粘成一整段）',
+  md.includes('> - First, a cyclic mechanism is incorporated.\n> - Next, we introduce a correction module.') &&
+    md.includes('> - 首先，引入循环机制。\n> - 接下来，我们引入一个校正模块。')
+);
+check(
+  '段落快照会同步给宿主持久化（否则重开插件再导出就只剩最后一页）',
+  postedMessages.some(
+    m => m.type === 'syncPageArchive' && m.page === 1 && Array.isArray(m.paragraphs) && m.paragraphs.length === 2
+  )
+);
+check(
+  'AI 答疑会同步给宿主持久化（不再关窗即失）',
+  postedMessages.some(m => m.type === 'recordAiQa' && m.item && m.item.answer)
+);
 
 console.log('\n[反复打开问答弹窗不会重复堆叠控件]');
 check('弹窗里只有一份风格切换', document.querySelectorAll('#aiAssistantModal .ai-style-switch').length === 1);

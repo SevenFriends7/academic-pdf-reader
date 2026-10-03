@@ -21,6 +21,43 @@ export interface PaperMetadata {
   annotations: AnnotationItem[];
   translations: Record<string, string>;
   sentenceTranslations?: Record<string, string[]>;
+  /**
+   * AI 答疑记录。
+   *
+   * 以前 AI 问答只活在 webview 的内存（`aiConversation`）里，关掉阅读器就没了——
+   * 一次读论文最值钱的部分（模型对方法/公式的讲解）随之丢失。
+   * 现在每条回答完成时都会同步到这里并落盘，导出双语精读稿时会按页交织进正文。
+   */
+  aiQa?: AiQaItem[];
+  /**
+   * 每页段落快照（页码 → 段落数组），供「导出全文双语精读稿」使用。
+   *
+   * 为什么必须落盘：段落是打开 PDF 时即时解析出来的，只存在 webview 内存里。
+   * 不存的话，重开插件后导出只剩"本次翻过的那一页"，精读稿会平白变薄。
+   */
+  pageArchive?: Record<string, ArchivedParagraph[]>;
+}
+
+/** 导出用的轻量段落快照（不含任何 DOM 引用） */
+export interface ArchivedParagraph {
+  id: number;
+  type: string;
+  cleanText: string;
+  sentencesEn?: Array<{ text: string }>;
+  translation?: string;
+  sentenceTranslations?: string[];
+}
+
+export interface AiQaItem {
+  id: string;
+  page: number;
+  /** 提问时选中的原文（用于把答疑挂回对应段落） */
+  selectedText?: string;
+  question: string;
+  answer: string;
+  style?: string;
+  model?: string;
+  at: number;
 }
 
 export class NotesStorageManager {
@@ -67,7 +104,13 @@ export class NotesStorageManager {
           lastOpened: Date.now(),
           annotations: data.annotations || [],
           translations: data.translations || {},
-          sentenceTranslations: sentenceTranslations
+          sentenceTranslations: sentenceTranslations,
+          // 必须显式带回来：这个函数是"重建对象"，漏掉的字段会在下次保存时被静默丢掉
+          aiQa: Array.isArray(data.aiQa) ? data.aiQa : [],
+          pageArchive:
+            data.pageArchive && typeof data.pageArchive === 'object' && !Array.isArray(data.pageArchive)
+              ? data.pageArchive
+              : {}
         };
       }
     } catch (e) {
@@ -79,7 +122,8 @@ export class NotesStorageManager {
       pdfName: path.basename(pdfUri.fsPath),
       lastOpened: Date.now(),
       annotations: [],
-      translations: {}
+      translations: {},
+      aiQa: []
     };
   }
 
@@ -95,83 +139,18 @@ export class NotesStorageManager {
     }
   }
 
-  public async exportToMarkdown(pdfUri: vscode.Uri, data: PaperMetadata): Promise<vscode.Uri | undefined> {
-    const baseName = path.basename(pdfUri.fsPath, path.extname(pdfUri.fsPath));
-    const now = new Date().toLocaleString();
-
-    let md = `# 📖 文献研读笔记: ${baseName}\n\n`;
-    md += `> - 📄 **源文件**: \`${path.basename(pdfUri.fsPath)}\`\n`;
-    md += `> - 🕒 **生成时间**: ${now}\n`;
-    md += `> - 🔖 **批注数量**: ${data.annotations.length} 条\n\n`;
-    md += `---\n\n`;
-
-    if (data.annotations.length === 0) {
-      md += `*暂无高亮或批注记录。*\n`;
-    } else {
-      const sorted = [...data.annotations].sort((a, b) => a.page - b.page || a.timestamp - b.timestamp);
-      let currentPage = -1;
-
-      for (const item of sorted) {
-        if (item.page !== currentPage) {
-          currentPage = item.page;
-          md += `## 📄 第 ${currentPage} 页\n\n`;
-        }
-
-        const colorMap: Record<string, string> = {
-          yellow: '🟨 [核心要点]',
-          green: '🟩 [论据/数据]',
-          blue: '🟦 [方法/公式]',
-          pink: '🟥 [疑难/待查]'
-        };
-        const tag = colorMap[item.color] || '📌 [高亮]';
-
-        md += `### ${tag} (记录于 ${new Date(item.timestamp).toLocaleTimeString()})\n\n`;
-        md += `> **原文摘录**:\n`;
-        md += `> ${item.text.replace(/\n/g, '\n> ')}\n\n`;
-
-        let translation = '';
-        if (item.paraIndex !== undefined) {
-          const transKey = `${item.page}_${item.paraIndex}`;
-          if (data.translations[transKey]) {
-            translation = data.translations[transKey];
-          }
-        }
-        if (!translation) {
-          const sig = item.text.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 24);
-          if (sig.length >= 8) {
-            for (const [k, v] of Object.entries(data.translations || {})) {
-              if (k.startsWith(`${item.page}_`) && k.includes(sig)) {
-                translation = v;
-                break;
-              }
-            }
-          }
-        }
-        if (translation) {
-          md += `> **对照翻译**:\n`;
-          md += `> ${translation.replace(/\n/g, '\n> ')}\n\n`;
-        }
-
-        if (item.note && item.note.trim()) {
-          md += `✍️ **我的批注 / 思考**:\n\n`;
-          md += `${item.note}\n\n`;
-        }
-
-        md += `---\n\n`;
-      }
-    }
-
-    const dir = path.dirname(pdfUri.fsPath);
-    const targetMdPath = path.join(dir, `${baseName}-文献阅读笔记.md`);
-
-    try {
-      fs.writeFileSync(targetMdPath, md, 'utf-8');
-      const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(targetMdPath));
-      await vscode.window.showTextDocument(doc);
-      return doc.uri;
-    } catch (e: any) {
-      vscode.window.showErrorMessage(`导出 Markdown 失败: ${e.message}`);
-      return undefined;
-    }
+  /**
+   * 追加一条 AI 答疑记录并落盘。
+   *
+   * 注意：这里只是"数据不动"，真正的导出文稿由 webview 侧生成
+   * （它才有段落切分与句级译文）。旧版那个只罗列高亮的 exportToMarkdown()
+   * 已被「全文双语精读稿」取代并删除——留着两套导出实现必然再次跑偏。
+   */
+  public async appendAiQa(pdfUri: vscode.Uri, data: PaperMetadata, item: AiQaItem): Promise<void> {
+    data.aiQa = Array.isArray(data.aiQa) ? data.aiQa : [];
+    data.aiQa.push(item);
+    // 只留最近 200 条，避免论文 JSON 无限膨胀
+    if (data.aiQa.length > 200) data.aiQa = data.aiQa.slice(-200);
+    await this.savePaperData(pdfUri, data);
   }
 }
