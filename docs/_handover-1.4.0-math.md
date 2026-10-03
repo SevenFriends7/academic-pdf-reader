@@ -2,23 +2,43 @@
 
 ## 一句话结论
 
-**数学层（从 PDF 里确定性抽出公式并转成 LaTeX）已完成并通过全部门禁；
-界面侧（原文卡片 / 批注 / 笔记的渲染接线）也已改完，但**还没在真实 IDE 里看过一眼**——
-我无法启动 VS Code 做端到端目视验证，这一步必须由你完成。
+**1.4.0 已发布到本机并打包完成；数学层 + 界面接线全部做完，全部门禁 0 失败。
+唯一没做的是"在真实 IDE 里目视确认"——我无法启动 VS Code，这一步必须由你完成。**
 
-已跑通的门禁（全部 0 失败）：
+## 发版状态（已完成）
+
+| 项 | 状态 |
+|---|---|
+| 版本 | `1.3.9` → **`1.4.0`**（package.json + CHANGELOG + package-lock 同步） |
+| 商店包 | `academic-pdf-reader-1.4.0.vsix`（人工上传商店，别用 `-local.vsix`） |
+| 本机安装 | 已装到 VS Code / Antigravity，三个 IDE 的头像冒烟全绿 |
+| 安装产物一致性 | 工作区 `media/viewer.js` 与已安装目录里的 **SHA256 完全相同**（`C98AFC4D…1231`）——所以本机验证跑的就是将要发布的代码 |
+| git | 已 commit + 打 tag `v1.4.0`；**未推送**（脚本带 `-NoPush`），推送与商店上传由你决定 |
+| 下一步 | **完全退出 IDE 再打开**（Reload Window 不换版本）→ 看工具栏版本徽章是不是 `v1.4.0` |
+
+## 验证证据（全部 0 失败）
 
 | 门禁 | 结果 |
 |---|---|
 | `npm test`（viewer 单测） | 374 通过 / 0 失败 |
 | `npm run test:gate`（译文质量闸门） | 49 通过 / 0 失败 |
-| `npm run test:init`（jsdom 初始化冒烟） | ✅ 无异常 |
+| `npm run test:init`（jsdom 冒烟） | ✅ 无异常 |
 | `npm run test:html`（真实宿主 HTML） | ✅ 通过 |
-| `npm run test:pdf`（PDF 导出） | 50 通过 / 0 失败 |
+| `npm run test:pdf` | 50 通过 / 0 失败 |
 | `node scratch/math_layer_test.js`（**新增**数学层回归） | 47 通过 / 0 失败 |
-| `node scratch/math_latex_verify.js`（全库 KaTeX 校验） | 481 条公式，空 0、语法错 0 |
-| `npx tsc --noEmit` / `npm run lint` / `scan_secrets.js` | 全部通过 |
-| `node scratch/check_version.js` | ❌ 1.3.9 已打过 tag → **发版前必须先升版本**（这是故意的守卫） |
+| `node scratch/math_latex_verify.js` | 481 条公式，空 0、KaTeX 语法错 0 |
+| `tsc --noEmit` / `lint` / `scan_secrets` / 已安装产物冒烟 | 全绿 |
+
+**像素级/视觉对照（用户明确要求的那一项）**：
+用 PyMuPDF 把 cycle.pdf 第 4 页渲染成图（`scratch/vision/cycle_p4_render.png`、`cycle_p4_verify.png`），
+再用视觉模型逐字转写，与本地数学层的输出**逐条比对一致**：
+
+| 页面上印的 | 本地抽取的 LaTeX | 判定 |
+|---|---|---|
+| `X` 下标 `t−1` = `{X_1}`，`Y` 下标 `t−1` = `{Y_1}` | `X_{t-1}=\{X_{1}\}`、`Y_{t-1}=\{Y_{1}\}` | ✅ 一致 |
+| `L` 下标 `cycle,t` = `L(Ŷ_t, Y_t) + L(Ŷ_1, Y_1)` | `L_{cycle,t}=L(\hat{Y}_{t}, Y_{t})+L(\hat{Y}_{1}, Y_{1})` | ✅ 一致（视觉模型把下标读成 `cycle+`，而 PDF 文本层就是 `cycle,t`——以文本层为准） |
+| `Ŷ`（帽子 + 下标 t） | `\hat{Y}_{t}` | ✅ 一致 |
+
 
 
 ## 必须先知道的失误（我犯的，已修复数据、但有一处后果）
