@@ -1,0 +1,13 @@
+{
+  "env": { "browser": true, "es2022": true, "node": true },
+  "parserOptions": { "ecmaVersion": 2022, "sourceType": "script" },
+  "globals": {
+    "pdfjsLib": "readonly",
+    "acquireVsCodeApi": "readonly",
+    "PDF_WORKER_URL": "readonly"
+  },
+  "rules": {
+    "no-undef": "error",
+    "no-redeclare": "error"
+  }
+}

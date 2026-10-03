@@ -22,6 +22,7 @@ package-vsix.js
 package-all.js
 package-lock.json
 tsconfig.json
+.eslintrc.json
 .gitignore
 .gitattributes
 .vscodeignore

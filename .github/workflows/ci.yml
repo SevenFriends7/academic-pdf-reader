@@ -26,6 +26,12 @@ jobs:
       - name: 单元测试（webview 侧）
         run: node scratch/llm-test/viewer-unit.js
 
+      # 静态检查未声明 / 重复声明的变量。
+      # 实测抓到过一个潜伏很久的 bug：hoverTooltipTimer 从未声明，
+      # 靠非严格模式的"隐式全局"侥幸运行，一旦在严格模式下执行就抛 ReferenceError。
+      - name: 静态检查（no-undef / no-redeclare）
+        run: npm run lint
+
       # 在真实 DOM（jsdom）里执行整个 viewer，并走一遍"打开文档 → 创建界面容器"的路径。
       # 假 DOM 测试会把"不存在则创建"的分支整段跳过，初始化的暂时性死区崩溃只能靠这一步发现。
       - name: 初始化冒烟测试（jsdom 真实 DOM）

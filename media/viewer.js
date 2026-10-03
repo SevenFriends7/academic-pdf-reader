@@ -76,6 +76,17 @@
   let readerToastTimer = null;
 
   /**
+   * 笔记卡片悬停提示的延时器。
+   *
+   * 【曾经是一个隐藏很久的 bug】这里一直**没有声明**：在非严格模式下
+   * `hoverTooltipTimer = setTimeout(...)` 会隐式创建全局变量，于是"看起来能用"；
+   * 一旦代码在严格模式下执行（ES module 或 'use strict'），
+   * 赋值与读取都会抛 `ReferenceError: hoverTooltipTimer is not defined`。
+   * 现在显式声明，并加入 eslint no-undef 静态检查防止同类问题再现。
+   */
+  let hoverTooltipTimer = null;
+
+  /**
    * 回答风格三档的定义。
    *
    * 【必须放在最前面】这里是 const（存在暂时性死区），而创建批注卡片时会调用

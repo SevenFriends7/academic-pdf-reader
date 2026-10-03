@@ -5,6 +5,19 @@
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-10-03
+
+### 修复
+- **`hoverTooltipTimer` 未声明导致悬停笔记时报 ReferenceError**：
+  这个变量从始至终没有声明过，在非严格模式下靠"隐式创建全局变量"侥幸运行，
+  一旦代码在严格模式下执行，赋值与读取都会抛
+  `ReferenceError: hoverTooltipTimer is not defined`。现已显式声明。
+  （这次的现场信息来自 0.5.4 新增的界面错误框——终于不用猜了。）
+
+### 新增
+- **静态检查进入 CI**（`npm run lint`，eslint 的 `no-undef` + `no-redeclare`）：
+  一次就找全了 `hoverTooltipTimer` 这类"未声明变量"，重复声明的隐患也一并拦住。
+
 ## [0.5.4] - 2026-10-03
 
 ### 新增
