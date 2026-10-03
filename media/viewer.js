@@ -1217,12 +1217,37 @@
     const standaloneMeaningful = list.length === 1 && /^[∑∏∫∮∂∇√∞∀∃∅∈∉⊂⊃∪∩⋃⋂±×÷≈≤≥≠≡]/.test(list[0].str);
     if (!hasCore && symbolCount < 2 && !standaloneMeaningful) return '';
     /*
+     * 撇号（`′` U+2032 / `″` / `‴`）**不是独立字符，也不是上下标**，它是"上一层的撇"。
+     *
+     * 【为什么必须在分层之前先折叠】实测 AOT 第 5 页的 `V′ = AttID(…)`：撇是 CMSY7 的小号 item
+     * （字号 6.97 < 主体 9.96），因此它**既不在主行层、又被判成上下标候选**，
+     * 结果后面那个真正的下标（`_{V=AttID(...)}`）挂到了这个撇身上，
+     * 转出 `'_{V=AttID(...)}` 这种鬼式子——KaTeX 照样渲染，肉眼极难发现（最危险的一类错）。
+     * 先把它折进左边最近的基字形，后面所有逻辑（分层/上下标/成组）都不必再特殊照顾它。
+     */
+    {
+      let lastOne = null;
+      const folded = [];
+      list.slice().sort((a, b) => a.x - b.x || b.y - a.y).forEach(it => {
+        if (/^[′″‴']+$/.test(String(it.str)) && lastOne) {
+          lastOne.str += it.str;
+          return;
+        }
+        folded.push(it);
+        lastOne = it;
+      });
+      list.length = 0;
+      folded.forEach(it => list.push(it));
+    }
+    const maxSize2 = Math.max(...list.map(i => i.size));
+
+    /*
      * 帽子（零宽组合抑扬符）**永远不是主行字形**：它字号与主体一样大（CMEX10 也是 10pt），
      * 只有"宽度为 0"能把它认出来。若把它算进主行，主行基线会被顶到帽子的高度，
      * 转出来就是 `\hat_{Xt}` 这种既非法又难看的式子（实测）。
      */
     const isAccentItem = i => i.isAccent || (i.width <= 0 && isCombiningMark(i.str));
-    const mainItems = list.filter(i => i.size >= maxSize * 0.92 && !isAccentItem(i));
+    const mainItems = list.filter(i => i.size >= maxSize2 * 0.92 && !isAccentItem(i));
     const mainY = Math.max(...mainItems.map(i => i.y));
     const baseItems = mainItems.filter(i => Math.abs(i.y - mainY) <= 0.6).sort((a, b) => a.x - b.x);
     const baseSet = new Set(baseItems);
@@ -1236,9 +1261,20 @@
       const chars = [];
       baseRow.slice().sort((a, b) => a.x - b.x).forEach(it => {
         const prev = chars[chars.length - 1];
+        /*
+         * 撇号（`′` U+2032 / `″` / `‴`）**不是独立字符**，它是"上一层的撇"：
+         * 实测 AOT 第 5 页 `V′ = …` 的撇（CMSY7 小号 item）被排进主行后自己成了一个字符簇，
+         * 随后真正的下标又挂到它身上，转出 `'_{V=AttID(...)}` 这种鬼式子。
+         * 正确做法：直接并进**左边那个基字符**（TeX 里 `V'` 就是 `V^{\prime}`）。
+         */
+        if (/^[′″‴']+$/.test(String(it.str)) && prev) {
+          prev.str += it.str;
+          prev.xEnd = Math.max(prev.xEnd, it.x + Math.max(it.width, 0.6) - originX);
+          return;
+        }
         if (prev && it.x - prev.xEnd <= 1.6) {
           prev.str += it.str;
-          prev.xEnd = Math.max(prev.xEnd, it.x + Math.max(it.width, 0.6));
+          prev.xEnd = Math.max(prev.xEnd, it.x + Math.max(it.width, 0.6) - originX);
           return;
         }
         chars.push({
@@ -1258,13 +1294,29 @@
         .map(it => ({ ...it, lx: it.x - originX, ly: it.y - originY }))
         .sort((a, b) => a.lx - b.lx || b.ly - a.ly)
         .forEach(it => {
+          /*
+           * 找宿主：取 **x 最靠右且不越过 it** 的那个基字符。
+           *
+           * 【踩过的坑】兜底绝不能写成"取最后一个基字符"：实测 AOT 第 5 页的 `V′ = AttID(…)`，
+           * 撇 `′`（x 比 `V` 大 7.6pt）会越过 `=`（x 大 10.7pt）匹配不上，于是落到数组**末尾**，
+           * 挂到最后那个逗号上，转出 `'_{V=AttID(...)}` 这种鬼式子。
+           * 正确兜底：取"起点不超过 it 的那些基字符里最靠右的一个"。
+           */
           let host = null;
-          for (let i = chars.length - 1; i >= 0; i--) {
-            if (chars[i].x <= it.lx + 0.9) { host = chars[i]; break; }
+          let bestX = -Infinity;
+          for (let i = 0; i < chars.length; i++) {
+            if (chars[i].x <= it.lx + 0.9 && chars[i].x > bestX) { bestX = chars[i].x; host = chars[i]; }
           }
-          if (!host) host = chars[chars.length - 1];
+          if (!host) host = chars[0];
           if (!host) { orphans.push(it); return; }
           if (it.isAccent) { host.accent = mathCharToLatex(it.str); return; }
+          /*
+           * 撇号（`′` U+2032 / `″` / `‴`）**不是下标**，它是"上一层的撇"：
+           * 实测 AOT 第 5 页的 `V′ = …` 里，撇是 CMSY7 的小号 item（基线比主体高 4.1pt、
+           * 字号更小），早先被当成下标。正确做法：直接追加到**左边那个基字符**上
+           * （TeX 里 `V'` 就是 `V^{\prime}`）。
+           */
+          if (/^[′″‴']+$/.test(String(it.str))) { host.str += it.str; return; }
           if (it.ly > 0.6) host.sup.push(it);
           else if (it.ly < -0.6) host.sub.push(it);
           else host.sub.push(it);
