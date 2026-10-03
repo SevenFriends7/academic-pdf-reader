@@ -7436,6 +7436,37 @@ let aiPresetQuestion = '';
     return `<span class="md-math md-math-fallback">${escaped}</span>`;
   }
 
+  /**
+   * 文本层公式残渣的兜底识别与转写。
+   *
+   * 【为什么需要它】PDF 抽出来的公式永远是残渣形式（`Y ̂ t`、`Y 1`、`Y^t`），
+   * 原文侧不可能有 `$...$`；视觉模型给的替换表只覆盖它标注到的那几处（实测第 5 页 8 段里
+   * 只有 2 段给了表），老译文里抄下来的残渣同样没表可查。于是总有一些"漏掉"。
+   * 而残渣的形态其实很规则，可以确定性转写，且**误伤风险极低**：
+   *   · 组合抑扬符（U+0302/0303）出现在正文里，几乎只可能是公式残渣；
+   *   · 单个大写字母 + 空格 + 1~2 位数字（`Y 1`）在学术中文/英文里就是下标写法；
+   *   · ASCII 上标（`Y^t`、`x^2`）。
+   * 所以这三类一律转成 LaTeX——比"等模型给表"可靠，也比"不渲染"好。
+   */
+  const RESIDUE_HAT_RE = /([A-Za-z])((?:\s*[\u0302\u0303])+)(\s*(?:[A-Za-z]|\d{1,2}))?/g;
+  const RESIDUE_CARET_RE = /(?<![A-Za-z0-9\\])([A-Za-z])\^(\{[^}]{1,14}\}|[A-Za-z0-9]{1,4})/g;
+  /*
+   * 裸下标（`Y 1`、`X t`）的判据要**故意收紧**，否则会误伤普通英文：
+   *   · 只认**大写**字母——"a 2-fold increase" 里的 "a 2" 不是变量；
+   *   · 后面不许紧跟小数点/百分号/连字符——"A 2.5%"、"a 2-fold" 都不该转；
+   *   · 下标只取一个 token（1~2 位数字或单个小写字母），
+   *     不吞逗号列表：`Y ̂ 1, Y 1` 里的 "1, Y" 会被错当成下标（实测踩过 `_{1,Y}`）。
+   */
+  const RESIDUE_SUB_RE = /(?<![A-Za-z0-9])([A-Z])\s(\d{1,2}|[a-z])(?![A-Za-z0-9.%-])/g;
+
+  /** 把残渣的各个片段拼成 LaTeX（帽子可能叠两层，实测出现过 "Y ̂ ̂"） */
+  function residueToLatex(letter, hatCount, sub) {
+    let core = letter;
+    for (let i = 0; i < hatCount; i++) core = `\\hat{${core}}`;
+    const token = String(sub || '').replace(/\s+/g, '');
+    return token ? `${core}_{${token}}` : core;
+  }
+
   /** 纯文本里夹 $...$ / $$...$$ / \(...\) / \[...\] 的渲染（先转义纯文本，再把公式塞回去） */
   function renderTextWithMath(text) {
     const maths = [];
@@ -7450,6 +7481,31 @@ let aiPresetQuestion = '';
     // 单个 $ 必须成对、不跨行，**且内容确实像公式**：否则 "价格 $5 和 $6" 这种
     // 普通文本会被当成公式渲染（正文里出现 $ 的概率虽低，但一旦错就很显眼）。
     s = s.replace(/\$([^$\n]+?)\$/g, (m, tex) => (looksLikeMath(tex) ? stash(tex, false) : m));
+
+    /*
+     * 兜底：文本层残渣（顺序很重要——帽子优先，它最不可能是普通文本；
+     * 剩下的裸下标再处理，避免 "Y ̂ t" 被下标规则先吃掉一半）。
+     */
+    s = s.replace(RESIDUE_HAT_RE, (m, letter, hats, sub) => {
+      const hatCount = (hats.match(/[\u0302\u0303]/g) || []).length || 1;
+      return `<span class="vision-residue-math" title="按文本层残渣转写的公式（原文侧没有 LaTeX 写法）">${renderMathSpan(
+        residueToLatex(letter, hatCount, sub),
+        false
+      )}</span>`;
+    });
+    s = s.replace(RESIDUE_CARET_RE, (m, letter, exp) =>
+      `<span class="vision-residue-math" title="按文本层残渣转写的公式（原文侧没有 LaTeX 写法）">${renderMathSpan(
+        `${letter}^{${String(exp).replace(/^\{|\}$/g, '')}}`,
+        false
+      )}</span>`
+    );
+    s = s.replace(RESIDUE_SUB_RE, (m, letter, sub) =>
+      `<span class="vision-residue-math" title="按文本层残渣转写的公式（原文侧没有 LaTeX 写法）">${renderMathSpan(
+        `${letter}_{${sub}}`,
+        false
+      )}</span>`
+    );
+
     return s.replace(/\u0000M(\d+)\u0000/g, (m, i) => maths[Number(i)]);
   }
 

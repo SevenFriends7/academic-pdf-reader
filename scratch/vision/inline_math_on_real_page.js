@@ -29,8 +29,8 @@ const splitEnglishSentencesSmart = extractFn('splitEnglishSentencesSmart');
 // 手术段（含锚点定位与辅助函数）+ 行内公式渲染
 const surgStart = code.indexOf('  function normalizeVisionType(t) {');
 const surgEnd = code.indexOf('  function applyVisionSegments(pageNum, result) {');
-// 从 renderTextWithMath 起切：renderEnTextHtml 依赖它
-const htmlStart = code.indexOf('  function renderTextWithMath(text) {');
+// 从 RESIDUE_* 常量起切：renderTextWithMath / renderEnTextHtml 依赖它们
+const htmlStart = code.indexOf('  const RESIDUE_HAT_RE');
 const htmlEnd = code.indexOf('\n  }', code.indexOf('return out;', htmlStart));
 // eslint-disable-next-line no-new-func
 const api = new Function(
@@ -135,3 +135,26 @@ const missing = local.filter(p => {
   return hasResidue && (!p.visionInline || p.visionInline.length === 0);
 }).length;
 console.log(`\n小结：${totalRendered} 句渲染出了公式；${missing} 段含残渣但模型没给替换表（这些仍是残渣——显示层只做"模型确认过的替换"，不自己猜）。`);
+
+// ---- 额外核对：没有替换表的"老译文"里，残渣兜底渲染能救回多少 ----
+const zhPlain = [];
+(pageParaArchiveOf(paper, page) || []).forEach(x => {
+  const t = String(x.translation || '');
+  const list = Array.isArray(x.sentenceTranslations) && x.sentenceTranslations.length ? x.sentenceTranslations : [t];
+  list.forEach(z => {
+    if (z && /[A-Za-z]/.test(z)) zhPlain.push(z);
+  });
+});
+const residueLike = z => /[\u0302\u0303]|\^/.test(z) || /(?<![A-Za-z0-9])[A-Za-z]\s(?:\d{1,2}|[a-z])(?![A-Za-z0-9])/.test(z);
+const before = zhPlain.filter(residueLike).length;
+const after = zhPlain.filter(z => /vision-residue-math|md-math-rendered|vision-inline-math/.test(M.renderEnTextHtml(z, []))).length;
+console.log(`老译文（没有任何替换表）里含残渣形式的句子：${before} 句；靠兜底渲染出公式的：${after} 句`);
+zhPlain.filter(residueLike).slice(0, 4).forEach(z => {
+  const html = M.renderEnTextHtml(z, []);
+  const got = (html.match(/vision-residue-math/g) || []).length;
+  console.log(`  · 渲染 ${got} 处：${z.replace(/\s+/g, ' ').slice(0, 60)}`);
+});
+
+function pageParaArchiveOf(p, pg) {
+  return (p.pageArchive || {})[String(pg)] || [];
+}

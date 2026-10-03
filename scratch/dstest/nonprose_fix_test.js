@@ -99,10 +99,24 @@ if (!fs.existsSync(dir)) {
   console.log(`   存档 ${newest}：清理前 translations ${before.translations} 条，清理掉 ${pruned} 条`);
 
   const poisoned = ['4_74b30526_d0790fd7-135', '4_74b30526_1bc10d44-162'];
+  /*
+   * 【判据要拿"值"而不是"键"】旧的假译文被清掉后，webview 会重新翻译同一段，
+   * 于是**同一个键**又会带着中文回来（键是内容指纹，本来就是同一个）。
+   * 所以这里验的是"值不再是英文原文"，不是"键不存在"——我第一版就是这么写错的。
+   */
+  const stillFake = poisoned.filter(k => {
+    const v = String(copy.translations[k] || '');
+    if (!v) return false;
+    return (v.match(/[\u4e00-\u9fff]/g) || []).length === 0;
+  });
   check(
-    '两条"原文当译文"的假缓存被清掉（第 4 页那两个片段）',
-    poisoned.every(k => !copy.translations[k]),
-    poisoned.map(k => `${k}=${copy.translations[k] ? '还在' : '已清'}`).join(' ')
+    '两条"原文当译文"的记录已不存在（值已是中文；键相同是正常的，重新翻译会写回同一个键）',
+    stillFake.length === 0,
+    poisoned.map(k => `${k.slice(-18)}=${JSON.stringify(String(copy.translations[k] || '(无)').slice(0, 26))}`).join('  ')
+  );
+  check(
+    '重新翻译后的值确实是中文',
+    poisoned.every(k => ((String(copy.translations[k] || '').match(/[\u4e00-\u9fff]/g) || []).length >= 5))
   );
   // 真标题（id0）与表格表头（p6 id6）不能被清：它们本来就该原样保留
   const mustKeep = Object.keys(paper.translations || {}).filter(k => {

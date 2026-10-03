@@ -574,6 +574,37 @@ console.log('\n[视觉手术：按模型判断合并续句、拆开"正文+公�
     /vision-inline-math/.test(S.renderEnTextHtml('因此，我们有 Y ̂ t − 1 ⊂ { Y 1 } 成立。', [{ find: 'Y ̂ t − 1', latex: '\\hat{Y}_{t-1}' }]))
   );
   check(
+    '兜底渲染认得出文本层残渣（帽子 / ASCII 上标 / 裸下标）',
+    (() => {
+      const cases = [
+        ['Y ̂ t and X ̂ 1 are defined', 2],
+        ['we use X t and Y 1 here', 2],
+        ['the mask Y^t is refined', 1]
+      ];
+      return cases.every(([t, n]) => (S.renderEnTextHtml(t, []).match(/vision-residue-math/g) || []).length === n);
+    })(),
+    S.renderEnTextHtml('we use X t and Y 1 here', [])
+  );
+  check(
+    '兜底渲染不误伤普通英文/中文（收紧过的判据：只认大写字母、不许紧跟小数点/百分号/连字符）',
+    (() => {
+      const bad = [
+        'a 2-fold increase in accuracy',
+        'the value is A 2.5% higher',
+        'Figure 1 shows the pipeline',
+        'see Table 2 and Section 3 for details',
+        'et al. 2019 reported this',
+        '其中图 2 给出了梯度校正模块'
+      ];
+      const hits = bad.filter(t => /vision-residue-math/.test(S.renderEnTextHtml(t, [])));
+      return hits.length === 0;
+    })(),
+    '误伤样例：' +
+      ['a 2-fold increase in accuracy', 'the value is A 2.5% higher', 'Figure 1 shows the pipeline', 'see Table 2 and Section 3 for details', 'et al. 2019 reported this', '其中图 2 给出了梯度校正模块']
+        .filter(t => /vision-residue-math/.test(S.renderEnTextHtml(t, [])))
+        .join(' | ')
+  );
+  check(
     '同一位置长短两条替换表 → 取更长（更精确）的那条（否则 Ŷ_{t−1} 会只渲染成 Ŷ_t，后面吊着 −1）',
     (() => {
       const html = S.renderEnTextHtml('Hence, we have Y ̂ t − 1 ⊂ { Y 1 }.', [
