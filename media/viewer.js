@@ -53,6 +53,18 @@
     { key: 'standard', label: '标准', tip: '先解释术语与前置概念，一般 300~700 字（默认）' },
     { key: 'reviewer', label: '审稿', tip: '以审稿人视角质疑论证与实验设计' }
   ];
+
+  /**
+   * 当前回答风格（由设置同步进来）。
+   *
+   * 【同样必须放在最前面】初始化阶段创建批注卡片时会调用 createAiStyleSwitch()，
+   * 其中的 syncAiStyleButtons() 会读这个变量；若声明晚于调用点就会抛
+   * "Cannot access 'aiStyle' before initialization"，
+   * 与 AI_STYLES 那次一样会让整个初始化中断（PDF 空白 / 无译文 / 主题错乱）。
+   *
+   * 取空串表示"由扩展侧读取 academicReader.aiAnswerStyle 设置"（用户设置优先）。
+   */
+  let aiStyle = '';
   let activeContextAnnot = null;
   let currentEditingAnnot = null;
   let currentNotesSearchQuery = '';
@@ -5567,8 +5579,6 @@
 let aiEngineIsOpenAI = false;
 /** 当前上下文的预设分析问题：只预填、不自动发送，由「开始分析」按钮触发 */
 let aiPresetQuestion = '';
-  /** 回答风格：为空表示交给扩展侧读取 academicReader.aiAnswerStyle 设置 */
-  let aiStyle = '';
   /** 当前翻译引擎标识（扩展侧下发），参与段落缓存键，切换引擎即失效 */
   let currentEngineTag = '';
 

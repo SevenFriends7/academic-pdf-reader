@@ -7,7 +7,7 @@
     "color": "#0b578a",
     "theme": "dark"
   },
-  "version": "0.5.2",
+  "version": "0.5.3",
   "publisher": "paper-reader",
   "license": "MIT",
   "repository": {
@@ -230,12 +230,15 @@
     "publish:patch": "npx --yes @vscode/vsce publish patch --no-dependencies",
     "publish:minor": "npx --yes @vscode/vsce publish minor --no-dependencies",
     "publish:major": "npx --yes @vscode/vsce publish major --no-dependencies",
+    "test": "node scratch/llm-test/viewer-unit.js",
+    "test:init": "node scratch/smoke_init.js",
     "prevsix": "node scratch/check_version.js"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.80.0",
     "esbuild": "^0.20.0",
+    "jsdom": "^24.1.3",
     "pdfjs-dist": "3.11.174",
     "typescript": "^5.3.3"
   }

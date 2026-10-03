@@ -26,6 +26,11 @@ jobs:
       - name: 单元测试（webview 侧）
         run: node scratch/llm-test/viewer-unit.js
 
+      # 在真实 DOM（jsdom）里执行整个 viewer，并走一遍"打开文档 → 创建界面容器"的路径。
+      # 假 DOM 测试会把"不存在则创建"的分支整段跳过，初始化的暂时性死区崩溃只能靠这一步发现。
+      - name: 初始化冒烟测试（jsdom 真实 DOM）
+        run: npm run test:init
+
       - name: 密钥泄露扫描
         run: node scratch/scan_secrets.js
 

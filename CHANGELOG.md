@@ -5,6 +5,21 @@
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-10-03
+
+### 修复
+- **严重（0.5.2 未修全）：打开阅读器后 PDF 不加载、没有译文、主题错乱**。
+  0.5.2 只前移了 `AI_STYLES`，还有第二处同类问题：`aiStyle` 也是 `let` 声明在文件后部，
+  而 `createAiStyleSwitch() → syncAiStyleButtons()` 同样在初始化阶段读它 →
+  `Cannot access 'aiStyle' before initialization`。两处现已全部前移到文件顶部。
+- **新增真正的初始化冒烟测试** `scratch/smoke_init.js`（`npm run test:init`）：
+  在 jsdom（真实 DOM 实现）里执行整个 viewer 并调用 `ensureAllToolbarsExist()`，
+  也就是"打开文档时创建界面容器"的真实路径。
+  旧的假 DOM 测试对 `getElementById`/`querySelector` 一律返回真值，
+  "不存在则创建"的分支被整段跳过，初始化崩溃因此两次都没测出来——
+  该缺陷已修复：创建分支现在会被真正执行，并且对修复前的代码能如实报出
+  `Cannot access 'aiStyle' before initialization`。
+
 ## [0.5.2] - 2026-10-03
 
 ### 修复
@@ -13,8 +28,7 @@
   却被放到了文件后部，而初始化阶段创建批注卡片时就会经 `createAiStyleSwitch()`
   读取它 → 抛 `Cannot access 'AI_STYLES' before initialization` →
   初始化函数整体中断，后面的 PDF 渲染、翻译、主题应用全都执行不到。
-  现把定义前移到文件顶部，并新增守卫测试：断言定义行必须早于所有调用点，
-  这类"共用一个常量、定义晚于调用"的崩溃以后会被测出来。
+  （注：本版只修了第一处，第二处 `aiStyle` 见 0.5.3。）
 
 ## [0.5.1] - 2026-10-02
 

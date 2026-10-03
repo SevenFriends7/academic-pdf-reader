@@ -71,7 +71,7 @@ function fakeEl(tag) {
     addEventListener() {},
     removeEventListener() {},
     dispatchEvent() { return true; },
-    querySelector() { return fakeEl('div'); },
+    querySelector() { return null; }, // 真实 DOM 语义：找不到就是 null
     querySelectorAll() { return []; },
     closest() { return null; },
     focus() {},
@@ -99,15 +99,32 @@ function fakeEl(tag) {
 }
 
 const elCache = new Map();
+/**
+ * 这些 id 让 getElementById 返回 null，从而**强制走"不存在则创建"的分支**。
+ *
+ * 为什么必须这么做：初始化阶段创建批注卡片/问答弹窗时会调用 createAiStyleSwitch()，
+ * 而它会读取 AI_STYLES / aiStyle 这两个"暂时性死区"变量。旧版假 DOM 对任何 id 都返回
+ * 真值，这些分支被整段跳过 —— 于是线上真实发生过两次的崩溃
+ * （Cannot access '…' before initialization → PDF 不加载 / 无译文 / 主题错乱）
+ * 测试一次都没拦住。返回 null 才会真正执行初始化路径。
+ */
+const FORCE_CREATE_IDS = new Set(['annotPopover', 'aiAssistantModal']);
+// 记录初始化过程中真实创建过的元素，用于断言"创建分支确实被执行了"
+const createdElements = [];
 const documentStub = {
   body: fakeEl('body'),
   documentElement: fakeEl('html'),
   head: fakeEl('head'),
   getElementById(id) {
+    if (FORCE_CREATE_IDS.has(id)) return null;
     if (!elCache.has(id)) elCache.set(id, fakeEl('div'));
     return elCache.get(id);
   },
-  createElement(tag) { return fakeEl(tag); },
+  createElement(tag) {
+    const el = fakeEl(tag);
+    createdElements.push(el);
+    return el;
+  },
   createTextNode(t) { return { textContent: t, length: (t || '').length }; },
   createRange() {
     return {
@@ -115,7 +132,7 @@ const documentStub = {
       getClientRects() { return []; }
     };
   },
-  querySelector() { return fakeEl('div'); },
+  querySelector() { return null; }, // 真实 DOM 语义：找不到就是 null
   querySelectorAll() { return []; },
   addEventListener() {},
   removeEventListener() {}
@@ -194,6 +211,16 @@ function checkTrue(name, cond, detail) {
   if (cond) { pass++; console.log(`  ✅ ${name}`); }
   else { fail++; console.log(`  ❌ ${name}${detail ? `\n      ${detail}` : ''}`); }
 }
+
+// ---------- 0b. 初始化路径确实被执行（TDZ 崩溃的前提条件） ----------
+// 假 DOM 必须强制走"不存在则创建"的分支，否则 AI_STYLES / aiStyle 的暂时性死区
+// 错误永远不会暴露——线上两次崩溃（PDF 不加载 / 无译文 / 主题错乱）就是这样漏掉的。
+console.log('\n===== T0b 初始化路径确实被执行 =====');
+checkTrue(
+  '初始化里"不存在则创建"的分支跑到了（否则 TDZ 崩溃测不出来）',
+  createdElements.length > 0,
+  `createElement 调用次数 = ${createdElements.length}`
+);
 
 // ---------- 1. 段落指纹：旧版碰撞回归测试 ----------
 console.log('\n===== T1 段落指纹 getParaSig（旧版「前 28 字符」碰撞回归） =====');
