@@ -310,6 +310,7 @@
               <span class="ai-loading-text">正在连接...</span>
             </div>
             <div class="ai-question-input-wrapper">
+              <div id="aiModalStyleSlot" class="ai-style-slot-inline"></div>
               <textarea id="aiModalQuestionInput" placeholder="输入你的疑问，回车发送（Shift+回车换行）；可继续追问" rows="2"></textarea>
               <div class="ai-send-group">
                 <button id="btnAnalyzeAiModal" class="btn-analyze-ai" type="button" style="display: none;">开始分析</button>
@@ -318,7 +319,6 @@
               </div>
             </div>
             <div class="ai-scope-hint">问本论文的内容会严格依据原文（查不到就说查不到）；问概念、术语或临时想到的问题，会直接用通用知识回答并标明不是论文结论。</div>
-            <div id="aiModalStyleSlot"></div>
           </div>
         </div>
       `;
@@ -4892,13 +4892,8 @@
         mark.style.top = `${Math.round(r.top * currentScale)}px`;
         mark.style.width = `${Math.round(r.width * currentScale)}px`;
         mark.style.height = `${Math.round(r.height * currentScale)}px`;
-        mark.title = annot.note ? `批注: ${annot.note}` : annot.text;
-
-        mark.addEventListener('mouseenter', () => {
-          showHoverTooltip(annot, mark.getBoundingClientRect());
-        });
-        mark.addEventListener('mouseleave', scheduleHideHoverTooltip);
-
+        // 连原生 title 提示也不挂：鼠标滑过高亮句子时不应该有任何东西冒出来。
+        // 需要看批注内容/编辑时，点击高亮即可打开批注卡片。
         mark.addEventListener('click', (e) => {
           e.stopPropagation();
           openAnnotationPopover({ existingAnnot: annot, anchorRect: mark.getBoundingClientRect() });
@@ -4913,17 +4908,13 @@
         const pin = document.createElement('div');
         pin.className = `note-pin-badge ${annot.color}`;
         pin.dataset.annotId = annot.id;
-        pin.title = `批注: ${annot.note}\n(点击就近编辑，悬停速览)`;
+        pin.title = '批注';
         pin.innerHTML = `✍️`;
 
         pin.style.left = `${Math.round((lastRect.left + lastRect.width) * currentScale) - 6}px`;
         pin.style.top = `${Math.round(lastRect.top * currentScale) - 8}px`;
 
-        pin.addEventListener('mouseenter', () => {
-          showHoverTooltip(annot, pin.getBoundingClientRect());
-        });
-        pin.addEventListener('mouseleave', scheduleHideHoverTooltip);
-
+        // 同样不再悬停弹出预览（只保留点击打开批注卡片）
         pin.addEventListener('click', (e) => {
           e.stopPropagation();
           openAnnotationPopover({ existingAnnot: annot, anchorRect: pin.getBoundingClientRect() });

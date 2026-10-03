@@ -1295,6 +1295,20 @@ console.log('\n===== T19 提示条自动消失 与 聚焦条跟随 =====');
   checkTrue('错误会画在界面上（不是只打日志）', /document\.getElementById\('fatalErrorBox'\)/.test(code) && /box\.textContent =/.test(code));
   checkTrue('同时回报给扩展侧', /type: 'webviewFatal'/.test(code));
   checkTrue('宿主侧记录该错误', /case 'webviewFatal'/.test(ext));
+
+  // —— 悬停高亮不再弹任何东西（用户明确要求） ——
+  checkTrue('高亮元素不再挂 mouseenter 预览', !/mark\.addEventListener\('mouseenter'/.test(code));
+  checkTrue('高亮元素不再挂原生 title 提示', !/mark\.title\s*=/.test(code));
+  checkTrue('便签图钉也不再挂悬停预览', !/pin\.addEventListener\('mouseenter'/.test(code));
+  checkTrue('点击高亮仍能打开批注卡片', /mark\.addEventListener\('click'/.test(code));
+
+  // —— 风格控件必须放在"始终可见"的位置（曾被放到弹窗底部而看不见） ——
+  checkTrue(
+    '问答弹窗的风格控件位于输入框区域内',
+    /ai-question-input-wrapper">\s*\n\s*<div id="aiModalStyleSlot"/.test(code) ||
+      /ai-question-input-wrapper[\s\S]{0,120}id="aiModalStyleSlot"/.test(code)
+  );
+  checkTrue('弹窗底部不再重复放一个槽位', (code.match(/id="aiModalStyleSlot"/g) || []).length === 1);
 })();
 
 console.log(`\n===== 结果: ${pass} 通过 / ${fail} 失败 =====`);

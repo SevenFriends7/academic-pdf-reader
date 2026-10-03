@@ -3556,3 +3556,13 @@ body.theme-paper-dark .article-section-zh {
   margin: 6px 0 2px;
   padding-left: 2px;
 }
+
+/* 问答弹窗里回答风格切换的位置：紧贴输入框上方，滚动时也始终可见
+   （曾经放在弹窗最底部——位于输入框与提示文案之后，长对话时被滚出视野，
+   用户反馈"有代码但看不到控件"） */
+.ai-style-slot-inline {
+  margin-bottom: 6px;
+}
+.ai-style-slot-inline .ai-style-switch {
+  margin-top: 0;
+}
