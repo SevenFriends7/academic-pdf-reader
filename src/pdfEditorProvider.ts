@@ -1230,7 +1230,7 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
           <button type="button" class="ai-chip" data-q="我对这里的结论存有疑难，请结合上下文帮我深度剖析推导过程。">推导过程</button>
         </div>
         <div id="aiModalTranscript" class="ai-transcript">
-          <div class="ai-transcript-empty">可直接提问，或点上面的快捷提问。有预设分析时点「开始分析」——打开本窗口不会自动发起提问。</div>
+          <div class="ai-transcript-empty">可直接提问，或点上面的快捷提问。有预设分析时已替你填进输入框，点「发送」才开始——打开本窗口不会自动发起提问。</div>
         </div>
         <div id="aiModalLoading" class="ai-modal-loading" style="display: none;">
           <span class="ai-loading-text">正在连接...</span>
@@ -1238,7 +1238,6 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
         <div class="ai-question-input-wrapper">
           <textarea id="aiModalQuestionInput" placeholder="输入你的疑问，回车发送（Shift+回车换行）；可继续追问" rows="2"></textarea>
           <div class="ai-send-group">
-            <button id="btnAnalyzeAiModal" class="btn-analyze-ai" type="button" style="display: none;">开始分析</button>
             <button id="btnStopAiModalQuestion" class="btn-stop-ai" type="button" style="display: none;">停止</button>
             <button id="btnSendAiModalQuestion" class="btn-send-ai">发送</button>
           </div>

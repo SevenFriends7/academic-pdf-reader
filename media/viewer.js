@@ -146,7 +146,6 @@
    * 现在无论弹窗由谁创建，缺什么补什么：
    *   · 标题旁的扩展版本号 #aiModalVersion（截图即可确认跑的是哪一版）
    *   · **固定头部**里的回答风格控件槽 #aiModalStyleSlot（头部不滚动，永远看得见）
-   *   · 输入框区的「开始分析」按钮 #btnAnalyzeAiModal
    * 回归护栏：scratch/host_html_smoke.js 直接用宿主 HTML 跑真实路径。
    */
   function ensureAiModalControls(modal) {
@@ -184,19 +183,12 @@
       slot.appendChild(createAiStyleSwitch());
     }
 
-    // 3) 「开始分析」预设按钮（有预设分析问题时才由 openAiAssistantModal 显示出来）
-    if (!modal.querySelector('#btnAnalyzeAiModal')) {
-      const sendGroup = modal.querySelector('.ai-send-group');
-      if (sendGroup) {
-        const analyzeBtn = document.createElement('button');
-        analyzeBtn.id = 'btnAnalyzeAiModal';
-        analyzeBtn.className = 'btn-analyze-ai';
-        analyzeBtn.type = 'button';
-        analyzeBtn.textContent = '开始分析';
-        analyzeBtn.style.display = 'none';
-        sendGroup.insertBefore(analyzeBtn, sendGroup.firstChild);
-      }
-    }
+    // 3) 老版本（≤0.5.17）的「开始分析」按钮：直接删掉。
+    //    它和「发送」功能重叠——预设问题是**预填进输入框**的，点「发送」发的就是它；
+    //    而且它会无视用户在输入框里的修改（照样发原始预设），是个坑。
+    //    现在预设问题改成快捷提问芯片（见 renderPresetChip）。
+    const legacyAnalyzeBtn = modal.querySelector('#btnAnalyzeAiModal');
+    if (legacyAnalyzeBtn) legacyAnalyzeBtn.remove();
   }
 
   function ensureAllToolbarsExist() {
@@ -398,7 +390,7 @@
               <button type="button" class="ai-chip" data-q="我对这里的结论存有疑难，请结合上下文帮我深度剖析推导过程。">推导过程</button>
             </div>
             <div id="aiModalTranscript" class="ai-transcript">
-              <div class="ai-transcript-empty">可直接提问，或点上面的快捷提问。有预设分析时点「开始分析」——打开本窗口不会自动发起提问。</div>
+              <div class="ai-transcript-empty">可直接提问，或点上面的快捷提问。有预设分析时已替你填进输入框，点「发送」才开始——打开本窗口不会自动发起提问。</div>
             </div>
             <div id="aiModalLoading" class="ai-modal-loading" style="display: none;">
               <span class="ai-loading-text">正在连接...</span>
@@ -406,7 +398,6 @@
             <div class="ai-question-input-wrapper">
               <textarea id="aiModalQuestionInput" placeholder="输入你的疑问，回车发送（Shift+回车换行）；可继续追问" rows="2"></textarea>
               <div class="ai-send-group">
-                <button id="btnAnalyzeAiModal" class="btn-analyze-ai" type="button" style="display: none;">开始分析</button>
                 <button id="btnStopAiModalQuestion" class="btn-stop-ai" type="button" style="display: none;">停止</button>
                 <button id="btnSendAiModalQuestion" class="btn-send-ai">发送</button>
               </div>
@@ -2628,6 +2619,41 @@
     footnote: '脚注',
     significance: '意义声明'
   };
+
+  /**
+   * 把"预设分析问题"做成快捷提问芯片（和「核心动机 / 与前人区别」同一排）。
+   *
+   * 为什么不再做成第二个按钮：预设问题是**预填进输入框**的，所以旁边的「发送」
+   * 发出去的就是它——两个按钮做同一件事，用户只会困惑（真实反馈："为啥会有两个按钮"）。
+   * 而且旧按钮发送的是 `aiPresetQuestion` 原文，**无视用户在输入框里的修改**，是个坑。
+   * 现在：主按钮只有「发送」；想一键发起预设分析，点这颗芯片。
+   */
+  function renderPresetChip(modal, presetQuestion) {
+    if (!modal) return;
+    const row = modal.querySelector('.ai-prompt-chips');
+    if (!row) return;
+    let chip = row.querySelector('.ai-chip-preset');
+    const question = (presetQuestion || '').trim();
+    if (!question) {
+      if (chip) chip.remove();
+      return;
+    }
+    if (!chip) {
+      chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'ai-chip ai-chip-preset';
+      row.insertBefore(chip, row.firstChild);
+    }
+    chip.textContent = '深度剖析此句';
+    chip.title = `使用预设分析问题：${question.slice(0, 60)}…`;
+    // 动态插入的芯片不在 bindAiAssistantModalEvents 的批量绑定里，这里自己绑
+    chip.onclick = e => {
+      e.stopPropagation();
+      const input = dom.aiModalQuestionInput || document.getElementById('aiModalQuestionInput');
+      if (input) input.value = question;
+      sendAiModalQuestion(question);
+    };
+  }
 
   /** 导出文件名：<论文名>-双语精读稿.md（宿主只用它当默认名，用户可在另存为对话框里改） */
   function suggestedReadingDocName() {
@@ -6412,11 +6438,9 @@ let aiPresetQuestion = '';
       // 已有对话时留空，方便直接追问；新话题才预填分析问题
       input.value = aiConversation.length > 0 ? '' : aiPresetQuestion;
     }
-    const analyzeBtn = document.getElementById('btnAnalyzeAiModal');
-    if (analyzeBtn) {
-      analyzeBtn.style.display = aiPresetQuestion ? '' : 'none';
-      analyzeBtn.title = aiPresetQuestion ? `使用预设分析问题：${aiPresetQuestion.slice(0, 60)}…` : '';
-    }
+    // 有预设分析问题时，把它显示成一颗快捷提问芯片（原先那个「开始分析」按钮已移除：
+    // 它与「发送」重复，而且会无视用户在输入框里的修改）
+    renderPresetChip(dom.aiAssistantModal || document.getElementById('aiAssistantModal'), aiPresetQuestion);
 
     renderAiTranscript();
     setAiLoading(false);
@@ -6885,15 +6909,8 @@ let aiPresetQuestion = '';
     const sendBtn = dom.btnSendAiModalQuestion || document.getElementById('btnSendAiModalQuestion');
     if (sendBtn) sendBtn.onclick = () => sendAiModalQuestion();
 
-    // 「开始分析」：用预设的分析问题一键发送（不会因为打开弹窗就自动跑）
-    const analyzeBtn = document.getElementById('btnAnalyzeAiModal');
-    if (analyzeBtn) {
-      analyzeBtn.onclick = () => {
-        const q = aiPresetQuestion || (dom.aiModalQuestionInput ? dom.aiModalQuestionInput.value : '');
-        if (!q.trim()) return;
-        sendAiModalQuestion(q);
-      };
-    }
+    // 「开始分析」按钮已移除（和「发送」重复、且无视输入框里的修改），
+    // 预设分析问题改为 .ai-chip-preset 芯片，点击事件在 renderPresetChip 里绑定。
 
     // 回答风格切换控件（与批注入口共用同一份定义，见 createAiStyleSwitch）
     const styleSlot = document.getElementById('aiModalStyleSlot');

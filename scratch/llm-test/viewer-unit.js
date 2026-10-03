@@ -1075,8 +1075,8 @@ console.log('\n===== T14 跨栏续接（真实数据） =====');
   checkTrue('图注不参与跨栏合并', p4.length === 2, `剩 ${p4.length} 段`);
 })();
 
-// ---------- 15. AI 问答：打开弹窗不得自动发问，须由「开始分析」触发 ----------
-console.log('\n===== T15 AI 弹窗不自动分析 =====');
+// ---------- 15. AI 问答：打开弹窗不得自动发问；发送按钮只能有一个 ----------
+console.log('\n===== T15 AI 弹窗不自动分析 / 按钮不重复 =====');
 (function aiModalNoAutoSendTest() {
   const callers = (code.match(/openAiAssistantModal\(\{/g) || []).length;
   checkTrue('存在多个调用入口', callers >= 5, `实际 ${callers} 处`);
@@ -1086,16 +1086,27 @@ console.log('\n===== T15 AI 弹窗不自动分析 =====');
     `仍有 ${(code.match(/autoSend: true/g) || []).length} 处 autoSend: true`
   );
   checkTrue('保留了 autoSend 开关本身（供将来自动化使用）', /options\.autoSend === true/.test(code));
-  checkTrue('新增「开始分析」按钮元素', /id="btnAnalyzeAiModal"/.test(code) && /btn-analyze-ai/.test(code));
-  checkTrue('按钮绑定了发送预设问题的处理', /analyzeBtn\.onclick = \(\) => \{/.test(code) && /aiPresetQuestion \|\|/.test(code));
   checkTrue('预设问题只预填、不自动发送', /aiPresetQuestion = options\.presetQuestion/.test(code));
   checkTrue(
     '已有对话时输入框留空，方便直接追问',
     /input\.value = aiConversation\.length > 0 \? '' : aiPresetQuestion;/.test(code)
   );
-  checkTrue('按钮在无预设时隐藏', /analyzeBtn\.style\.display = aiPresetQuestion \? '' : 'none';/.test(code));
+
+  // 「开始分析」按钮与「发送」功能重叠（预设问题本来就预填进输入框），且会无视用户编辑 →
+  // 0.5.18 起移除，预设问题改成快捷提问芯片。这里把"不许再加回来"钉住。
+  checkTrue(
+    '不再生成「开始分析」按钮（与「发送」重复）',
+    !/id="btnAnalyzeAiModal"[^>]*class="btn-analyze-ai"/.test(code) && !/analyzeBtn\.onclick/.test(code)
+  );
+  checkTrue('旧版遗留的该按钮会被主动清掉（老 webview 缓存也不会残留）', /querySelector\('#btnAnalyzeAiModal'\)/.test(code) && /legacyAnalyzeBtn\.remove\(\)/.test(code));
+  checkTrue(
+    '预设分析问题改为快捷提问芯片',
+    /function renderPresetChip\(/.test(code) && /ai-chip-preset/.test(code) && /renderPresetChip\(/.test(code)
+  );
+  checkTrue('芯片点击会把预设问题填进输入框再发送', /input\.value = question;[\s\S]{0,80}sendAiModalQuestion\(question\)/.test(code));
+  checkTrue('无预设时芯片会被移除', /if \(!question\) \{[\s\S]{0,80}chip\.remove\(\)/.test(code));
   const css = fs.readFileSync(path.join(path.dirname(VIEWER), 'viewer.css'), 'utf8');
-  checkTrue('按钮样式已定义', /\.btn-analyze-ai\s*\{/.test(css));
+  checkTrue('快捷芯片样式已定义', /\.ai-chip\s*\{/.test(css));
 })();
 
 // ---------- 16. 设置流程：去掉"推荐"话术 + 常用模型列表 ----------

@@ -251,12 +251,38 @@ check(
   '实际：' + ((document.getElementById('aiModalVersion') || {}).textContent || '(元素都不存在)')
 );
 check(
-  '「开始分析」预设按钮存在',
-  !!document.getElementById('btnAnalyzeAiModal')
+  '「开始分析」按钮已移除（它与「发送」重复，会让人以为要按两次）',
+  !document.getElementById('btnAnalyzeAiModal') && !document.querySelector('.btn-analyze-ai')
+);
+check(
+  '输入区只剩「发送」（外加流式时出现的「停止」）',
+  document.querySelectorAll('.ai-send-group button').length === 2 &&
+    !!document.getElementById('btnSendAiModalQuestion') &&
+    !!document.getElementById('btnStopAiModalQuestion'),
+  [...document.querySelectorAll('.ai-send-group button')].map(b => b.textContent.trim()).join(' / ')
 );
 
 console.log('\n[批注便签气泡 —— 另一种 AI 提问入口]');
 check('回答风格切换控件存在于 AI 提问栏旁', !!document.querySelector('.ai-style-switch-annot'));
+
+console.log('\n[预设分析问题 = 一颗快捷提问芯片（不再和「发送」重复）]');
+// 上面那几轮调用都没带预设，所以这里显式带一次预设，验证芯片会出现
+window.__SMOKE__.openAiAssistantModal({
+  selectedText: '预设引文',
+  contextText: '上下文',
+  presetQuestion: '请结合论文上下文，深度剖析此处学术意图与核心原理。',
+  page: 1
+});
+const presetChip = document.querySelector('#aiAssistantModal .ai-chip-preset');
+check('有预设分析问题时出现芯片', !!presetChip, presetChip ? presetChip.textContent.trim() : '');
+check('芯片排在快捷提问第一位', !!presetChip && presetChip === document.querySelector('#aiAssistantModal .ai-prompt-chips .ai-chip'));
+check(
+  '芯片带着预设问题原文（点击即开始分析，且会先填进输入框）',
+  !!presetChip && /presetQuestion|深度剖析/.test(presetChip.title || presetChip.getAttribute('data-q') || '')
+);
+// 再开一次但不带预设 → 芯片必须消失，避免"上一次的问题"残留
+window.__SMOKE__.openAiAssistantModal({ selectedText: '换一段引文', contextText: '上下文', page: 1 });
+check('没有预设分析问题时不显示芯片', !document.querySelector('#aiAssistantModal .ai-chip-preset'));
 
 // ------------------------------------------------------------------ 导出「全文双语精读稿」
 console.log('\n[导出「全文双语精读稿」—— 调的是 viewer.js 里的真实实现]');
