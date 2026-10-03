@@ -53,7 +53,7 @@ esbuild.buildSync({
   outfile: pageArchiveBundlePath,
   logLevel: 'error'
 });
-const { buildAnnotatedPdf, findCjkFontPath } = require(bundlePath);
+const { buildAnnotatedPdf, findCjkFontPath, listFontCandidates } = require(bundlePath);
 const { mergeArchivedParagraphs, hashParagraphText } = require(pageArchiveBundlePath);
 
 let pass = 0;
@@ -197,13 +197,23 @@ function makePaperData() {
 (async () => {
   console.log('===== 高光批注 PDF 导出测试 =====');
 
+  // CI 里没有中文字体：允许用 PDF_TEST_FONT 指定一份（工作流会下载一份单体 CJK 字体）。
+  // 本地不设也能跑——会自动探测系统字体。
+  const forcedFont = (process.env.PDF_TEST_FONT || '').trim() || undefined;
+  const candidates = listFontCandidates(forcedFont);
+  console.log(`字体候选（${candidates.length} 个，仅列出存在的）：`);
+  candidates.forEach(c => console.log(`   · ${c}`));
+  if (forcedFont) console.log(`   （PDF_TEST_FONT 强制指定：${forcedFont}）`);
+  console.log(`自动探测结果：${findCjkFontPath(forcedFont) || '(无可用字体——会走"只出原文页"分支)'}`);
+
   const originalBytes = await makeSourcePdf();
   const paperData = makePaperData();
   const result = await buildAnnotatedPdf({
     originalBytes,
     paperData,
     paperName: 'cycle.pdf',
-    includeAllPages: true
+    includeAllPages: true,
+    fontPathOverride: forcedFont
   });
 
   console.log('\n[1] 结构');
@@ -520,15 +530,14 @@ function makePaperData() {
       fontPathOverride: latinFont,
       includeAllPages: true
     });
-    if (result.fontPath) {
-      // 本机另有可用中文字体：指定的坏字体必须被拒、自动改用好的，并且**明确告知**
+    if (latinResult.fontPath) {
+      // 有可用的中文字体可用：指定的坏字体必须被拒、自动改用好的，并且**明确告知**
       check(
         '指定的字体不含中文 → 拒用它并改用可用字体，且明确告知（否则用户以为设置没生效）',
-        !!latinResult.fontPath &&
-          path.basename(latinResult.fontPath) !== path.basename(latinFont) &&
+        path.basename(latinResult.fontPath) !== path.basename(latinFont) &&
           latinResult.warnings.some(w => w.includes('不含所需字形')) &&
           latinResult.appendixPages >= 1,
-        `实际用字体=${path.basename(latinResult.fontPath || '(无)')}，警告=${latinResult.warnings.length} 条`
+        `实际用字体=${path.basename(latinResult.fontPath)}，警告=${latinResult.warnings.length} 条`
       );
     } else {
       // 本机没有别的中文字体：只能如实降级

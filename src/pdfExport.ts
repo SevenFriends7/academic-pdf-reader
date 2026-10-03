@@ -122,7 +122,7 @@ function fontFileCoversSample(bytes: Buffer, sample = REQUIRED_GLYPH_SAMPLE): bo
 }
 
 /** 逐个候选找一份"中英文都能画"的字体（override 优先） */
-function listFontCandidates(override?: string): string[] {
+export function listFontCandidates(override?: string): string[] {
   const out: string[] = [];
   const push = (p?: string) => {
     if (!p) return;
