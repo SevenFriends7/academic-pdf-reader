@@ -10,12 +10,27 @@
 
 | 项 | 状态 |
 |---|---|
-| 版本 | `1.3.9` → `1.4.0` → `1.4.1` → `1.4.2` → **`1.4.4`**（1.4.3 在密钥扫描处中止、未产出，版本号因此跳过） |
-| 商店包 | `academic-pdf-reader-1.4.4.vsix`（人工上传商店，别用 `-local.vsix`） |
+| 版本 | `1.3.9` → `1.4.0` → `1.4.1` → `1.4.2` → `1.4.4` → **`1.5.0`**（1.4.3 在密钥扫描处中止、未产出，版本号跳过） |
+| 商店包 | `academic-pdf-reader-1.5.0.vsix`（人工上传商店，别用 `-local.vsix`） |
 | 本机安装 | 已装到 VS Code / Antigravity，三个 IDE 的安装产物冒烟全绿 |
 | 安装产物一致性 | 工作区 `media/viewer.js` 与已安装目录里的 **SHA256 完全相同**——本机跑的就是要发布的代码 |
-| git | 已 commit + tag `v1.4.0` / `v1.4.1` / `v1.4.2` / `v1.4.4`；**未推送**，推送与商店上传由你决定 |
-| 下一步 | **完全退出 IDE 再打开**（Reload Window 不换版本）→ 看工具栏版本徽章是不是 `v1.4.4` |
+| git | 已 commit + tag `v1.4.0` / `v1.4.1` / `v1.4.2` / `v1.4.4` / `v1.5.0`；**未推送**，推送与商店上传由你决定 |
+| 下一步 | **完全退出 IDE 再打开**（Reload Window 不换版本）→ 看工具栏版本徽章是不是 `v1.5.0` |
+
+### 新增的第三道验证：段落重建（`npm run test:para`）
+
+`scratch/para_rebuild_test.js`：用**真实 PDF 的 item** 喂给 viewer.js 里真正的 `commitParagraph`，
+检查它产出的 `cleanText` / `segments` / 类型。数学层单测只验到"LaTeX 抽得对不对"，
+**用户看到的残渣问题其实发生在段落拼接这一步**——以前这里没有任何自动化覆盖，只能靠肉眼看 IDE。
+它一上线就抓到两个真 bug：
+
+| 症状 | 根因 |
+|---|---|
+| `H×W×C` 的乱码混在**正文 span** 里照样被渲染成 `H\times \$\times \%` | 编码校验只加在 `mathItemsToLatex`（数学 item 路径），`findMathRegions`（正文内嵌路径）漏了 |
+| charMap 比 cleanText 短 1（AOT）/ 短 16（STM）→ **整段高亮错位一位** | 连字符折行时切掉了"连字符 + 合成空格"两个字符，charMap 只弹了一次 |
+
+第二条尤其要紧：高亮错位是"看起来没坏、其实全偏"的那类问题。现在除了修掉分支，
+还加了兜底对齐（多则截断、少则用 `span:null` 补齐）并在补齐时打 warn。
 
 ### 各版本修了什么（**全部是"门禁全绿、只有看图才发现"的那类**）
 
@@ -45,7 +60,8 @@ KaTeX 语法校验、单元测试、门禁当时全都是绿的——所以"看�
 | `npm run test:init`（jsdom 冒烟） | ✅ 无异常 |
 | `npm run test:html`（真实宿主 HTML） | ✅ 通过 |
 | `npm run test:pdf` | 50 通过 / 0 失败 |
-| `node scratch/math_layer_test.js`（**新增**数学层回归） | **52 通过 / 0 失败** |
+| `npm run test:para`（**新增**段落重建回归） | **18 通过 / 0 失败** |
+| `npm run test:math`（**新增**数学层回归） | **52 通过 / 0 失败** |
 | `node scratch/math_latex_verify.js` | 468 条公式，空 0、KaTeX 语法错 0 |
 | `node scratch/math_audit.js --all` | 468 条，无高危可疑模式 |
 | `tsc --noEmit` / `lint` / `scan_secrets` / 安装产物冒烟 | 全绿 |
