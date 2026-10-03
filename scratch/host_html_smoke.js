@@ -260,6 +260,8 @@ check('回答风格切换控件存在于 AI 提问栏旁', !!document.querySelec
 console.log('\n[导出「全文双语精读稿」—— 调的是 viewer.js 里的真实实现]');
 const S = window.__SMOKE__;
 const now = Date.now();
+// 真实环境里标题来自宿主下发的文件名
+document.getElementById('paperTitle').textContent = 'cycle.pdf';
 S.seedMeta({ totalPages: 11 });
 S.seedPaperData({
   annotations: [
@@ -335,11 +337,17 @@ S.recordAiQa({
   model: 'deepseek-chat'
 });
 const md = S.buildReadingDocMarkdown();
-// DUMP_DOC=1 时把生成的文稿原样打印出来，方便人眼审阅排版
-if (process.env.DUMP_DOC === '1') {
-  console.log('\n----- 生成的精读稿开始 -----\n' + md + '----- 生成的精读稿结束 -----\n');
+// DUMP_DOC=1 时把生成的文稿原样打印出来；DUMP_DOC=<路径> 时同时存成文件，方便人眼审阅排版
+if (process.env.DUMP_DOC) {
+  const dumpTarget = process.env.DUMP_DOC;
+  if (dumpTarget !== '1') {
+    fs.writeFileSync(dumpTarget, md, 'utf8');
+    console.log(`\n（已把生成的精读稿写入 ${dumpTarget}）`);
+  } else {
+    console.log('\n----- 生成的精读稿开始 -----\n' + md + '----- 生成的精读稿结束 -----\n');
+  }
 }
-check('文稿以 YAML front-matter 开头', md.startsWith('---\n') && /^title: /m.test(md), '可被 Obsidian 等直接识别');
+check('文稿以 YAML front-matter 开头', md.startsWith('---\n') && /^title: "cycle"$/m.test(md), '可被 Obsidian 等直接识别');
 check('front-matter 记录了收录范围与统计', /^pages: 1–2 \/ 共 11 页$/m.test(md) && /^ai_qa: 2$/m.test(md));
 check('有目录与页锚点', md.includes('## 目录') && md.includes('(#第-1-页)'));
 check('原文进正文', md.includes('> In this paper, we address several inadequacies'));
