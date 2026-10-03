@@ -5,6 +5,36 @@
 
 ## [Unreleased]
 
+## [0.5.11] - 2026-10-03
+
+### 修复
+- **回答风格切换（简洁 / 标准 / 审稿）在真实界面上根本没挂上——0.5.6~0.5.10 四轮修复全部落空的真正原因。**
+  `#aiAssistantModal` **本来就写在宿主 HTML**（`src/pdfEditorProvider.ts` 的 `getHtmlForWebview`）里，
+  而 `media/viewer.js` 里是 `if (!document.getElementById('aiAssistantModal')) { ...创建弹窗并放控件... }`。
+  真机上这个条件恒为假 → **整段创建分支是死代码**，历次加进去的
+  `#aiModalStyleSlot`（回答风格）、`#aiModalVersion`（版本号）、`#btnAnalyzeAiModal`（开始分析）
+  自然一个都不会出现。所有「问AI」入口最终都打开这一个弹窗，所以用户看到的是"哪儿都没有"。
+
+  为什么一直没被发现：本地冒烟测试用的是**手写的简化 HTML**，且为了跑通"取不到就创建"的分支，
+  刻意让 `#aiAssistantModal` 保持缺失——测的正是那条死分支，于是四次全绿、上线全无。
+
+  现在的修法（两处都改，任一处生效都不会再漏）：
+  - 宿主 HTML 直接补齐这三样（真实 DOM 里就是对的，不依赖 JS 补救）；
+  - `viewer.js` 新增 `ensureAiModalControls()`：对**已存在**的弹窗缺什么补什么
+    （标题旁版本号、固定头部里的风格槽、输入框区的「开始分析」），
+    并由 `ensureAllToolbarsExist()` 在每次 `openAiAssistantModal()` 前调用。
+- **批注气泡里的风格切换会被反复堆叠**：控件插在 `.annot-ai-bar` 的**兄弟位置**，
+  但去重判断写在 `.annot-ai-bar` **内部**，条件永远为真；
+  而 `ensureAllToolbarsExist()` 每次打开问答弹窗都会执行一次 → 每点一次「问AI」多塞一行控件。
+  现改为按父节点的 `.ai-style-switch-annot` 去重。
+
+### 新增（回归护栏）
+- **`scratch/host_html_smoke.js`（`npm run test:html`）**：把 `src/pdfEditorProvider.ts` 里的
+  **真实 webview HTML 模板**抽出来，在 jsdom 里加载后执行 `viewer.js`，再断言用户真正看到的界面：
+  弹窗固定头部里有风格控件、三档齐全且高亮联动、版本号显示、反复打开不堆叠。
+  已加入 CI（`.github/workflows/ci.yml`）。这类"代码写了但真实 HTML 路径根本没执行"的问题，
+  从此会被它直接拦红。
+
 ## [0.5.10] - 2026-10-03
 
 ### 修复

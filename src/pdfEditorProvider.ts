@@ -939,15 +939,25 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
     </div>
   </div>
 
-  <!-- 核心：AI 学术文献导师问答弹窗 (AI Academic Assistant Dialog) -->
+  <!-- 核心：AI 学术文献导师问答弹窗 (AI Academic Assistant Dialog)
+       ⚠️ 这里的结构必须与 media/viewer.js 的 ensureAiModalControls() 保持一致：
+       所有「问AI」入口（划词浮条 / 右键菜单 / 段落聚焦条 / 译文卡片 / 笔记卡片 / 快捷键 Q）
+       最终都打开这一个弹窗，**回答风格切换必须出现在它的固定头部里**，
+       否则用户会以为"功能没做"。两条路径都有回归测试：
+       scratch/host_html_smoke.js（真实宿主 HTML）与 scratch/smoke_init.js（viewer 自建弹窗）。 -->
   <div id="aiAssistantModal" class="ai-assistant-modal" style="display: none;">
     <div class="ai-modal-card">
       <div class="ai-modal-header">
         <div class="ai-modal-title">
           <span>AI 学术文献导师</span>
           <span class="ai-model-tag" id="aiModalModelTag">未连接</span>
+          <!-- 扩展版本号：打开即显示（由 viewer.js 依据 window.__EXT_VERSION__ 填值），截图即可确认跑的哪一版 -->
+          <span class="ai-modal-version" id="aiModalVersion"></span>
         </div>
         <div class="ai-modal-header-actions">
+          <!-- 回答风格切换放在**固定头部**：弹窗主体是滚动区域，
+               此前放在主体底部/输入框上方都会被长对话滚出视野（用户反馈"有代码但看不到"）。 -->
+          <div id="aiModalStyleSlot"></div>
           <button id="btnClearAiConversation" class="ai-text-btn" type="button" title="清空对话，另起一个话题">新话题</button>
           <button id="btnCloseAiModal" class="btn-close-mini" title="关闭 (Esc)">&times;</button>
         </div>
@@ -963,7 +973,7 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
           <button type="button" class="ai-chip" data-q="我对这里的结论存有疑难，请结合上下文帮我深度剖析推导过程。">推导过程</button>
         </div>
         <div id="aiModalTranscript" class="ai-transcript">
-          <div class="ai-transcript-empty">可直接提问，或点上面的快捷提问。回答过程中可随时停止。</div>
+          <div class="ai-transcript-empty">可直接提问，或点上面的快捷提问。有预设分析时点「开始分析」——打开本窗口不会自动发起提问。</div>
         </div>
         <div id="aiModalLoading" class="ai-modal-loading" style="display: none;">
           <span class="ai-loading-text">正在连接...</span>
@@ -971,10 +981,12 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
         <div class="ai-question-input-wrapper">
           <textarea id="aiModalQuestionInput" placeholder="输入你的疑问，回车发送（Shift+回车换行）；可继续追问" rows="2"></textarea>
           <div class="ai-send-group">
+            <button id="btnAnalyzeAiModal" class="btn-analyze-ai" type="button" style="display: none;">开始分析</button>
             <button id="btnStopAiModalQuestion" class="btn-stop-ai" type="button" style="display: none;">停止</button>
             <button id="btnSendAiModalQuestion" class="btn-send-ai">发送</button>
           </div>
         </div>
+        <div class="ai-scope-hint">问本论文的内容会严格依据原文（查不到就说查不到）；问概念、术语或临时想到的问题，会直接用通用知识回答并标明不是论文结论。</div>
       </div>
     </div>
   </div>

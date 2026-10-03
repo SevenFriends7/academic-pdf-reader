@@ -7,7 +7,7 @@
     "color": "#0b578a",
     "theme": "dark"
   },
-  "version": "0.5.10",
+  "version": "0.5.11",
   "publisher": "paper-reader",
   "license": "MIT",
   "repository": {
@@ -232,6 +232,7 @@
     "publish:major": "npx --yes @vscode/vsce publish major --no-dependencies",
     "test": "node scratch/llm-test/viewer-unit.js",
     "test:init": "node scratch/smoke_init.js",
+    "test:html": "node scratch/host_html_smoke.js",
     "lint": "npx --yes eslint@8 --no-eslintrc -c .eslintrc.json media/viewer.js",
     "prevsix": "node scratch/check_version.js"
   },

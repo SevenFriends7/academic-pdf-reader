@@ -37,6 +37,13 @@ jobs:
       - name: 初始化冒烟测试（jsdom 真实 DOM）
         run: npm run test:init
 
+      # 上面那步用的是**手写的简化 HTML**，并且刻意让 #aiAssistantModal 保持缺失，
+      # 于是它测的是"viewer.js 自己造弹窗"这条路径——而真机上弹窗由宿主 HTML 提供，
+      # 那条分支根本不执行。0.5.6~0.5.10 的"回答风格切换"就是这样连着四次"改了没生效"。
+      # 这一步把宿主 HTML 抽出来跑真实路径，缺控件立刻红。
+      - name: 宿主 HTML 冒烟测试（真实弹窗里的回答风格切换）
+        run: npm run test:html
+
       - name: 密钥泄露扫描
         run: node scratch/scan_secrets.js
 

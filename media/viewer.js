@@ -116,6 +116,73 @@
   let currentNotesSearchQuery = '';
   let currentNotesColorFilter = 'all';
   // ====================== 自愈与强制补全工具栏 DOM 机制 (防止 Webview 历史缓存导致丢失工具栏) ======================
+  /**
+   * 补齐 AI 问答弹窗里"后来才加上的控制件"。
+   *
+   * 【真机的坑，四次修复都栽在这里】
+   * `#aiAssistantModal` 本来就写在**宿主 HTML**（src/pdfEditorProvider.ts 的 getHtmlForWebview）里，
+   * 于是 ensureAllToolbarsExist() 里 `if (!document.getElementById('aiAssistantModal'))`
+   * 这个创建分支在真机上**从来不执行**：0.5.6 / 0.5.7 / 0.5.8 / 0.5.10 为
+   * "回答风格切换 / 版本号 / 开始分析" 做的所有改动，全都落在死分支里，
+   * 用户在界面上一个都看不到 —— 这正是"改了四次都没添加成功"的真正原因。
+   * （本地冒烟测试当时故意让弹窗缺失，测的恰好是那条死分支，所以一路绿灯。）
+   *
+   * 现在无论弹窗由谁创建，缺什么补什么：
+   *   · 标题旁的扩展版本号 #aiModalVersion（截图即可确认跑的是哪一版）
+   *   · **固定头部**里的回答风格控件槽 #aiModalStyleSlot（头部不滚动，永远看得见）
+   *   · 输入框区的「开始分析」按钮 #btnAnalyzeAiModal
+   * 回归护栏：scratch/host_html_smoke.js 直接用宿主 HTML 跑真实路径。
+   */
+  function ensureAiModalControls(modal) {
+    if (!modal) return;
+
+    // 1) 标题旁的版本号（不等任何消息，打开即显示；取不到显示 v?）
+    let verEl = modal.querySelector('#aiModalVersion');
+    if (!verEl) {
+      const titleEl = modal.querySelector('.ai-modal-title');
+      if (titleEl) {
+        verEl = document.createElement('span');
+        verEl.className = 'ai-modal-version';
+        verEl.id = 'aiModalVersion';
+        titleEl.appendChild(verEl);
+      }
+    }
+    if (verEl) {
+      verEl.textContent =
+        typeof window.__EXT_VERSION__ === 'string' && window.__EXT_VERSION__
+          ? `v${window.__EXT_VERSION__}`
+          : 'v?';
+    }
+
+    // 2) 回答风格切换：必须落在**固定头部**里（放主体里会被长对话滚出视野）
+    let slot = modal.querySelector('#aiModalStyleSlot');
+    if (!slot) {
+      const headerActions = modal.querySelector('.ai-modal-header-actions');
+      if (headerActions) {
+        slot = document.createElement('div');
+        slot.id = 'aiModalStyleSlot';
+        headerActions.insertBefore(slot, headerActions.firstChild);
+      }
+    }
+    if (slot && !slot.querySelector('.ai-style-switch')) {
+      slot.appendChild(createAiStyleSwitch());
+    }
+
+    // 3) 「开始分析」预设按钮（有预设分析问题时才由 openAiAssistantModal 显示出来）
+    if (!modal.querySelector('#btnAnalyzeAiModal')) {
+      const sendGroup = modal.querySelector('.ai-send-group');
+      if (sendGroup) {
+        const analyzeBtn = document.createElement('button');
+        analyzeBtn.id = 'btnAnalyzeAiModal';
+        analyzeBtn.className = 'btn-analyze-ai';
+        analyzeBtn.type = 'button';
+        analyzeBtn.textContent = '开始分析';
+        analyzeBtn.style.display = 'none';
+        sendGroup.insertBefore(analyzeBtn, sendGroup.firstChild);
+      }
+    }
+  }
+
   function ensureAllToolbarsExist() {
     // 1. 确保 Header 护眼纸张胶囊存在
     const headerCenter = document.querySelector('.header-center');
@@ -268,11 +335,17 @@
 
     // 批注卡片的「AI 提问」栏也要有回答风格切换：
     // 之前只把按钮硬编码在问答弹窗里，从批注入口点进去就没有这个控件。
+    //
+    // 【去重必须查 .annot-ai-bar 的**父节点**】控件是插在 .annot-ai-bar 的兄弟位置（不是内部），
+    // 原先用 `!annotAiBar.querySelector('.ai-style-switch')` 判断永远为真：
+    // ensureAllToolbarsExist() 每次打开问答弹窗都会被调用一次（见 openAiAssistantModal），
+    // 于是每点一次「问AI」就往批注气泡里多塞一行风格切换。
     const annotAiBar = document.querySelector('.annot-ai-bar');
-    if (annotAiBar && !annotAiBar.querySelector('.ai-style-switch')) {
+    const annotHost = annotAiBar && annotAiBar.parentNode;
+    if (annotHost && !annotHost.querySelector('.ai-style-switch-annot')) {
       const switchEl = createAiStyleSwitch();
       switchEl.classList.add('ai-style-switch-annot');
-      annotAiBar.parentNode.insertBefore(switchEl, annotAiBar.nextSibling);
+      annotHost.insertBefore(switchEl, annotAiBar.nextSibling);
     }
 
     // 6. 确保 AI 学术问答助手弹窗存在 (AI Assistant Modal)
@@ -327,17 +400,11 @@
         </div>
       `;
       document.body.appendChild(aiModal);
-
-      // 版本号立即显示（不等任何消息）：用户截图即可确认实际运行的版本。
-      // 若这里显示 "v?"，说明宿主没有注入（或运行的是旧版构建）。
-      const verEl = aiModal.querySelector('#aiModalVersion');
-      if (verEl) {
-        verEl.textContent =
-          typeof window.__EXT_VERSION__ === 'string' && window.__EXT_VERSION__
-            ? `v${window.__EXT_VERSION__}`
-            : 'v?';
-      }
     }
+
+    // 【必做】宿主 HTML 里本来就有 #aiAssistantModal，上面那个创建分支在真机上是死代码，
+    // 所以对"已经存在的弹窗"也要补齐控制件，否则回答风格切换永远不出现。
+    ensureAiModalControls(document.getElementById('aiAssistantModal'));
   }
   ensureAllToolbarsExist();
 
