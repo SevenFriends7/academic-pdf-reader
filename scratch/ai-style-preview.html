@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>回答风格切换 —— 弹窗实际长相预览（v0.5.11）</title>
+<link rel="stylesheet" href="../media/viewer.css">
+<style>
+  body { margin: 0; padding: 28px 20px 40px; background: #f3f4f6; font-family: system-ui, "Microsoft YaHei", sans-serif; }
+  .preview-note { max-width: 780px; margin: 0 auto 18px; padding: 12px 16px; border-radius: 8px; background: #fff;
+                  border: 1px solid #e2e5ea; color: #333; font-size: 13px; line-height: 1.7; }
+  .preview-note b { color: #0e639c; }
+  .preview-stage { display: flex; justify-content: center; }
+  /* 预览里把浮层改成内联摆放，不影响真实样式 */
+  .ai-assistant-modal { position: static !important; width: auto !important; height: auto !important;
+                        background: transparent !important; backdrop-filter: none !important; }
+  .ai-modal-card { max-width: 720px; }
+  .ai-modal-header-actions { display: flex; align-items: center; gap: 4px; }
+</style>
+</head>
+<body>
+  <div class="preview-note">
+    <b>这是预览，不是真机截图。</b>结构取自宿主 HTML（<code>src/pdfEditorProvider.ts</code>），
+    样式取自真实的 <code>media/viewer.css</code>，回答风格控件按 <code>viewer.js</code> 的
+    <code>createAiStyleSwitch()</code> 产物填入（当前档位＝标准）。<br>
+    真机确认方式：弹窗标题旁应显示 <b>v0.5.11</b>，右侧操作区应有
+    <b>回答风格：简洁 / 标准 / 审稿</b> 三颗按钮，点一下会弹提示并写回设置。
+  </div>
+  <div class="preview-stage">
+<div id="aiAssistantModal" class="ai-assistant-modal" >
+    <div class="ai-modal-card">
+      <div class="ai-modal-header">
+        <div class="ai-modal-title">
+          <span>AI 学术文献导师</span>
+          <span class="ai-model-tag" id="aiModalModelTag">deepseek-chat</span>
+          <!-- 扩展版本号：打开即显示（由 viewer.js 依据 window.__EXT_VERSION__ 填值），截图即可确认跑的哪一版 -->
+          <span class="ai-modal-version" id="aiModalVersion">v0.5.11</span>
+        </div>
+        <div class="ai-modal-header-actions">
+          <!-- 回答风格切换放在**固定头部**：弹窗主体是滚动区域，
+               此前放在主体底部/输入框上方都会被长对话滚出视野（用户反馈"有代码但看不到"）。 -->
+          <div id="aiModalStyleSlot"><div class="ai-style-switch" role="group" aria-label="回答风格"><span class="ai-style-label">回答风格</span><button type="button" class="ai-style-btn" data-style="concise" title="200 字内讲清，最省 token">简洁</button><button type="button" class="ai-style-btn active" data-style="standard" title="先解释术语与前置概念，一般 300~700 字（默认）">标准</button><button type="button" class="ai-style-btn" data-style="reviewer" title="以审稿人视角质疑论证与实验设计">审稿</button></div></div>
+          <button id="btnClearAiConversation" class="ai-text-btn" type="button" title="清空对话，另起一个话题">新话题</button>
+          <button id="btnCloseAiModal" class="btn-close-mini" title="关闭 (Esc)">&times;</button>
+        </div>
+      </div>
+      <div class="ai-modal-body">
+        <div class="ai-modal-context">
+          <div class="ai-context-text" id="aiModalQuote">Among all the VOS scenarios, semi-supervised video object segmentation is the most practical and widely researched.</div>
+        </div>
+        <div class="ai-prompt-chips">
+          <button type="button" class="ai-chip" data-q="这句话的真实技术意图与核心动机是什么？请用通俗中文讲透。">核心动机</button>
+          <button type="button" class="ai-chip" data-q="作者在此处与以往前人方法有何本质区别？优势在哪里？">与前人区别</button>
+          <button type="button" class="ai-chip" data-q="这句话里涉及的术语、公式或方法背后的数学原理是什么？">术语与公式</button>
+          <button type="button" class="ai-chip" data-q="我对这里的结论存有疑难，请结合上下文帮我深度剖析推导过程。">推导过程</button>
+        </div>
+        <div id="aiModalTranscript" class="ai-transcript" style="min-height:90px;">
+          <div class="ai-transcript-empty">可直接提问，或点上面的快捷提问。有预设分析时点「开始分析」——打开本窗口不会自动发起提问。</div>
+        </div>
+        <div id="aiModalLoading" class="ai-modal-loading" style="display: none;">
+          <span class="ai-loading-text">正在连接...</span>
+        </div>
+        <div class="ai-question-input-wrapper">
+          <textarea id="aiModalQuestionInput" placeholder="输入你的疑问，回车发送（Shift+回车换行）；可继续追问" rows="2"></textarea>
+          <div class="ai-send-group">
+            <button id="btnAnalyzeAiModal" class="btn-analyze-ai" type="button" style="display: none;">开始分析</button>
+            <button id="btnStopAiModalQuestion" class="btn-stop-ai" type="button" style="display: none;">停止</button>
+            <button id="btnSendAiModalQuestion" class="btn-send-ai">发送</button>
+          </div>
+        </div>
+        <div class="ai-scope-hint">问本论文的内容会严格依据原文（查不到就说查不到）；问概念、术语或临时想到的问题，会直接用通用知识回答并标明不是论文结论。</div>
+      </div>
+    </div>
+  </div>
+  </div>
+</body>
+</html>
