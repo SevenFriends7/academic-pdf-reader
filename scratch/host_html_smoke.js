@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 宿主 HTML 冒烟测试：把 **src/pdfEditorProvider.ts 里真实的 webview HTML 模板**
  * 抽出来，在 jsdom 里加载，再执行 media/viewer.js，然后断言用户的真实界面。
  *
@@ -585,6 +585,30 @@ console.log('\n[视觉手术：按模型判断合并续句、拆开"正文+公�
     '正文里的普通 $ 不被误当成公式',
     !/md-math/.test(S.renderEnTextHtml('The price was $5 and $6 in total.', [])),
     S.renderEnTextHtml('The price was $5 and $6 in total.', [])
+  );
+  check(
+    '单字母 $N$ 按普通文字显示（用户要求"单独的 N 就按文字处理"）',
+    (() => {
+      const html = S.renderEnTextHtml('经过 $N$ 次迭代后，我们输出结果。', []);
+      return !/md-math|vision-residue-math/.test(html) && /经过 N 次迭代后/.test(html);
+    })(),
+    S.renderEnTextHtml('经过 $N$ 次迭代后，我们输出结果。', [])
+  );
+  check(
+    '视觉表渲染出的公式后面吊着裸上标时也并进同一个符号',
+    (() => {
+      const html = S.renderEnTextHtml('the output Y ̂ t^N is used', [{ find: 'Y ̂ t', latex: '\\hat{Y}_t' }]);
+      return /\\hat\{Y\}_t\^\{N\}/.test(html) && !/\^N(?!\{)/.test(html);
+    })(),
+    S.renderEnTextHtml('the output Y ̂ t^N is used', [{ find: 'Y ̂ t', latex: '\\hat{Y}_t' }])
+  );
+  check(
+    '公式后面吊着的裸上标折进同一个公式（$\\hat{Y}_t$^N → 一个符号，而不是"公式 + 孤零零的 N"）',
+    (() => {
+      const html = S.renderEnTextHtml('输出 $\\hat{Y}_t$^N 作为最终分割结果。', []);
+      return /\\hat\{Y\}_t\^\{N\}/.test(html) && !/\^N(?!\{)/.test(html);
+    })(),
+    S.renderEnTextHtml('输出 $\\hat{Y}_t$^N 作为最终分割结果。', [])
   );
   check(
     '译文里的 $...$ 也渲染成公式（不加 KaTeX 时退回可读的 $...$，但绝不能吞掉）',

@@ -7421,9 +7421,29 @@ let aiPresetQuestion = '';
     s = s.replace(/\$\$([^$]+?)\$\$/g, (m, tex) => stash(tex, true));
     s = s.replace(/\\\[([\s\S]+?)\\\]/g, (m, tex) => stash(tex, true));
     s = s.replace(/\\\(([\s\S]+?)\\\)/g, (m, tex) => stash(tex, false));
-    // 单个 $ 必须成对、不跨行，**且内容确实像公式**：否则 "价格 $5 和 $6" 这种
-    // 普通文本会被当成公式渲染（正文里出现 $ 的概率虽低，但一旦错就很显眼）。
-    s = s.replace(/\$([^$\n]+?)\$/g, (m, tex) => (looksLikeMath(tex) ? stash(tex, false) : m));
+    /*
+     * 单个 $...$：必须成对、不跨行，**且内容确实像公式**（否则 "价格 $5 和 $6" 会被当成公式）。
+     *
+     * 这里还要处理两种"看起来像公式、其实不该/不该拆"的情况：
+     *   ① 内容只是**一个字母**（`$N$`、`$t$`）：模型会把散文里的变量名也包起来，
+     *      而 KaTeX 的斜体夹在中文里很扎眼，用户明确要求"单独的 N 就按文字处理"→ 去掉定界符、按普通文字显示。
+     *   ② 公式后面紧跟着**上标写法**（`$\hat{Y}_t$^N`）：那是同一个符号被拆成了两半
+     *      （模型只把主体包进 $...$），要**折进同一个公式**成 $\hat{Y}_t^{N}$，
+     *      否则界面上会看到"一个排版好的 Ŷ_t"外加一个吊在外面的 N。
+     */
+    s = s.replace(
+      /\$([^$\n]+?)\$(\s*\^\s*(?:\{[^}]{1,14}\}|[A-Za-z0-9]{1,3}))?/g,
+      (m, tex, sup) => {
+        if (!looksLikeMath(tex)) return m;
+        const bare = String(tex).trim();
+        if (/^[A-Za-z]$/.test(bare) && !sup) return bare; // ① 单字母 → 普通文字
+        if (sup) {
+          const inner = String(sup).replace(/^\s*\^\s*/, '').replace(/^\{|\}$/g, '');
+          return stash(`${bare}^{${inner}}`, false);
+        }
+        return stash(tex, false);
+      }
+    );
 
     /*
      * 兜底：文本层残渣（顺序很重要——帽子优先，它最不可能是普通文本；
@@ -7513,6 +7533,22 @@ let aiPresetQuestion = '';
       reps.push(c);
     });
     reps.sort((a, b) => a.start - b.start);
+    /*
+     * 替换区间后面**紧跟着裸上标**时（`$\hat{Y}_t$^N` / 视觉表的 `Y ̂ t` + `^N`），
+     * 把它并进同一条公式——那是同一个符号被拆成了两半；
+     * 不并的话界面上就是"一个排版好的 Ŷ_t"外加一个吊在外面的 N（用户实测反馈）。
+     * 只认带 `^` 的写法，裸的 " N" 不碰（那更像散文里的变量名）。
+     */
+    reps.forEach((r, i) => {
+      const next = reps[i + 1];
+      const limit = next ? next.start : src.length;
+      const m = /^\s*\^\s*(\{[^}]{1,14}\}|[A-Za-z0-9]{1,3})/.exec(src.slice(r.end));
+      if (!m) return;
+      const end = r.end + m[0].length;
+      if (end > limit) return; // 越到下一个替换区间里去了 → 不动
+      r.end = end;
+      r.latex = `${String(r.latex).trim()}^{${m[1].replace(/^\{|\}$/g, '')}}`;
+    });
     if (reps.length === 0) return renderTextWithMath(src);
 
     let out = '';
