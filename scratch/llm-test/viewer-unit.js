@@ -1190,13 +1190,23 @@ console.log('\n===== T17 标题判定不吞正文（真实数据） =====');
 // ---------- 18. AI 弹窗内的回答风格一键切换 ----------
 console.log('\n===== T18 回答风格切换控件 =====');
 (function styleSwitchTest() {
-  checkTrue('弹窗里有风格切换控件', /class="ai-style-switch"/.test(code));
+  // 控件定义只应有一份，由 createAiStyleSwitch() 产出
+  checkTrue('有共用的控件工厂', /function createAiStyleSwitch\(\)/.test(code));
+  checkTrue('弹窗入口挂载了控件', /aiModalStyleSlot[\s\S]{0,120}createAiStyleSwitch\(\)/.test(code));
+  checkTrue(
+    '批注「AI 提问」入口也挂载了控件（曾遗漏）',
+    /annotAiBar[\s\S]{0,200}createAiStyleSwitch\(\)/.test(code),
+    '从批注点进去没有切换控件'
+  );
+  checkTrue('按钮由工厂生成，而不是 HTML 里硬编码', !/data-style="concise"/.test(code) && /data-style="\$\{s\.key\}"/.test(code));
+
   const styles = ['concise', 'standard', 'reviewer'];
-  const missing = styles.filter(s => !code.includes(`data-style="${s}"`));
-  checkTrue(`三档按钮齐全（${styles.join(' / ')}）`, missing.length === 0, `缺少 ${missing.join(',')}`);
-  checkTrue('点击后写回设置（否则重载就丢）', /type: 'setAnswerStyle', style/.test(code));
-  checkTrue('点击后立即生效（更新本地 aiStyle）', /aiStyle = style;[\s\S]{0,60}syncAiStyleButtons\(\);/.test(code));
-  checkTrue('有高亮当前档位的函数', /function syncAiStyleButtons\(\)/.test(code));
+  const missing = styles.filter(s => !code.includes(`key: '${s}'`));
+  checkTrue(`三档齐全（${styles.join(' / ')}）`, missing.length === 0, `缺少 ${missing.join(',')}`);
+  checkTrue('点击后写回设置（否则重载就丢）', /type: 'setAnswerStyle', style: next/.test(code));
+  checkTrue('切换函数有三档校验（非法值回落 standard）', /const valid = AI_STYLES\.some\(s => s\.key === style\)/.test(code));
+  checkTrue('切换后立刻给用户反馈', /showReaderToast\(`回答风格：/.test(code));
+  checkTrue('有高亮当前档位的函数（作用于所有入口）', /function syncAiStyleButtons\(\)/.test(code) && /document\.querySelectorAll\('\.ai-style-btn'\)/.test(code));
   checkTrue('modelInfo 到达后刷新高亮', /msg\.answerStyle\) aiStyle = msg\.answerStyle;[\s\S]{0,40}syncAiStyleButtons\(\);/.test(code));
   checkTrue('提问请求带上所选风格', /answerStyle: aiStyle \|\| ''/.test(code));
   const ext = fs.readFileSync(path.join(path.dirname(VIEWER), '..', 'src', 'pdfEditorProvider.ts'), 'utf8');

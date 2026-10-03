@@ -194,6 +194,15 @@
       document.body.appendChild(annotPop);
     }
 
+    // 批注卡片的「AI 提问」栏也要有回答风格切换：
+    // 之前只把按钮硬编码在问答弹窗里，从批注入口点进去就没有这个控件。
+    const annotAiBar = document.querySelector('.annot-ai-bar');
+    if (annotAiBar && !annotAiBar.querySelector('.ai-style-switch')) {
+      const switchEl = createAiStyleSwitch();
+      switchEl.classList.add('ai-style-switch-annot');
+      annotAiBar.parentNode.insertBefore(switchEl, annotAiBar.nextSibling);
+    }
+
     // 6. 确保 AI 学术问答助手弹窗存在 (AI Assistant Modal)
     if (!document.getElementById('aiAssistantModal')) {
       const aiModal = document.createElement('div');
@@ -237,12 +246,7 @@
               </div>
             </div>
             <div class="ai-scope-hint">问本论文的内容会严格依据原文（查不到就说查不到）；问概念、术语或临时想到的问题，会直接用通用知识回答并标明不是论文结论。</div>
-            <div class="ai-style-switch" role="group" aria-label="回答风格">
-              <span class="ai-style-label">回答风格</span>
-              <button type="button" class="ai-style-btn" data-style="concise" title="200 字内讲清，最省 token">简洁</button>
-              <button type="button" class="ai-style-btn" data-style="standard" title="先解释术语与前置概念，一般 300~700 字（默认）">标准</button>
-              <button type="button" class="ai-style-btn" data-style="reviewer" title="以审稿人视角质疑论证与实验设计">审稿</button>
-            </div>
+            <div id="aiModalStyleSlot"></div>
           </div>
         </div>
       `;
@@ -5845,7 +5849,48 @@ let aiPresetQuestion = '';
     }
   }
 
-  /** 让弹窗里的风格按钮高亮当前档位 */
+  // ====================== 回答风格切换（所有 AI 入口共用一份定义） ======================
+  /**
+   * 三档风格的定义只写在这里，控件由 createAiStyleSwitch() 产出。
+   *
+   * 为什么要共用：AI 提问有两个入口（问答弹窗、批注卡片的「AI 提问」栏），
+   * 之前把按钮硬编码在弹窗 HTML 里，批注入口就漏掉了——用户从批注点进去没有切换控件。
+   * 现在任何新增的 AI 入口只要 append 一个 createAiStyleSwitch() 即可，不会再漏。
+   */
+  const AI_STYLES = [
+    { key: 'concise', label: '简洁', tip: '200 字内讲清，最省 token' },
+    { key: 'standard', label: '标准', tip: '先解释术语与前置概念，一般 300~700 字（默认）' },
+    { key: 'reviewer', label: '审稿', tip: '以审稿人视角质疑论证与实验设计' }
+  ];
+
+  /** 切换风格：立即生效（本地 aiStyle）+ 写回设置（重载后保留） */
+  function applyAiStyle(style) {
+    const valid = AI_STYLES.some(s => s.key === style);
+    const next = valid ? style : 'standard';
+    aiStyle = next;
+    syncAiStyleButtons();
+    vscode.postMessage({ type: 'setAnswerStyle', style: next });
+    const item = AI_STYLES.find(s => s.key === next) || AI_STYLES[1];
+    showReaderToast(`回答风格：${item.label}（${item.tip}）`);
+  }
+
+  /** 生成一个「回答风格」切换控件；可反复调用，多处入口共用样式与逻辑 */
+  function createAiStyleSwitch() {
+    const wrap = document.createElement('div');
+    wrap.className = 'ai-style-switch';
+    wrap.setAttribute('role', 'group');
+    wrap.setAttribute('aria-label', '回答风格');
+    wrap.innerHTML =
+      '<span class="ai-style-label">回答风格</span>' +
+      AI_STYLES.map(s => `<button type="button" class="ai-style-btn" data-style="${s.key}" title="${s.tip}">${s.label}</button>`).join('');
+    wrap.querySelectorAll('.ai-style-btn').forEach(btn => {
+      btn.onclick = () => applyAiStyle(btn.getAttribute('data-style'));
+    });
+    syncAiStyleButtons();
+    return wrap;
+  }
+
+  /** 让所有入口的风格按钮都高亮当前档位 */
   function syncAiStyleButtons() {
     const cur = aiStyle || 'standard';
     document.querySelectorAll('.ai-style-btn').forEach(btn => {
@@ -6245,25 +6290,11 @@ let aiPresetQuestion = '';
       };
     }
 
-    // 回答风格一键切换：弹窗内直接改，并写回设置（下次打开仍然生效）
-    const styleBtns = document.querySelectorAll('.ai-style-btn');
-    styleBtns.forEach(btn => {
-      btn.onclick = () => {
-        const style = btn.getAttribute('data-style') || 'standard';
-        aiStyle = style;
-        syncAiStyleButtons();
-        vscode.postMessage({ type: 'setAnswerStyle', style });
-        vscode.postMessage({
-          type: 'showInfo',
-          message:
-            style === 'concise'
-              ? '回答风格：简洁（200 字内，最省 token）'
-              : style === 'reviewer'
-                ? '回答风格：审稿（质疑论证与实验设计）'
-                : '回答风格：标准（先解释术语与前置概念，300~700 字）'
-        });
-      };
-    });
+    // 回答风格切换控件（与批注入口共用同一份定义，见 createAiStyleSwitch）
+    const styleSlot = document.getElementById('aiModalStyleSlot');
+    if (styleSlot && !styleSlot.querySelector('.ai-style-switch')) {
+      styleSlot.appendChild(createAiStyleSwitch());
+    }
     syncAiStyleButtons();
 
     const stopBtn = dom.btnStopAiModalQuestion || document.getElementById('btnStopAiModalQuestion');

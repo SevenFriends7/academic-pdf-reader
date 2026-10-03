@@ -3550,3 +3550,9 @@ body.theme-paper-dark .article-section-zh {
 .reader-toast.error {
   border-color: var(--vscode-inputValidation-errorBorder, #d9534f);
 }
+
+/* 批注卡片里的回答风格切换（与问答弹窗共用同一控件，仅微调间距） */
+.ai-style-switch-annot {
+  margin: 6px 0 2px;
+  padding-left: 2px;
+}
