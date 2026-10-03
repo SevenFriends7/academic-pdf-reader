@@ -120,10 +120,17 @@ export interface GenerateOptions {
   systemInstruction?: string;
   /** 多轮对话（按时间顺序） */
   turns: LlmTurn[];
+  /**
+   * 随最后一个 user 轮一起发送的图片（视觉模型用）。
+   * 只挂最后一条，不要挂进历史——否则每轮都在重复传图，白烧 token。
+   */
+  images?: LlmImage[];
   temperature?: number;
   maxOutputTokens?: number;
   /** 设为 true 时启用 JSON 输出；配合 responseSchema 使用 */
   jsonSchema?: object;
+  /** 只要求"输出是 JSON"而不给 schema（OpenAI 兼容的 response_format） */
+  jsonMode?: boolean;
   /** Gemini 思考配置，原样透传到 generationConfig.thinkingConfig */
   thinkingConfig?: object;
   signal?: AbortSignal;
@@ -133,6 +140,12 @@ export interface GenerateOptions {
   idleTimeoutMs?: number;
   /** 整次请求的硬上限（毫秒） */
   totalTimeoutMs?: number;
+}
+
+/** 一张随消息发出的图片（base64，不含 data URL 前缀） */
+export interface LlmImage {
+  mimeType: string;
+  base64: string;
 }
 
 export interface GenerateResult {
@@ -220,11 +233,20 @@ export async function callGeminiStream(
     throw new LlmError({ kind: 'no-key' });
   }
 
+  const lastTurnIdx = opts.turns.length - 1;
   const body: any = {
-    contents: opts.turns.map(t => ({
-      role: t.role === 'model' ? 'model' : 'user',
-      parts: [{ text: t.text }]
-    }))
+    contents: opts.turns.map((t, idx) => {
+      const parts: any[] = [{ text: t.text }];
+      // 图片只挂在最后一条 user 轮上（视觉分割/识别用）
+      if (opts.images && opts.images.length > 0 && idx === lastTurnIdx && t.role !== 'model') {
+        opts.images.forEach(img => {
+          if (img && img.base64) {
+            parts.push({ inlineData: { mimeType: img.mimeType || 'image/jpeg', data: img.base64 } });
+          }
+        });
+      }
+      return { role: t.role === 'model' ? 'model' : 'user', parts };
+    })
   };
   if (opts.systemInstruction) {
     body.systemInstruction = { parts: [{ text: opts.systemInstruction }] };
@@ -236,6 +258,8 @@ export async function callGeminiStream(
   if (opts.jsonSchema) {
     generationConfig.responseMimeType = 'application/json';
     generationConfig.responseSchema = opts.jsonSchema;
+  } else if (opts.jsonMode) {
+    generationConfig.responseMimeType = 'application/json';
   }
   if (opts.thinkingConfig) {
     generationConfig.thinkingConfig = opts.thinkingConfig;
@@ -483,6 +507,8 @@ export interface OpenAICompatOptions {
   model: string;
   systemInstruction?: string;
   turns: LlmTurn[];
+  /** 随最后一条 user 轮一起发送的图片（视觉模型用，如 deepseek-flash） */
+  images?: LlmImage[];
   temperature?: number;
   maxOutputTokens?: number;
   jsonMode?: boolean;
@@ -510,8 +536,25 @@ export async function callOpenAICompatStream(opts: OpenAICompatOptions): Promise
 
   const messages: any[] = [];
   if (opts.systemInstruction) messages.push({ role: 'system', content: opts.systemInstruction });
-  opts.turns.forEach(t => {
-    if (t.text) messages.push({ role: t.role === 'model' ? 'assistant' : 'user', content: t.text });
+  const lastTurnIdx = opts.turns.length - 1;
+  opts.turns.forEach((t, idx) => {
+    if (!t.text && !(opts.images && opts.images.length && idx === lastTurnIdx)) return;
+    const role = t.role === 'model' ? 'assistant' : 'user';
+    // 图片只挂在最后一条 user 轮上：data URL 形式（DeepSeek/OpenAI 兼容协议都认）
+    if (opts.images && opts.images.length > 0 && idx === lastTurnIdx && role === 'user') {
+      const content: any[] = [{ type: 'text', text: t.text || '' }];
+      opts.images.forEach(img => {
+        if (img && img.base64) {
+          content.push({
+            type: 'image_url',
+            image_url: { url: `data:${img.mimeType || 'image/jpeg'};base64,${img.base64}` }
+          });
+        }
+      });
+      messages.push({ role, content });
+    } else if (t.text) {
+      messages.push({ role, content: t.text });
+    }
   });
 
   const body: any = {

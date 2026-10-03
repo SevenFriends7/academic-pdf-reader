@@ -1265,7 +1265,14 @@ console.log('\n===== T18 回答风格切换控件 =====');
   checkTrue('切换函数有三档校验（非法值回落 standard）', /const valid = AI_STYLES\.some\(s => s\.key === style\)/.test(code));
   checkTrue('切换后立刻给用户反馈', /showReaderToast\(`回答风格：/.test(code));
   checkTrue('有高亮当前档位的函数（作用于所有入口）', /function syncAiStyleButtons\(\)/.test(code) && /document\.querySelectorAll\('\.ai-style-btn'\)/.test(code));
-  checkTrue('modelInfo 到达后刷新高亮', /msg\.answerStyle\) aiStyle = msg\.answerStyle;[\s\S]{0,40}syncAiStyleButtons\(\);/.test(code));
+  checkTrue(
+    'modelInfo 到达后刷新高亮',
+    (() => {
+      const fn = code.slice(code.indexOf('function handleModelInfo('));
+      const body = fn.slice(0, fn.indexOf('\n  }'));
+      return /aiStyle = msg\.answerStyle/.test(body) && /syncAiStyleButtons\(\)/.test(body);
+    })()
+  );
   checkTrue('提问请求带上所选风格', /answerStyle: aiStyle \|\| ''/.test(code));
   const ext = fs.readFileSync(path.join(path.dirname(VIEWER), '..', 'src', 'pdfEditorProvider.ts'), 'utf8');
   checkTrue(

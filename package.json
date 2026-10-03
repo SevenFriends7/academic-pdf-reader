@@ -7,7 +7,7 @@
     "color": "#0b578a",
     "theme": "dark"
   },
-  "version": "1.0.3",
+  "version": "1.1.0",
   "publisher": "paper-reader",
   "license": "MIT",
   "repository": {
@@ -225,6 +225,31 @@
           "type": "boolean",
           "default": true,
           "description": "导出高光批注 PDF 时是否附上「高光译文」：true = 每条高光在左页边距标序号，并在该原文页后紧跟一页给出 原文摘录 / 译文 / 我的批注 / AI 答疑；false = 只导出高光后的原文（体积更小，且不需要中文字体）。每次导出都会先问你一次，并把选择记在这里。"
+        },
+        "academicReader.visionModel": {
+          "type": "string",
+          "default": "",
+          "description": "【视觉分割】用于判断版面结构（哪些是正文/图注/公式、阅读顺序、该合该拆）的模型。必须支持图片输入：DeepSeek 用 deepseek-flash，通义用 qwen-vl-max，智谱用 glm-4v，OpenAI 用 gpt-4o 等。留空则沿用 AI 问答模型；若它是纯文本模型（如 deepseek-chat）会明确报错提示你填这里。翻译仍用原来的文本模型，互不影响。"
+        },
+        "academicReader.segmentationEngine": {
+          "type": "string",
+          "default": "vision",
+          "enum": [
+            "vision",
+            "auto",
+            "local"
+          ],
+          "enumDescriptions": [
+            "视觉优先（推荐）：每页都请视觉模型判断版面结构（本地结果先显示，视觉回来后校正并刷新）；同一页只算一次，结果会缓存",
+            "按需视觉：只在本地判据可疑的页（三栏以上 / 图注占比异常 / 段落数突变）才请求视觉",
+            "只用本地：完全离线、零成本，用代码解析文本层与分栏"
+          ],
+          "description": "版面分割引擎：由谁决定「段落怎么切、每段是什么类型、阅读顺序」。无论选哪个，**划线与高亮的坐标始终来自本地文本层**（视觉只判断结构，不给坐标）。卡片区还有「视觉重排」按钮可随时手动触发。"
+        },
+        "academicReader.visionMaxTokens": {
+          "type": "number",
+          "default": 8000,
+          "description": "【视觉分割】单页请求的最大输出 token。注意 deepseek-flash 是推理型模型：预算给小了会把 token 全花在推理上、回答变成空的（实测 2600 必空、4000 时好时坏、8000 稳定）。若仍遇到空回答，插件会自动加倍重试一次。"
         },
         "academicReader.autoTranslate": {
           "type": "boolean",

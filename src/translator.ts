@@ -90,6 +90,31 @@ export interface ParagraphTranslation {
   note?: string;
 }
 
+/** 视觉模型对"本地某一段"的判断 */
+export interface VisionSegment {
+  /** 与请求里 segments[].id 对应的编号 */
+  index: number;
+  /** 模型判断的真实类型 */
+  type: string;
+  /** 阅读顺序（1 起） */
+  order?: number;
+  /** 建议动作：保留 / 与下一段合并 / 需要拆分 / 丢弃（页眉页脚页码等） */
+  action?: 'keep' | 'merge_next' | 'split' | 'drop';
+  /** 一句话理由（模型给的） */
+  why?: string;
+}
+
+export interface VisionSegmentationResult {
+  /** 模型判断的栏数（1/2/3…） */
+  columns?: number;
+  segments: VisionSegment[];
+  /** 一句话总结改了什么 */
+  fixes?: string;
+  model: string;
+  totalMs: number;
+  usage?: { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number };
+}
+
 export interface AcademicAnswer {
   answer: string;
   model: string;
@@ -1713,15 +1738,222 @@ ${rawText.slice(0, 8000)}
     return this.toStructured(res.text, false);
   }
 
+  /**
+   * 视觉版面纠错（全面视觉分割的主入口）。
+   *
+   * 为什么是"纠错"而不是"从零分割"：让多模态模型直接给**坐标**不可靠（实测过，
+   * 见下方 parseAndTranslatePageVision 的历史注记）；而它的强项是看懂版面——
+   * 哪块是正文/图注/公式、阅读顺序、哪句被拦腰切断、哪块该合该拆。
+   * 所以我们把**本地文本层的分段编号**一起给它，让它按编号回答；
+   * 坐标依旧由本地文本层（charMap/spans）提供 —— 于是既拿到了视觉的理解力，
+   * 又不牺牲划线高亮所需的像素级精度。
+   */
+  public async segmentPageWithVision(opts: {
+    imageBase64: string;
+    mimeType?: string;
+    pageNum: number;
+    /** 本地分段（编号必须与回包里的 i 对应） */
+    segments: Array<{ id: number; type: string; text: string }>;
+  }): Promise<VisionSegmentationResult> {
+    const cfg = this.cfg();
+    const service = (cfg.get<string>('translationService', 'gemini') || 'gemini').trim();
+    const useOpenAI = service === 'openai-compatible';
+    const startedAt = Date.now();
+
+    const numbered = opts.segments
+      .map(s => `[${s.id}] (${s.type}) ${String(s.text || '').replace(/\s+/g, ' ').trim()}`)
+      .join('\n');
+
+    const prompt =
+      `这是论文第 ${opts.pageNum} 页的图像，下面还有一份程序给出的分段结果（顺序与类型可能有错）。\n` +
+      `请结合图像判断，只输出 JSON：\n` +
+      `{"columns":1,"segments":[{"i":0,"type":"figure|table|caption|body|heading|formula|formula_inline|header|footer|reference|page_number|noise","order":1,"action":"keep|merge_next|split|drop","why":"15 字内"}],"fixes":"一句话总结你改了什么"}\n` +
+      `规则：\n` +
+      `- 每个 i 都必须出现一次，不要新增、不要漏掉；i 必须与下面列表的编号一致。\n` +
+      `- type 按你判断的**真实**类型（列表里给的是程序的判断，可能错）。\n` +
+      `- 独立成行的公式标 formula；公式与句子混排标 formula_inline；图像/表格**内部**的文字标 figure/table。\n` +
+      `- 页眉、页脚、页码标 header/footer/page_number，并给 action "drop"。\n` +
+      `- 若某段其实是上一段的续句（被错误切开），给它 action "merge_next"。\n` +
+      `- 不要翻译，不要复述原文，不要解释。\n\n` +
+      `程序的分段结果：\n${numbered}`;
+
+    const systemInstruction =
+      '你是学术论文版面分析器。只输出 JSON，不要 markdown 代码块，不要解释，不翻译原文。';
+
+    const images = [{ mimeType: opts.mimeType || 'image/jpeg', base64: opts.imageBase64 }];
+    const budget = Math.max(1500, Math.min(16000, cfg.get<number>('visionMaxTokens', 8000)));
+
+    /**
+     * 空回答自动加倍重试。
+     *
+     * 推理型视觉模型（如 deepseek-flash）会把 max_tokens 先花在推理上；
+     * 预算不够时 finish_reason=length、content 为空，看起来像"模型没回答"。
+     * 实测同一页 2600 必空、4000 时好时坏、8000 稳定 —— 所以直接翻倍重试一次，
+     * 而不是把这个坑甩给用户（他还得去设置里改数字）。
+     */
+    const callWithBudget = async (maxOut: number) => {
+      if (useOpenAI) {
+        const endpoint = (cfg.get<string>('apiEndpoint', 'https://api.deepseek.com/v1') || '').replace(/\/+$/, '');
+        const apiKey = (cfg.get<string>('apiKey', '') || '').trim();
+        if (!apiKey) throw new LlmError({ kind: 'no-key', apiMessage: '未配置自定义大模型 API Key' });
+        const model = this.visionModel(cfg, endpoint);
+        const res = await callOpenAICompatStream({
+          endpoint,
+          apiKey,
+          model,
+          systemInstruction,
+          turns: [{ role: 'user', text: prompt }],
+          images,
+          temperature: 0,
+          maxOutputTokens: maxOut,
+          jsonMode: true,
+          idleTimeoutMs: 180000,
+          totalTimeoutMs: 420000
+        });
+        return { text: res.text, model, usage: res.usage as VisionSegmentationResult['usage'] };
+      }
+      const apiKey = this.getGeminiKey(cfg);
+      if (!apiKey) throw new LlmError({ kind: 'no-key', apiMessage: '未配置 Gemini API Key' });
+      const model = this.visionModel(cfg, '');
+      const res = await generate(
+        apiKey,
+        {
+          model,
+          systemInstruction,
+          turns: [{ role: 'user', text: prompt }],
+          images,
+          temperature: 0,
+          maxOutputTokens: maxOut,
+          jsonMode: true,
+          idleTimeoutMs: 180000,
+          totalTimeoutMs: 420000
+        },
+        this.log
+      );
+      return { text: res.text, model: res.model, usage: res.usage as VisionSegmentationResult['usage'] };
+    };
+
+    let res: { text: string; model: string; usage?: VisionSegmentationResult['usage'] };
+    try {
+      res = await callWithBudget(budget);
+    } catch (e: any) {
+      const isEmpty = e instanceof LlmError && e.kind === 'empty';
+      if (!isEmpty) throw e;
+      const bigger = Math.min(16000, budget * 2);
+      this.log(`视觉分割返回空（多半是推理吃光了 ${budget} token），加倍到 ${bigger} 重试一次`);
+      res = await callWithBudget(bigger);
+    }
+    return this.toVisionResult(res.text, res.model, Date.now() - startedAt, res.usage);
+  }
+
+  /**
+   * 视觉这一步用哪个模型。
+   *
+   * 单独一个设置项而不是沿用翻译模型：翻译用纯文本模型（便宜、快）就够，
+   * 只有版面判断需要视觉。缺省时沿用问答模型（用户可能已经填了视觉模型）。
+   * 另外对"明显不支持图片"的常见组合直接给出可操作的报错，而不是等 API 返回 400。
+   */
+  private visionModel(cfg: vscode.WorkspaceConfiguration, endpoint: string): string {
+    const explicit = (cfg.get<string>('visionModel', '') || '').trim();
+    if (explicit) return explicit;
+
+    const inherited = (
+      (cfg.get<string>('aiModel', '') || '').trim() ||
+      (cfg.get<string>('modelName', '') || '').trim() ||
+      ''
+    ).trim();
+
+    const looksTextOnly = /deepseek-(chat|reasoner)/i.test(inherited) || /^moonshot-v1-(8k|32k|128k)$/i.test(inherited);
+    const isDeepSeek = /deepseek\.com/i.test(endpoint) || /deepseek/i.test(inherited);
+    if (!inherited || looksTextOnly) {
+      throw new LlmError({
+        kind: 'invalid-request',
+        apiMessage:
+          `视觉分割需要一个能读图的模型，当前配置的「${inherited || '（空）'}」不支持图片。` +
+          (isDeepSeek ? '请在设置里把「视觉模型」填成 deepseek-flash（DeepSeek 的视觉模型）。' : '请在设置里填写一个支持图片的模型（如 qwen-vl-max / glm-4v / gpt-4o 等）。')
+      });
+    }
+    return inherited;
+  }
+
+  /** 解析视觉回包：容忍 ```json 围栏、校验编号、收敛类型取值 */
+  private toVisionResult(
+    raw: string,
+    model: string,
+    totalMs: number,
+    usage?: { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number }
+  ): VisionSegmentationResult {
+    const text = (raw || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '');
+    let parsed: any;
+    try {
+      parsed = JSON.parse(text);
+    } catch (e: any) {
+      throw new LlmError({
+        kind: 'invalid-request',
+        model,
+        apiMessage: `视觉回包不是合法 JSON：${String(text).slice(0, 120)}`
+      });
+    }
+    const allowed = new Set([
+      'figure',
+      'table',
+      'caption',
+      'body',
+      'heading',
+      'formula',
+      'formula_inline',
+      'header',
+      'footer',
+      'reference',
+      'page_number',
+      'noise',
+      'title',
+      'abstract',
+      'keywords',
+      'metadata',
+      'footnote',
+      'significance'
+    ]);
+    const rawSegs = Array.isArray(parsed?.segments) ? parsed.segments : [];
+    const segments: VisionSegment[] = [];
+    for (const s of rawSegs) {
+      const i = Number(s?.i ?? s?.index);
+      if (!Number.isFinite(i)) continue;
+      const type = String(s?.type || '');
+      const action = String(s?.action || 'keep');
+      segments.push({
+        index: i,
+        type: allowed.has(type) ? type : 'body',
+        order: Number.isFinite(Number(s?.order)) ? Number(s.order) : undefined,
+        action: (['keep', 'merge_next', 'split', 'drop'].includes(action) ? action : 'keep') as VisionSegment['action'],
+        why: typeof s?.why === 'string' ? s.why.slice(0, 60) : undefined
+      });
+    }
+    if (segments.length === 0) {
+      throw new LlmError({ kind: 'empty', model, apiMessage: '视觉回包里没有任何分段（segments 为空）' });
+    }
+    return {
+      columns: Number.isFinite(Number(parsed?.columns)) ? Number(parsed.columns) : undefined,
+      segments,
+      fixes: typeof parsed?.fixes === 'string' ? parsed.fixes.slice(0, 200) : undefined,
+      model,
+      totalMs,
+      usage
+    };
+  }
+
   public async parseAndTranslatePageVision(
-    pageImageBase64: string,
-    rawText: string,
-    pageNum: number,
-    targetLang?: string
+    _pageImageBase64: string,
+    _rawText: string,
+    _pageNum: number,
+    _targetLang?: string
   ): Promise<StructuredParagraph[]> {
+    // 【历史注记】这里曾经让视觉模型直接给"结构化段落 + 坐标"，结果证明坐标不可靠，
+    // 于是停用。现在的做法见 segmentPageWithVision()：视觉只判断结构与类型，
+    // 坐标继续由本地文本层给出（charMap/spans 精确到字符）。
     throw new LlmError({
       kind: 'invalid-request',
-      apiMessage: '视觉结构化解析入口已停用（本地文本层重建更可靠）'
+      apiMessage: '视觉结构化解析（带坐标）已废弃，请使用 segmentPageWithVision()'
     });
   }
 
@@ -1730,9 +1962,10 @@ ${rawText.slice(0, 8000)}
     _text?: string,
     _pageNum?: number
   ): Promise<number[][]> {
+    // 同上：视觉给的框不够精确，划线高亮一律用本地 DOM/文本层坐标。
     throw new LlmError({
       kind: 'invalid-request',
-      apiMessage: '视觉定位入口已停用（本地 DOM 高亮更精确）'
+      apiMessage: '视觉定位已废弃（本地 DOM 高亮更精确），请使用文本层坐标'
     });
   }
 

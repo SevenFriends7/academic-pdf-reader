@@ -12,6 +12,10 @@ Thumbs.db
 scratch/dstest/build/
 scratch/.build/
 scratch/example-高光批注.pdf
+# 视觉探针的产物：渲染出来的页面图与原始响应（含论文正文），不进仓库
+scratch/vision/*.png
+scratch/vision/*_raw.json
+scratch/vision/e2e_result.json
 scratch/_pipeline_snip.js
 scratch/installed_viewer.js
 scratch/vsce-test.vsix

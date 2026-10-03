@@ -39,6 +39,11 @@ export interface PaperMetadata {
    * 不存的话，重开插件后导出只剩"本次翻过的那一页"，精读稿会平白变薄。
    */
   pageArchive?: Record<string, ArchivedParagraph[]>;
+  /**
+   * 视觉版面判断结果缓存（页码 → 模型给的 segments）。
+   * 视觉调用是按页付费的，缓存下来同一页就只花一次钱。
+   */
+  visionStructure?: Record<string, unknown>;
 }
 
 export interface AiQaItem {
@@ -103,6 +108,11 @@ export class NotesStorageManager {
           pageArchive:
             data.pageArchive && typeof data.pageArchive === 'object' && !Array.isArray(data.pageArchive)
               ? data.pageArchive
+              : {},
+          // 同理：视觉结构缓存也要显式带回来，否则每次打开都重新花钱问一遍
+          visionStructure:
+            data.visionStructure && typeof data.visionStructure === 'object' && !Array.isArray(data.visionStructure)
+              ? data.visionStructure
               : {}
         };
       }

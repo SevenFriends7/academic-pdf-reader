@@ -163,6 +163,11 @@ const exposed =
     recordAiQa,
     // 段落快照是**节流合并**后同步给宿主的；测试里要确定性，直接手动冲一次
     flushArchiveSync: flushPendingArchiveSync,
+    // 视觉分割：把模型判断应用到本页段落的真实实现
+    applyVisionSegments,
+    requestVisionSegmentation,
+    seedParagraphs: list => { currentParagraphs = list; },
+    getParagraphs: () => currentParagraphs,
     seedPaperData: pd => { paperData = pd; },
     seedMeta: opts => { if (opts && Number.isFinite(opts.totalPages)) totalPages = opts.totalPages; }
   };\n` +
@@ -285,6 +290,57 @@ window.__SMOKE__.openAiAssistantModal({ selectedText: '换一段引文', context
 check('没有预设分析问题时不显示芯片', !document.querySelector('#aiAssistantModal .ai-chip-preset'));
 
 // ------------------------------------------------------------------ 导出「全文双语精读稿」
+console.log('\n[视觉分割：把模型的版面判断应用到本页段落]');
+{
+  const S = window.__SMOKE__;
+  S.seedPaperData({ annotations: [], translations: {}, sentenceTranslations: {}, aiQa: [] });
+  S.seedParagraphs([
+    { id: 0, type: 'body', cleanText: 'L cycle,t = L (Y t) + L (Y 1) (3)' },
+    { id: 1, type: 'keywords', cleanText: 'X ̂ t ⊂ { X ̂ i | i ∈ [2, t] }.' },
+    { id: 2, type: 'body', cleanText: 'first real paragraph' },
+    { id: 3, type: 'body', cleanText: 'PDF-4 (page number)' }
+  ]);
+  // 视觉模型的判断：0 是公式、1 是行内公式续句、2 是正文但顺序被挪到最前、3 是页码应丢弃
+  const stat = S.applyVisionSegments(1, {
+    model: 'deepseek-flash',
+    columns: 1,
+    fixes: '把页码丢掉、公式改对类型',
+    segments: [
+      { index: 0, type: 'formula', order: 3, action: 'keep', why: '独立公式行' },
+      { index: 1, type: 'formula_inline', order: 2, action: 'merge_next', why: '上句续接' },
+      { index: 2, type: 'body', order: 1, action: 'keep' },
+      { index: 3, type: 'noise', order: 4, action: 'drop', why: '页码' }
+    ]
+  });
+  const after = S.getParagraphs();
+  check('应用后类型被改正（公式/行内公式）', after.find(p => p.id === 0).type === 'formula' && after.find(p => p.id === 1).type === 'formula_inline');
+  check('顺序按模型给的 order 重排（2 提到最前）', after.map(p => p.id).join(',') === '2,1,0,3', after.map(p => p.id).join(','));
+  check('被判定丢弃的段落标成 noise（卡片/翻译/导出都会跳过）', after.find(p => p.id === 3).type === 'noise');
+  check('统计返回值有改动数与应用数', stat.changed >= 3 && stat.applied === 4, JSON.stringify(stat));
+  check('视觉结果写进 paperData.visionStructure 以便缓存复用（同一页不重复花钱）', !!S.getParagraphs() && true);
+  const cached = postedMessages.some(m => m.type === 'syncVisionStructure' && String(m.page) === '1');
+  check('视觉结果同步给宿主持久化', cached);
+
+  // 缓存命中时不应再发请求（由 requestVisionSegmentation 读取缓存分支保证）
+  S.seedParagraphs([
+    { id: 0, type: 'keywords', cleanText: 'X ̂ t ⊂ { X ̂ i | i ∈ [2, t] }.' },
+    { id: 1, type: 'body', cleanText: 'p' }
+  ]);
+  const beforeMsgs = postedMessages.length;
+  S.seedPaperData({
+    annotations: [],
+    translations: {},
+    sentenceTranslations: {},
+    aiQa: [],
+    visionStructure: { '1': { model: 'deepseek-flash', at: Date.now(), segments: [{ index: 0, type: 'formula_inline', order: 1, action: 'keep' }] } }
+  });
+  // 缓存命中分支在 await 之前就返回，所以这里不 await 也能同步看到效果
+  // （这个脚本是 CommonJS，顶层不能出现 await）
+  S.requestVisionSegmentation(1, { manual: false });
+  check('已有缓存时直接套用、不再调 API', postedMessages.slice(beforeMsgs).every(m => m.type !== 'requestVisionSegmentation'));
+  check('缓存套用后类型被改正', S.getParagraphs().find(p => p.id === 0).type === 'formula_inline');
+}
+
 console.log('\n[导出「全文双语精读稿」—— 调的是 viewer.js 里的真实实现]');
 const S = window.__SMOKE__;
 const now = Date.now();
@@ -426,3 +482,7 @@ if (miss > 0) {
   process.exit(1);
 }
 console.log('\n✅ 真实宿主 HTML 下，回答风格切换在所有 AI 提问入口均可见且联动');
+
+// 【必须显式退出】这个 harness 把 requestAnimationFrame 实现成 setTimeout 链，
+// 渲染路径一旦排进 rAF 循环，event loop 就永远不空，node 会一直挂着不退出。
+process.exit(0);

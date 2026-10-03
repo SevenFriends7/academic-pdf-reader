@@ -127,7 +127,11 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
               data: Array.from(fileData),
               fileName: path.basename(document.uri.fsPath),
               paperData: paperData,
-              engineTag: this.engineTag()
+              engineTag: this.engineTag(),
+              // 版面分割引擎要在首屏渲染前就位，否则设成 local 的用户也会被发一次视觉请求
+              segmentationEngine: vscode.workspace
+                .getConfiguration('academicReader')
+                .get<string>('segmentationEngine', 'vision')
             });
           } catch (err: any) {
             vscode.window.showErrorMessage(`加载 PDF 失败: ${err.message}`);
@@ -249,6 +253,51 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
           break;
         }
 
+        /**
+         * 视觉版面判断结果落盘：同一页只花一次钱。
+         * （visionModel 变了或页面内容变了才会重新请求，判断逻辑在 webview 侧。）
+         */
+        case 'syncVisionStructure': {
+          if (message.page && message.structure) {
+            const anyData = paperData as any;
+            anyData.visionStructure = anyData.visionStructure || {};
+            anyData.visionStructure[String(message.page)] = message.structure;
+            try {
+              await this.storageManager.savePaperData(document.uri, paperData);
+            } catch (err: any) {
+              console.warn('[AcademicReader] 保存视觉结构失败:', err?.message);
+            }
+          }
+          break;
+        }
+
+        /**
+         * 视觉版面判断：webview 把当前页渲成图，连同本地分段编号一起发来，
+         * 由支持图片的模型判断「每段是什么类型、阅读顺序、该合该拆」。
+         * 坐标不经过视觉模型 —— 划线高亮仍用本地文本层，见 segmentPageWithVision 的注释。
+         */
+        case 'requestVisionSegmentation': {
+          const { page, imageBase64, mimeType, segments } = message;
+          try {
+            const result = await this.translator.segmentPageWithVision({
+              imageBase64,
+              mimeType,
+              pageNum: page,
+              segments: Array.isArray(segments) ? segments : []
+            });
+            webviewPanel.webview.postMessage({ type: 'visionSegmentationResult', page, result });
+            vscode.window.setStatusBarMessage(
+              `$(eye) 视觉分割：第 ${page} 页 ${result.segments.length} 段 · ${result.model} · ${(result.totalMs / 1000).toFixed(1)}s`,
+              4000
+            );
+          } catch (err: any) {
+            const errorText = this.describeError(err);
+            console.warn('[AcademicReader] 视觉分割失败:', errorText);
+            webviewPanel.webview.postMessage({ type: 'visionSegmentationError', page, errorText });
+          }
+          break;
+        }
+
         // 让 AI 问答能拿到全文上下文：webview 每解析完一页就同步一次
         case 'syncPageText': {
           this.translator.registerPageText(message.page, message.paragraphs || []);
@@ -330,6 +379,9 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
               : cfg.get<string>('geminiModel', ''),
             configuredAiModel: cfg.get<string>('aiModel', ''),
             answerStyle: cfg.get<string>('aiAnswerStyle', 'standard'),
+            // 版面分割引擎：webview 据此决定是否请视觉模型判断本页结构
+            segmentationEngine: cfg.get<string>('segmentationEngine', 'vision'),
+            visionModel: cfg.get<string>('visionModel', ''),
             engineTag: this.engineTag(),
             available,
             listError,
@@ -1025,6 +1077,11 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
             <button id="btnViewArticle" class="view-toggle-btn" title="沉浸式全文双语排版视图">全文精读</button>
           </div>
           <div style="display: flex; align-items: center; gap: 4px;">
+            <!-- 视觉重排本页：把本页图像 + 本地分段编号交给视觉模型，由它判断类型/顺序（坐标仍来自文本层） -->
+            <button id="visionRestructureBtn" class="btn-secondary btn-vision-restructure" title="请视觉模型重新判断本页版面（哪些是正文/图注/公式、阅读顺序）——坐标仍来自文本层，划线不受影响">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+              视觉重排
+            </button>
             <button id="refreshTransBtn" class="icon-btn" title="重新获取当前页翻译">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
             </button>

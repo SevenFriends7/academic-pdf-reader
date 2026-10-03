@@ -391,7 +391,9 @@ function buildAppendix(paperData: PaperMetadata, engineTag?: string) {
 
   const pages = pageNumbers
     .map(page => {
-      const paras = (archive[String(page)] || []).filter(p => p && p.type !== 'figure-label');
+      const paras = (archive[String(page)] || []).filter(
+        p => p && p.type !== 'figure-label' && p.type !== 'noise'
+      );
       const entries: AppendixEntry[] = paras.map(p => {
         const own = annotations.filter(a => a.page === page && a.paraIndex !== undefined && a.paraIndex === p.id);
         const text = (p.cleanText || '').trim();

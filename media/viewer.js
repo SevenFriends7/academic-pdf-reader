@@ -74,6 +74,16 @@
    * 译文在快照时可能还没到，收到后由 updateArchivedParagraph() 回填。
    */
   const pageParaArchive = new Map();
+  /** 正在等视觉结果的页（避免同一页重复发请求） */
+  const visionPending = new Set();
+  /**
+   * 版面分割引擎：vision（每页问视觉）/ auto（只在本地可疑时问）/ local（从不问）。
+   * 由宿主通过 initPdfData 与 modelInfo 下发。
+   *
+   * 【初值必须是 local】配置到达之前不许花钱：初值给 vision 的话，
+   * 把引擎设成 local 的用户也会在首屏被发一次视觉请求（真实会踩到）。
+   */
+  let visionEngine = 'local';
   /** 待同步给宿主的段落快照（按页合并 + 节流，见 syncPageArchive） */
   const pendingArchiveSync = new Map();
   let archiveSyncTimer = null;
@@ -431,6 +441,7 @@
     notesCount: document.getElementById('notesCount'),
     translateAllBtn: document.getElementById('translateAllBtn'),
     exportNotesBtn: document.getElementById('exportNotesBtn'),
+    visionRestructureBtn: document.getElementById('visionRestructureBtn'),
     openSettingsBtn: document.getElementById('openSettingsBtn'),
     btnSettingsRightPane: document.getElementById('btnSettingsRightPane'),
     refreshTransBtn: document.getElementById('refreshTransBtn'),
@@ -645,6 +656,8 @@
           dom.paperTitle.textContent = msg.fileName;
           dom.paperTitle.title = msg.fileName;
         }
+        // 版面分割引擎要在第一次 renderPage 之前就位（renderPage 会据此决定是否请视觉）
+        if (msg.segmentationEngine) visionEngine = msg.segmentationEngine;
         if (msg.paperData) {
           paperData = msg.paperData;
           // AI 答疑记录随论文数据一起回来（旧版没有这个字段）
@@ -741,6 +754,51 @@
 
       case 'aiQuestionError': {
         handleAiQuestionError(msg);
+        break;
+      }
+
+      /** 视觉分割结果：把类型/顺序/丢弃应用到当前页（坐标不动） */
+      case 'visionSegmentationResult': {
+        visionPending.delete(Number(msg.page));
+        if (Number(msg.page) !== currentPage) {
+          // 用户已经翻页了：结果仍缓存下来（钱已经花了），下次回到这页直接用
+          paperData.visionStructure = paperData.visionStructure || {};
+          if (msg.result) {
+            paperData.visionStructure[String(msg.page)] = {
+              model: msg.result.model || '',
+              at: Date.now(),
+              columns: msg.result.columns,
+              fixes: msg.result.fixes || '',
+              segments: msg.result.segments || []
+            };
+            vscode.postMessage({
+              type: 'syncVisionStructure',
+              page: Number(msg.page),
+              structure: paperData.visionStructure[String(msg.page)]
+            });
+          }
+          break;
+        }
+        {
+          const stat = applyVisionSegments(Number(msg.page), msg.result || {});
+          const model = (msg.result && msg.result.model) || '视觉模型';
+          const fixes = (msg.result && msg.result.fixes) || '';
+          showVisionBadge(
+            `视觉重排完成：${model} 判断 ${stat.applied} 段，校正 ${stat.changed} 处${fixes ? ` · ${fixes}` : ''}`
+          );
+          setTimeout(() => showVisionBadge(''), 8000);
+          vscode.postMessage({
+            type: 'showToast',
+            message: `视觉重排：${stat.changed} 处改动（${model}）`,
+            level: 'info'
+          });
+        }
+        break;
+      }
+
+      case 'visionSegmentationError': {
+        visionPending.delete(Number(msg.page));
+        showVisionBadge(`视觉重排失败：${msg.errorText || '未知错误'}`, 'error');
         break;
       }
 
@@ -1811,6 +1869,21 @@
 
     currentParagraphs = paras;
     renderTranslationCards(pageNum, currentParagraphs);
+
+    // 视觉分割：本地结果先显示，随后请视觉模型判断版面并校正（坐标不受影响）。
+    // 默认 vision（每页都问）；auto 只在本地判据可疑时问；local 从不问。
+    try {
+      const engine = visionEngine;
+      if (engine === 'vision' || (engine === 'auto' && looksLowConfidence(paras))) {
+        // 用 setTimeout 让本页先画出来，避免请求把首屏拖慢
+        setTimeout(() => {
+          if (currentPage === pageNum) void requestVisionSegmentation(pageNum, { manual: false });
+        }, 60);
+      }
+    } catch (e) {
+      console.warn('[Viewer] 视觉分割调度失败:', e);
+    }
+
     // 【顺序很重要】归档必须在 renderTranslationCards 之后：
     // 卡片渲染时才会把缓存里的译文回填到段落上，先归档就会存下一堆"没有译文"的快照
     // （导出 PDF 时表现为整篇都是"（本段尚未翻译）"）。
@@ -2688,6 +2761,209 @@
     return `${t.replace(/[\\/:*?"<>|]/g, '_')}-双语精读稿.md`;
   }
 
+  // ====================== 视觉版面判断（视觉分割） ======================
+  /**
+   * 视觉分割：把当前页**图像** + 本地分段编号交给支持图片的模型，
+   * 由它判断"每段是什么类型、阅读顺序、该合该拆"。
+   *
+   * 【铁律】坐标不经过视觉模型。划线高亮、"点中文跳英文"、导出 PDF 里把高亮画回原位，
+   * 全都用本地文本层的 charMap/spans；视觉只负责"怎么切、切出来是什么"。
+   * 这正是上一轮把视觉路线停用的原因（让模型给坐标不可靠），也是现在这条路能成立的前提。
+   */
+
+  /** 把某一页渲成 JPEG dataURL（优先用屏幕上已渲染好的 canvas，分辨率不够时离屏重渲） */
+  async function capturePageImage(pageNum) {
+    const onScreen = (() => {
+      const wrap = document.getElementById(`pageWrapper_${pageNum}`);
+      const cv = wrap ? wrap.querySelector('canvas.pdf-canvas') || wrap.querySelector('canvas') : null;
+      return cv && cv.width > 0 ? cv : null;
+    })();
+    const longEdge = cv => Math.max(cv.width, cv.height);
+
+    // 屏幕上这页已渲染且够清晰：直接用（零成本、所见即所得）
+    if (onScreen && longEdge(onScreen) >= 1200) {
+      return { dataUrl: onScreen.toDataURL('image/jpeg', 0.82), source: 'on-screen' };
+    }
+    // 否则离屏按目标分辨率重渲一版（缩放太小的时候，模型看不清小字）
+    if (!pdfDoc) {
+      return onScreen ? { dataUrl: onScreen.toDataURL('image/jpeg', 0.82), source: 'on-screen-low' } : null;
+    }
+    try {
+      const page = await pdfDoc.getPage(pageNum);
+      const base = page.getViewport({ scale: 1 });
+      const target = 1600;
+      const scale = Math.min(3.5, Math.max(1, target / Math.max(base.width, base.height)));
+      const viewport = page.getViewport({ scale });
+      const cv = document.createElement('canvas');
+      cv.width = Math.floor(viewport.width);
+      cv.height = Math.floor(viewport.height);
+      const ctx = cv.getContext('2d');
+      await page.render({ canvasContext: ctx, viewport }).promise;
+      return { dataUrl: cv.toDataURL('image/jpeg', 0.82), source: 'offscreen' };
+    } catch (e) {
+      console.warn('[Viewer] 生成页面图像失败:', e);
+      return onScreen ? { dataUrl: onScreen.toDataURL('image/jpeg', 0.82), source: 'on-screen-low' } : null;
+    }
+  }
+
+  /** auto 模式：这一页看起来"本地可能切错了"吗 */
+  function looksLowConfidence(paragraphs) {
+    const list = paragraphs || [];
+    if (list.length === 0) return false;
+    const body = list.filter(p => p.type === 'body');
+    const captions = list.filter(p => p.type === 'caption');
+    const figureLabels = list.filter(p => p.type === 'figure-label');
+    if (figureLabels.length / list.length > 0.45) return true; // 多半把图内文字当成了正文
+    if (captions.length >= 3 && body.length <= 2) return true; // 图注被切得很碎
+    if (body.length > 40) return true; // 行被切成了大量碎片
+    return false;
+  }
+
+  /**
+   * 请求视觉判断。
+   * @param {number} pageNum
+   * @param {{manual?: boolean}} opts 手动点击时忽略缓存与 auto 判据
+   */
+  async function requestVisionSegmentation(pageNum, opts = {}) {
+    if (visionPending.has(pageNum)) return;
+    const paragraphs = currentParagraphs || [];
+    if (paragraphs.length === 0) return;
+
+    const cached = paperData.visionStructure && paperData.visionStructure[String(pageNum)];
+    if (!opts.manual && cached && Array.isArray(cached.segments) && cached.segments.length) {
+      applyVisionSegments(pageNum, cached);
+      showVisionBadge(`已用缓存的视觉结果校正本页（${cached.model || '视觉模型'}）`);
+      setTimeout(() => showVisionBadge(''), 4000);
+      return;
+    }
+
+    const shot = await capturePageImage(pageNum);
+    if (!shot) return;
+    const base64 = String(shot.dataUrl).split(',')[1] || '';
+    if (!base64) return;
+
+    visionPending.add(pageNum);
+    showVisionBadge('正在请视觉模型判断版面…（坐标仍来自文本层）');
+    try {
+      vscode.postMessage({
+        type: 'requestVisionSegmentation',
+        page: pageNum,
+        imageBase64: base64,
+        mimeType: 'image/jpeg',
+        segments: paragraphs.map(p => ({
+          id: p.id,
+          type: p.type || 'body',
+          text: (p.cleanText || '').slice(0, 1500)
+        }))
+      });
+    } catch (e) {
+      visionPending.delete(pageNum);
+      showVisionBadge('视觉请求发送失败', 'error');
+      vscode.postMessage({ type: 'showInfo', message: `视觉请求发送失败：${(e && e.message) || e}` });
+    }
+  }
+
+  /** 卡片区顶部的小状态条（视觉进度/结果提示） */
+  function showVisionBadge(text, level) {
+    let el = document.getElementById('visionStatusBadge');
+    if (!text) {
+      if (el) el.remove();
+      return;
+    }
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'visionStatusBadge';
+      el.className = 'vision-status-badge';
+      const host = dom.transListContainer || document.getElementById('transListContainer');
+      if (host && host.parentNode) host.parentNode.insertBefore(el, host);
+      else document.body.appendChild(el);
+    }
+    el.textContent = text;
+    el.classList.toggle('vision-status-error', level === 'error');
+  }
+
+  /**
+   * 应用视觉判断结果（第一片：类型 + 顺序 + 丢弃）。
+   *
+   * 合并/拆分暂不在这里做：那要动 charMap/spans（把两段的字符映射接起来、
+   * 按文本边界切一段的映射），属于另一片手术。先把类型与顺序弄对。
+   */
+  function applyVisionSegments(pageNum, result) {
+    if (!result || !Array.isArray(result.segments)) return { changed: 0, applied: 0 };
+    const byId = new Map((currentParagraphs || []).map(p => [p.id, p]));
+    const dropped = new Set();
+    let changed = 0;
+    let applied = 0;
+
+    result.segments.forEach(s => {
+      const para = byId.get(Number(s.index));
+      if (!para) return;
+      applied++;
+      if (s.action === 'drop') {
+        dropped.add(para.id);
+        return;
+      }
+      if (s.type && para.type !== s.type) {
+        para.type = s.type;
+        para.visionType = s.type;
+        changed++;
+      }
+      if (s.why) para.visionWhy = s.why;
+      para.visionAction = s.action || 'keep';
+    });
+
+    // 顺序：模型给了 order 就按它排；没给的保持原相对位置（稳定排序）
+    const ordered = result.segments
+      .filter(s => Number.isFinite(Number(s.order)))
+      .sort((a, b) => Number(a.order) - Number(b.order))
+      .map(s => Number(s.index));
+    if (ordered.length > 1) {
+      const pos = new Map(ordered.map((id, i) => [id, i]));
+      const before = (currentParagraphs || []).map(p => p.id).join(',');
+      currentParagraphs.sort((a, b) => {
+        const pa = pos.has(a.id) ? pos.get(a.id) : Number.MAX_SAFE_INTEGER;
+        const pb = pos.has(b.id) ? pos.get(b.id) : Number.MAX_SAFE_INTEGER;
+        return pa - pb;
+      });
+      if ((currentParagraphs || []).map(p => p.id).join(',') !== before) changed++;
+    }
+
+    // 丢弃：标成 noise —— 卡片、翻译队列、导出都会跳过它（像图表标签那样）
+    dropped.forEach(id => {
+      const para = byId.get(id);
+      if (para && para.type !== 'noise') {
+        para.type = 'noise';
+        changed++;
+      }
+    });
+
+    try {
+      renderTranslationCards(pageNum, currentParagraphs);
+      renderNotesList();
+    } catch (e) {
+      console.warn('[Viewer] 应用视觉结果后重绘失败:', e);
+    }
+    // 缓存到论文数据（同一页只花一次钱），由宿主持久化
+    try {
+      paperData.visionStructure = paperData.visionStructure || {};
+      paperData.visionStructure[String(pageNum)] = {
+        model: result.model || '',
+        at: Date.now(),
+        columns: result.columns,
+        fixes: result.fixes || '',
+        segments: result.segments
+      };
+      vscode.postMessage({
+        type: 'syncVisionStructure',
+        page: pageNum,
+        structure: paperData.visionStructure[String(pageNum)]
+      });
+    } catch (e) {
+      /* 缓存失败不影响本次校正 */
+    }
+    return { changed, applied };
+  }
+
   /**
    * 生成全文双语精读稿。
    *
@@ -2746,7 +3022,7 @@
     // 目录
     md += `## 目录\n\n`;
     pageList.forEach(p => {
-      const paraCount = (pageParaArchive.get(p) || []).filter(x => x.type !== 'figure-label').length;
+      const paraCount = (pageParaArchive.get(p) || []).filter(x => x.type !== 'figure-label' && x.type !== 'noise').length;
       const notes = annotations.filter(a => a.page === p).length;
       const qas = aiQa.filter(q => q.page === p).length;
       const bits = [`${paraCount} 段`, notes ? `${notes} 批注` : '', qas ? `${qas} 答疑` : ''].filter(Boolean);
@@ -2759,7 +3035,7 @@
     const usedQaIds = new Set();
 
     pageList.forEach(pageNum => {
-      const paras = (pageParaArchive.get(pageNum) || []).filter(p => p.type !== 'figure-label');
+      const paras = (pageParaArchive.get(pageNum) || []).filter(p => p.type !== 'figure-label' && p.type !== 'noise');
       const pageAnnotations = annotations.filter(a => a.page === pageNum);
       const pageQa = aiQa.filter(q => q.page === pageNum);
 
@@ -2974,7 +3250,7 @@
 
     // 图表内部标签（轴标签、图例、子图编号）不送翻译：
     // 模型只会把符号原样吐回来，既没有信息量，还会触发"照搬原文"的假报错。
-    const isFigureLabelPara = para => para && para.type === 'figure-label';
+    const isFigureLabelPara = para => para && (para.type === 'figure-label' || para.type === 'noise');
 
     // 纯公式/符号段落也一起跳过（判据见 isFormulaLikePara）：
     // 它们是"公式行"不是散文，送翻译只会拿回原文，然后被质量校验判成"疑似未翻译"弹红框。
@@ -6136,6 +6412,16 @@
     });
   });
 
+  // 「视觉重排本页」：手动请视觉模型判断本页版面（忽略缓存与 auto 判据）
+  const visionBtn = dom.visionRestructureBtn || document.getElementById('visionRestructureBtn');
+  if (visionBtn) {
+    visionBtn.addEventListener('click', () => {
+      switchTab('trans');
+      if (!currentParagraphs || currentParagraphs.length === 0) return;
+      void requestVisionSegmentation(currentPage, { manual: true });
+    });
+  }
+
   dom.refreshTransBtn.addEventListener('click', () => {
     switchTab('trans');
     if (!currentParagraphs || currentParagraphs.length === 0) return;
@@ -6749,6 +7035,8 @@ let aiPresetQuestion = '';
     aiEngineIsOpenAI = !!msg.isOpenAI;
     // 回答风格改为由设置项 academicReader.aiAnswerStyle 驱动，弹窗里不再放下拉框
     if (msg.answerStyle) aiStyle = msg.answerStyle;
+    // 版面分割引擎（vision / auto / local）
+    if (msg.segmentationEngine) visionEngine = msg.segmentationEngine;
     syncAiStyleButtons();
     // 引擎标识变化 → 此后段落用新引擎重新翻译（旧引擎的缓存键不再命中）
     if (msg.engineTag && msg.engineTag !== currentEngineTag) {
