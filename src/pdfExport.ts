@@ -500,6 +500,8 @@ export async function buildAnnotatedPdf(opts: PdfExportOptions): Promise<PdfExpo
   const rotatedPagesSkipped: number[] = [];
   const translatedPageNumbers: number[] = [];
   const highlightedPageNumbers: number[] = [];
+  /** 高光全是公式/符号段落、因此"无需翻译"的页 */
+  const formulaOnlyPageNumbers: number[] = [];
 
   // 逐页：原文页 → （若有高光）紧跟一页编号译文
   for (const srcIdx of indices) {
@@ -569,14 +571,21 @@ export async function buildAnnotatedPdf(opts: PdfExportOptions): Promise<PdfExpo
     // 有高光（或该页有已解析内容）就紧跟一页编号译文
     const content = contentByPage.get(pageNum);
     if (font && writer && (pageAnnots.length > 0 || content)) {
-      const translatedCount = writeHighlightSheet(writer, pageNum, pageAnnots, content);
-      if (pageAnnots.length > 0 && translatedCount > 0) translatedPageNumbers.push(pageNum);
+      const sheetStat = writeHighlightSheet(writer, pageNum, pageAnnots, content);
+      if (pageAnnots.length > 0 && sheetStat.translated > 0) translatedPageNumbers.push(pageNum);
+      // 整页高光都是"公式/符号段落"的，不算"缺译文"（本来就没有可翻译的文字）
+      if (pageAnnots.length > 0 && sheetStat.translated === 0 && sheetStat.formulaOnly === pageAnnots.length) {
+        formulaOnlyPageNumbers.push(pageNum);
+      }
     }
   }
 
   // ---- 末尾：覆盖范围说明 + 还缺译文的页 ----
   // "有高光但没译文"才是用户能行动的信息，单独列出来。
-  const pagesWithoutTranslation = highlightedPageNumbers.filter(n => !translatedPageNumbers.includes(n));
+  // 公式/符号页不算缺译文（本来就没有可翻译的文字），否则会误导用户去"整页翻译"。
+  const pagesWithoutTranslation = highlightedPageNumbers.filter(
+    n => !translatedPageNumbers.includes(n) && !formulaOnlyPageNumbers.includes(n)
+  );
   // 相册里没有任何高光的页不算"缺译文"，它们本来就没有要对照的东西
   const pageNumbersWithNoSheet = indices
     .map(i => i + 1)
@@ -635,14 +644,16 @@ function pickTranslationForAnnotation(annot: AnnotationItem, entry: AppendixEntr
 /**
  * 写一页「第 N 页 · 高光译文」：编号与原文页上的圆点标记一一对应。
  *
- * 返回这一页里**真正拿到了译文**的高光条数（用来判断该页算不算"已覆盖"）。
+ * 返回：`translated` = 真正拿到译文的条数（判断该页算不算"已覆盖"）；
+ * `formulaOnly` = 因"是公式/符号段落、无需翻译"而没译文的条数
+ * （若整页高光都是这一类，就不该把它算成"缺译文"）。
  */
 function writeHighlightSheet(
   writer: FlowWriter,
   pageNum: number,
   pageAnnots: AnnotationItem[],
   content: { entries: AppendixEntry[]; orphanAnnotations: AnnotationItem[]; orphanQa: Array<{ question: string; answer: string; model?: string; at: number; selectedText?: string }> } | undefined
-): number {
+): { translated: number; formulaOnly: number } {
   const entryByPara = new Map<number, AppendixEntry>();
   (content?.entries || []).forEach(e => entryByPara.set(e.para.id, e));
 
@@ -650,6 +661,7 @@ function writeHighlightSheet(
   writer.paragraph(`第 ${pageNum} 页 · 高光译文`, { size: 15, color: [0.06, 0.09, 0.16], spaceAfter: 2 });
 
   let translated = 0;
+  let formulaOnly = 0;
   if (pageAnnots.length === 0) {
     writer.paragraph('（本页没有高光，下面是本页其它已翻译的段落。）', {
       size: 9.5,
@@ -680,6 +692,16 @@ function writeHighlightSheet(
     });
     if (zh) {
       writer.paragraph(`译文：${zh}`, { size: 10.5, indent: 10, color: [0.07, 0.28, 0.5], spaceAfter: 2 });
+    } else if (entry?.para.type === 'formula') {
+      // 公式/符号段落没有可翻译的文字：写"无需翻译"，不要写成"还没有译文"让人以为失败了
+      formulaOnly++;
+      writer.paragraph('译文：（公式/符号段落，无需翻译）', {
+        size: 9.5,
+        indent: 10,
+        color: [0.45, 0.47, 0.55],
+        spaceAfter: 2,
+        lineGap: 3.6
+      });
     } else {
       writer.paragraph(
         `译文：（这一条还没有译文——在阅读器里翻到第 ${pageNum} 页并按「整页翻译」译出后重新导出即可补齐）`,
@@ -736,7 +758,7 @@ function writeHighlightSheet(
     });
   }
 
-  return translated;
+  return { translated, formulaOnly };
 }
 
 /** 末尾的说明页：这次导出了什么、还有哪些高光缺译文、怎么补 */

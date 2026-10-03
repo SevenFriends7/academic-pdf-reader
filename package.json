@@ -7,7 +7,7 @@
     "color": "#0b578a",
     "theme": "dark"
   },
-  "version": "1.0.2",
+  "version": "1.0.3",
   "publisher": "paper-reader",
   "license": "MIT",
   "repository": {
@@ -249,6 +249,7 @@
     "test:init": "node scratch/smoke_init.js",
     "test:html": "node scratch/host_html_smoke.js",
     "test:pdf": "node scratch/pdf_export_test.js",
+    "test:gate": "node scratch/dstest/gate_test.js",
     "lint": "npx --yes eslint@8 --no-eslintrc -c .eslintrc.json media/viewer.js",
     "prevsix": "node scratch/check_version.js"
   },

@@ -1325,5 +1325,37 @@ console.log('\n===== T19 提示条自动消失 与 聚焦条跟随 =====');
   checkTrue('宿主下发扩展版本号', /extensionVersion:/.test(ext));
 })();
 
+// ---------- 20. 纯公式/符号段落不送翻译（否则会被判成"未翻译"） ----------
+console.log('\n===== T20 公式段落识别 =====');
+(function formulaParagraphTest() {
+  const start = code.indexOf('function isFormulaLikePara(para) {');
+  const end = code.indexOf('\n  }', code.indexOf('return density >= 0.35', start));
+  checkTrue('能从真实源码里抽出判据函数', start > 0 && end > start);
+  if (start < 0 || end <= start) return;
+  // eslint-disable-next-line no-new-func
+  const isFormula = new Function(`${code.slice(start, end + 4)}\n return isFormulaLikePara;`)();
+  const P = (t) => ({ cleanText: t });
+  // 真实样本（cycle.pdf 第 4 页）
+  checkTrue('纯符号段 → 判为公式（不送翻译）', isFormula(P('| Ω | ̂')));
+  checkTrue('集合记号段 → 判为公式', isFormula(P('X ̂ t ⊂ { X ̂ i | i ∈ [2, t] }, Y ̂ t ⊂ { Y i | i ∈ [2, t] }.')));
+  checkTrue('损失函数定义 → 判为公式', isFormula(P('L cycle,t = L (Y ̂ t, Y t) + L (Y ̂ 1, Y 1)  (3)')));
+  // 反例：散文里带公式的段落**必须**继续翻译，不能被误伤
+  checkTrue(
+    '散文带公式（20+ 字母的整句）→ 不判为公式',
+    !isFormula(P('mask. Hence, we have Y ̂ t − 1 ⊂ { Y 1 } { Y i | i ∈ [2, t − 1] }.'))
+  );
+  checkTrue(
+    '正常英文句子 → 不判为公式',
+    !isFormula(P('For the sake of mitigating error propagation during training, we incorporate the cyclical process.'))
+  );
+  checkTrue('空段落 → 不判为公式', !isFormula(P('   ')));
+  checkTrue('已是中文 → 不判为公式', !isFormula(P('我们提出了一种循环机制。')));
+  // 接线：这类段落必须从翻译队列里排除，并在归档里标成 formula
+  checkTrue('自动翻译队列排除公式段', /!isFormulaLikePara\(p\)/.test(code));
+  checkTrue('对照翻译列表也排除公式段（含跳过提示）', /skippedFormula/.test(code) && /段公式\/符号/.test(code));
+  checkTrue('归档时标成 formula（导出据此写"无需翻译"）', /isFormulaLikePara\(p\) \? 'formula'/.test(code));
+  checkTrue('Markdown 精读稿对公式段写"无需翻译"', /公式\/符号段落，无需翻译/.test(code));
+})();
+
 console.log(`\n===== 结果: ${pass} 通过 / ${fail} 失败 =====`);
 process.exit(fail > 0 || loadError ? 1 : 0);

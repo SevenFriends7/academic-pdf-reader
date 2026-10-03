@@ -2416,6 +2416,30 @@
     return list;
   }
 
+  /**
+   * 纯公式/符号段落（集合记号、损失函数定义这类）：**不送翻译**。
+   *
+   * 它们是"公式行"而不是散文，本来就没有可翻译的文字；送过去只会拿到原样返回，
+   * 然后被译文质量校验判成"疑似未翻译"而弹红框（用户真实反馈："公式它就识别为未翻译"）。
+   *
+   * 判据：符号/数字占主导，且拉丁字母很少、几乎没有成词内容。
+   * 注意别把"散文里带公式"的段落误伤进来（例如 `mask. Hence, we have … ⊂ {…}`，
+   * 它有 20+ 个字母、是完整句子）—— 所以同时要求字母数很少、成词数很少。
+   */
+  function isFormulaLikePara(para) {
+    const text = (para && para.cleanText) || '';
+    if (!text.trim()) return false;
+    if (/[\u4e00-\u9fff]/.test(text)) return false; // 已经是中文，没什么可判的
+    const letters = (text.match(/[A-Za-z]/g) || []).length;
+    const symbols = (text.match(/[=+\-*/^_{}[\]()<>≤≥≈≠∈∑∫∂∇×·|\\]/g) || []).length;
+    const digits = (text.match(/\d/g) || []).length;
+    const denom = letters + symbols + digits;
+    if (denom === 0) return false;
+    const density = (symbols + digits) / denom;
+    const words = (text.match(/[A-Za-z]{2,}/g) || []).length;
+    return density >= 0.35 && letters <= 20 && words <= 6;
+  }
+
   // ====================== 导出「全文双语精读稿」的数据准备 ======================
   /**
    * 归档一页的段落（renderPage 解析完就调用一次）。
@@ -2427,7 +2451,9 @@
         .filter(p => p && typeof p.cleanText === 'string' && p.cleanText.trim())
         .map(p => ({
           id: p.id,
-          type: p.type || 'body',
+          // 纯公式/符号段在快照里标成 formula：导出时据此写"（公式/符号段落，无需翻译）"，
+          // 而不是含混的"（本段尚未翻译）"——后者会让人以为翻译失败了。
+          type: isFormulaLikePara(p) ? 'formula' : p.type || 'body',
           cleanText: p.cleanText,
           sentencesEn: (p.sentencesEn || []).map(s => ({ text: s.text })),
           // 【必须在这里解析】段落对象上的 translation 只有在"本次会话刚翻好"时才有值；
@@ -2617,7 +2643,8 @@
     heading: '章节标题',
     caption: '图表题注',
     footnote: '脚注',
-    significance: '意义声明'
+    significance: '意义声明',
+    formula: '公式/符号'
   };
 
   /**
@@ -2769,7 +2796,11 @@
             const zhLines = sentences && sentences.length === enLines.length ? sentences : [translation];
             md += `**译文**\n\n${mdQuoteLines(zhLines)}\n\n`;
           } else {
-            md += `**译文**\n\n*（本段尚未翻译）*\n\n`;
+            // 公式/符号段落本来就没有可翻译的文字，别说成"尚未翻译"（会被当成失败）
+            md +=
+              para.type === 'formula'
+                ? `**译文**\n\n*（公式/符号段落，无需翻译）*\n\n`
+                : `**译文**\n\n*（本段尚未翻译）*\n\n`;
           }
         }
 
@@ -2945,25 +2976,32 @@
     // 模型只会把符号原样吐回来，既没有信息量，还会触发"照搬原文"的假报错。
     const isFigureLabelPara = para => para && para.type === 'figure-label';
 
+    // 纯公式/符号段落也一起跳过（判据见 isFormulaLikePara）：
+    // 它们是"公式行"不是散文，送翻译只会拿回原文，然后被质量校验判成"疑似未翻译"弹红框。
+    const skippedFormula = paragraphs.filter(p => !isFigureLabelPara(p) && isFormulaLikePara(p));
+
     // 这些段落**连卡片都不生成**。
     // 否则第 6 页那类以表格为主的页面会变成一张满屏数字的"未翻译"卡片墙，
     // 而且它们本来就不该出现在对照翻译视图里。
     const skippedFigure = paragraphs.filter(isFigureLabelPara);
-    const translatableParas = paragraphs.filter(p => !isFigureLabelPara(p));
+    const translatableParas = paragraphs.filter(p => !isFigureLabelPara(p) && !isFormulaLikePara(p));
 
     if (translatableParas.length === 0) {
       dom.transListContainer.innerHTML = `
         <div class="empty-state">
-          <p>本页主要是图表/表格内容，没有可对照翻译的正文。</p>
+          <p>本页主要是图表/表格与公式内容，没有可对照翻译的正文。</p>
         </div>`;
       return;
     }
 
-    if (skippedFigure.length > 0) {
+    if (skippedFigure.length > 0 || skippedFormula.length > 0) {
       const notice = document.createElement('div');
       notice.className = 'trans-skip-summary';
-      notice.textContent = `已跳过本页 ${skippedFigure.length} 段图表/表格内容（不做识别与翻译）`;
-      notice.title = skippedFigure
+      const parts = [];
+      if (skippedFigure.length > 0) parts.push(`${skippedFigure.length} 段图表/表格内容`);
+      if (skippedFormula.length > 0) parts.push(`${skippedFormula.length} 段公式/符号`);
+      notice.textContent = `已跳过本页 ${parts.join('、')}（不做翻译）`;
+      notice.title = [...skippedFigure, ...skippedFormula]
         .map(p => (p.cleanText || '').slice(0, 40))
         .slice(0, 12)
         .join('\n');
@@ -3313,7 +3351,8 @@
     // （免费档 Key 的瓶颈是每分钟请求数，逐段发必然 429，越翻越慢）。
     // 扩展侧仍有自己的并发闸门，真正同时打 API 的次数受 academicReader.translateConcurrency 控制。
     const unCachedParas = paragraphs.filter(
-      p => !findCachedTranslation(pageNum, p) && p.type !== 'figure-label'
+      // 图表标签与纯公式段都不进翻译队列：送过去只会拿回原文，还会被判成"未翻译"。
+      p => !findCachedTranslation(pageNum, p) && p.type !== 'figure-label' && !isFormulaLikePara(p)
     );
     let qIdx = 0;
     let activeWorkers = 0;

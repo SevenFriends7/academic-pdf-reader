@@ -977,21 +977,49 @@ ${sentences[i]}`
     if (latinLetters < 8) return null;
 
     const cjk = this.countCjk(o);
-    const nonSpace = o.replace(/\s/g, '').length;
-    if (nonSpace === 0) return '译文为空';
-    const ratio = cjk / nonSpace;
+    const outLatin = ((o || '').match(/[A-Za-z]/g) || []).length;
+    if (cjk + outLatin === 0) return '译文为空';
 
-    // 中文占比足够高 → 确实翻译过了，直接通过。
-    // 【重要】不能再拿它去和英文原文做字符相似度比较：归一化会抹掉全部中文，
-    // 中文译文往往只剩 "2"、"ai" 这类零星片段，一旦恰好出现在原文里就会假阳性，
-    // 把正常译文判成"照搬原文"而拒绝（DeepSeek 路径下几乎必然触发）。
-    if (ratio >= 0.25) return null;
+    /**
+     * 【公平分母】只看"汉字 vs 拉丁字母"，**不把公式符号/数字/标点算进分母**。
+     *
+     * 旧判据是 `汉字 / 非空字符总数`。对公式密集的段落这是结构性不公平：
+     * 数学符号在译文里本来就原样保留（`Ŷ t ⊂ {Y i | i ∈ [2, t]}` 之类），
+     * 分母被符号撑大，中文占比永远上不去 —— 真实案例：模型其实译对了一半，
+     * 却因"中文字符仅占 21%"被判未翻译。
+     * 用"汉字/(汉字+字母)"衡量，正常译文会更高（实测同一段 47% → 73%），
+     * 而照搬原文仍然是 0%，该拦的照样拦得住。
+     */
+    const ratio = cjk / (cjk + outLatin);
+
+    // 公式密集的段落，模型保留大量原文是合理的（术语、变量、集合记号都该原样留），
+    // 因此阈值放宽；非公式段落维持原来的严格标准。
+    const mathHeavy = this.mathDensity(source) >= 0.25;
+    const threshold = mathHeavy ? 0.12 : 0.25;
+    if (ratio >= threshold) return null;
 
     // 中文占比过低：这时才值得判断"是不是直接把原文抄回来了"
     if (this.similarity(source, o) > 0.9) {
+      // 公式为主的段落，原样返回本来就是正常结果（没什么可翻的），不该报成失败
+      if (mathHeavy) return null;
       return '译文与原文几乎完全相同（疑似照搬原文）';
     }
-    return `译文疑似未翻译（中文字符仅占 ${Math.round(ratio * 100)}%）`;
+    return `译文疑似未翻译（汉字占字母+汉字的比例仅 ${Math.round(ratio * 100)}%）`;
+  }
+
+  /**
+   * 数学/符号密度：判断一段是不是"公式为主"。
+   * 只数符号与数字，字母与汉字都算"有内容的字符"。
+   */
+  private mathDensity(s: string): number {
+    const str = s || '';
+    const letters = (str.match(/[A-Za-z]/g) || []).length;
+    const cjk = this.countCjk(str);
+    const symbols = (str.match(/[=+\-*/^_{}[\]()<>≤≥≈≠∈∑∫∂∇×·|\\]/g) || []).length;
+    const digits = (str.match(/\d/g) || []).length;
+    const denom = letters + cjk + symbols + digits;
+    if (denom === 0) return 0;
+    return (symbols + digits) / denom;
   }
 
   // ==========================================================================

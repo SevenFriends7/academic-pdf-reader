@@ -26,6 +26,11 @@ jobs:
       - name: 单元测试（webview 侧）
         run: node scratch/llm-test/viewer-unit.js
 
+      # 译文质量闸门：判严了会把公式段落冤枉成"未翻译"（用户真实反馈），
+      # 判松了会让"模型照抄原文"悄悄过关。两类错误肉眼都很难发现，必须用真实文本钉住。
+      - name: 译文质量闸门测试（公式段落 / 照抄原文）
+        run: npm run test:gate
+
       # 静态检查未声明 / 重复声明的变量。
       # 实测抓到过一个潜伏很久的 bug：hoverTooltipTimer 从未声明，
       # 靠非严格模式的"隐式全局"侥幸运行，一旦在严格模式下执行就抛 ReferenceError。

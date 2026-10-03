@@ -130,6 +130,17 @@ function makePaperData() {
         rects: [{ left: 60, top: 200, width: 220, height: 12 }]
       },
       {
+        // 落在"公式/符号段落"上的高光：不该被说成"还没有译文"，而应写"无需翻译"
+        id: 'a5',
+        page: 2,
+        text: 'X ̂ t ⊂ { X ̂ i | i ∈ [2, t] }.',
+        color: 'blue',
+        note: '',
+        paraIndex: 0,
+        timestamp: now,
+        rects: [{ left: 60, top: 320, width: 140, height: 10 }]
+      },
+      {
         id: 'a3',
         page: 3,
         text: EN3,
@@ -189,6 +200,17 @@ function makePaperData() {
           translation: ZH3,
           sentenceTranslations: [ZH3]
         }
+      ],
+      '2': [
+        {
+          // 纯公式/符号段落：阅读器已把它标成 formula（不送翻译），导出据此写"无需翻译"
+          id: 0,
+          type: 'formula',
+          cleanText: 'X ̂ t ⊂ { X ̂ i | i ∈ [2, t] }.',
+          sentencesEn: [{ text: 'X ̂ t ⊂ { X ̂ i | i ∈ [2, t] }.' }],
+          translation: '',
+          sentenceTranslations: []
+        }
       ]
     }
   };
@@ -224,7 +246,7 @@ function makePaperData() {
     // CI（ubuntu）默认没有中文字体：这时必须"如实降级"而不是报错，也不是硬塞空页
     check('本机没有中文字体 → 不生成译文页（如实降级，符合预期）', result.appendixPages === 0);
   }
-  check('四条高亮（共 4 个矩形）都画上去了', result.drawnAnnotations === 4, `实际 ${result.drawnAnnotations}`);
+  check('五条高亮（共 5 个矩形）都画上去了', result.drawnAnnotations === 5, `实际 ${result.drawnAnnotations}`);
   check('输出是合法 PDF', result.bytes.length > 2000 && String.fromCharCode(...result.bytes.slice(0, 5)) === '%PDF-');
 
   if (process.env.DUMP_PDF) {
@@ -480,6 +502,39 @@ function makePaperData() {
     );
   }
 
+  // 整页高光都落在公式/符号段落上 → 不该被列为"缺译文"（否则会催用户去白翻一遍）
+  const paperDataFormulaOnly = makePaperData();
+  paperDataFormulaOnly.annotations = [
+    {
+      id: 'f1',
+      page: 2,
+      text: 'X ̂ t ⊂ { X ̂ i | i ∈ [2, t] }.',
+      color: 'blue',
+      note: '',
+      paraIndex: 0,
+      timestamp: 1,
+      rects: [{ left: 60, top: 320, width: 140, height: 10 }]
+    }
+  ];
+  paperDataFormulaOnly.pageArchive = { '2': paperDataFormulaOnly.pageArchive['2'] };
+  const rFormula = await buildAnnotatedPdf({
+    originalBytes,
+    paperData: paperDataFormulaOnly,
+    paperName: 'cycle.pdf',
+    includeAllPages: false,
+    fontPathOverride: forcedFont
+  });
+  check(
+    '整页高光都是公式/符号 → 不列为"缺译文"',
+    rFormula.pagesWithoutTranslation.length === 0,
+    JSON.stringify(rFormula.pagesWithoutTranslation)
+  );
+  if (result.fontPath) {
+    const formulaText = await readWholeDoc(rFormula.bytes);
+    check('该页译文页写明"公式/符号段落，无需翻译"', formulaText.includes('公式/符号段落，无需翻译'));
+    check('不再对它说"这一条还没有译文"', !formulaText.includes('这一条还没有译文'));
+  }
+
   // 自动用系统程序打开是踩过的坑：用户机器上 .pdf 没有关联程序时，
   // openExternal 会让 VS Code 弹"打开外部程序时出错"，我们的 try/catch 拦不住。
   const openBlock = providerSrc.slice(providerSrc.indexOf('const action = await vscode.window.showInformationMessage'));
@@ -505,7 +560,7 @@ function makePaperData() {
   check('只要原文时不生成译文页', rPlain.appendixPages === 0, `实际 ${rPlain.appendixPages}`);
   check('只要原文时总页数就是原文页数', (await pdfjs.getDocument({ data: new Uint8Array(rPlain.bytes), isEvalSupported: false }).promise).numPages === 3);
   check('只要原文时不返回任何"已覆盖译文"的页', Array.isArray(rPlain.translatedPages) && rPlain.translatedPages.length === 0);
-  check('只要原文时高亮照样画回原位', rPlain.drawnAnnotations === 4, `实际 ${rPlain.drawnAnnotations}`);
+  check('只要原文时高亮照样画回原位', rPlain.drawnAnnotations === 5, `实际 ${rPlain.drawnAnnotations}`);
   check(
     '只要原文时不报任何字体问题（这一档本来就不需要中文字体）',
     !rPlain.warnings.some(w => w.includes('字体') || w.includes('中文字形')),
@@ -548,7 +603,7 @@ function makePaperData() {
         '指定的字体不含中文、且本机没有其它中文字体 → 如实降级（不出译文页，并给出警告）',
         latinResult.appendixPages === 0 &&
           latinResult.sourcePages === 3 &&
-          latinResult.drawnAnnotations === 4 &&
+          latinResult.drawnAnnotations === 5 &&
           latinResult.warnings.length > 0,
         `译文页=${latinResult.appendixPages}，警告=${latinResult.warnings.length} 条`
       );
