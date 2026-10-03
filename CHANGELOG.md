@@ -3,6 +3,27 @@
 本文件记录「文献对照翻译阅读器」的重要变更。
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.3.6] - 2026-10-03
+
+### 变更
+- **移除「视觉重排」按钮**：视觉判断现在每一页渲染时都默认做，按钮是冗余入口。
+  但它原本还承担"某一页判歪了就重判一次"，所以把这条路换成了**更省事的机制**：
+  每页的视觉缓存记下**当时用的视觉模型名**（`requested`），
+  **换一个视觉模型（`academicReader.visionModel`）→ 该页缓存自动判废、下次渲染重新问一次**。
+  老缓存没有这个字段，就退化成比较"实际服务的模型"——两者相同就不重问，
+  不会因为升级而凭空多花钱。没填具体模型名（沿用问答模型）时不判废，避免误伤。
+- 相应清理：`segmentationEngine` 的设置说明、按钮 HTML 与事件绑定、`dom.visionRestructureBtn`。
+  `requestVisionSegmentation` 的 `manual` 选项随之删除（没有手动入口了）。
+
+### 测试
+- `test:html` 新增 4 条：按钮在宿主 HTML 与 viewer.js 里都不再被引用、同模型缓存照用、
+  **换模型后缓存判废**、没配模型名时不乱判废。
+- `test` 新增 2 条接线断言（按钮已移除、换模型判废机制在位）。
+- 顺手被这些测试抓到并修掉一个真 bug：`isUsableVisionCache` 里我把版本判断写成
+  `if (Number(entry.version) < 2) return false` —— v1 老缓存没有 `version` 字段，
+  `Number(undefined)` 是 `NaN`，`NaN < 2` 为 false，于是**老缓存会漏过版本检查**。
+  改成"不满足 `>= 2` 就拒"（并留了注释）。
+
 ## [1.3.5] - 2026-10-03
 
 ### 变更

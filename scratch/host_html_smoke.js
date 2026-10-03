@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 宿主 HTML 冒烟测试：把 **src/pdfEditorProvider.ts 里真实的 webview HTML 模板**
  * 抽出来，在 jsdom 里加载，再执行 media/viewer.js，然后断言用户的真实界面。
  *
@@ -187,6 +187,9 @@ const exposed =
     getParagraphs: () => currentParagraphs,
     seedPaperData: pd => { paperData = pd; },
     seedVisionSurgery: on => { visionSurgeryAllowed = !!on; },
+    seedVisionModel: m => {
+      configuredVisionModel = String(m || '');
+    },
     getVisionStructureCache: () => paperData.visionStructure,
     // 归档回填：手术会重新编号段落，在途回包必须按内容指纹核对后才许写
     updateArchivedParagraph,
@@ -372,6 +375,24 @@ console.log('\n[视觉分割：把模型的版面判断应用到本页段落]');
     '代码里不再有任何撤销入口（默认每页都套用，不留岔路）',
     !/undoVisionStructure|doUndoVision|撤销本页视觉改动/.test(fs.readFileSync(VIEWER, 'utf8'))
   );
+  // 「视觉重排」按钮也移除了：它是每一页默认行为的冗余入口；"重判本页"改由"换视觉模型"承担
+  check(
+    '「视觉重排」按钮已移除（宿主 HTML 与 viewer.js 都不再引用它）',
+    !/visionRestructureBtn/.test(hostHtml) && !/visionRestructureBtn/.test(fs.readFileSync(VIEWER, 'utf8'))
+  );
+  {
+    const v2 = { version: 2, segments: [{ index: 0, type: 'body' }] };
+    S.seedVisionModel('deepseek-flash');
+    check('同一视觉模型：缓存照用', S.isUsableVisionCache({ ...v2, requested: 'deepseek-flash' }) === true);
+    S.seedVisionModel('qwen-vl-max');
+    check(
+      '换了视觉模型：该页缓存自动判废（下次渲染重判）——这是移除按钮后"重判本页"的唯一入口',
+      S.isUsableVisionCache({ ...v2, requested: 'deepseek-flash' }) === false
+    );
+    S.seedVisionModel('');
+    check('没配具体模型名（沿用问答模型）时不乱判废', S.isUsableVisionCache({ ...v2, requested: 'whatever' }) === true);
+    S.seedVisionModel('');
+  }
 
   // 缓存命中时不应再发请求（由 requestVisionSegmentation 读取缓存分支保证）
   S.seedParagraphs([
@@ -391,7 +412,7 @@ console.log('\n[视觉分割：把模型的版面判断应用到本页段落]');
   // 缓存命中分支在 await 之前就返回，所以这里不 await 也能同步看到效果
   // （这个脚本是 CommonJS，顶层不能出现 await）
   S.seedVisionSurgery(false); // 这一段测的是"关闭手术"的老路径
-  S.requestVisionSegmentation(1, { manual: false });
+  S.requestVisionSegmentation(1);
   check('已有缓存时直接套用、不再调 API', postedMessages.slice(beforeMsgs).every(m => m.type !== 'requestVisionSegmentation'));
   check('缓存套用后类型被改正', S.getParagraphs().find(p => p.id === 0).type === 'formula_inline');
   S.seedVisionSurgery(true);

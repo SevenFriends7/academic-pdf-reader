@@ -1693,6 +1693,19 @@ console.log('\n===== T21 视觉手术（合并 / 拆分 / 图块 / 锚点定位�
       !/const undone = /.test(code)
   );
   checkTrue('v1 协议缓存判废（缺 parts/group/inline）', /Number\(entry\.version\) >= 2/.test(code));
+  // 「视觉重排」按钮也移除：每页默认都做，按钮是冗余入口；"重判本页"改由"换视觉模型"承担
+  const providerSrc = fs.readFileSync(path.join(path.dirname(VIEWER), '..', 'src', 'pdfEditorProvider.ts'), 'utf8');
+  checkTrue(
+    '「视觉重排」按钮已移除（viewer.js 与宿主 HTML 都不再引用）',
+    !/visionRestructureBtn/.test(code) && !/visionRestructureBtn/.test(providerSrc)
+  );
+  checkTrue(
+    '换视觉模型 → 该页视觉缓存判废、下次渲染重判（移除按钮后的重判入口）',
+    /configuredVisionModel/.test(code) &&
+      /entry\.requested === configuredVisionModel/.test(code) &&
+      /!\(Number\(entry\.version\) >= 2\)/.test(code) &&
+      /requested: configuredVisionModel \|\| ''/.test(code)
+  );
   checkTrue('请求视觉时发的是本地未手术的分段', /localParagraphsPage === pageNum && localParagraphsSnapshot \? localParagraphsSnapshot/.test(code));
   checkTrue('手术抛异常时回退到"只改类型"的老路径', /视觉手术失败，回退到只改类型/.test(code));
   checkTrue('设置项可关闭手术（关掉 = 只改类型/顺序/丢弃）', /visionSurgeryAllowed \? applyVisionStructure\(page, result\) : applyVisionSegments\(page, result\)/.test(code));

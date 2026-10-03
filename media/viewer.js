@@ -85,6 +85,14 @@
    */
   let visionEngine = 'local';
   /**
+   * 宿主当前配置的**视觉模型名**（academicReader.visionModel，可能为空 = 沿用问答模型）。
+   *
+   * 它的作用是给"想重判某一页"留一条干净的路：把名字记进每页的视觉缓存，
+   * **换模型后该页缓存自动判废、下次渲染重新问一次**。
+   * 之所以要这条，是因为移除了「视觉重排」按钮——否则遇到判歪的一页就再无手段重判。
+   */
+  let configuredVisionModel = '';
+  /**
    * 是否允许视觉结果**真的改写分段**（合并/拆分），由宿主下发 academicReader.visionSurgery。
    * 关掉就退化成 1.2.0 的行为：只改类型/顺序/丢弃。
    */
@@ -454,7 +462,6 @@
     notesCount: document.getElementById('notesCount'),
     translateAllBtn: document.getElementById('translateAllBtn'),
     exportNotesBtn: document.getElementById('exportNotesBtn'),
-    visionRestructureBtn: document.getElementById('visionRestructureBtn'),
     openSettingsBtn: document.getElementById('openSettingsBtn'),
     btnSettingsRightPane: document.getElementById('btnSettingsRightPane'),
     refreshTransBtn: document.getElementById('refreshTransBtn'),
@@ -673,6 +680,8 @@
         if (msg.segmentationEngine) visionEngine = msg.segmentationEngine;
         // 视觉结果能不能真的改写分段（合并/拆分）：默认允许，宿主可关
         visionSurgeryAllowed = msg.visionSurgery !== false;
+        // 视觉模型名（换模型 → 每页视觉缓存判废重判，见 isUsableVisionCache）
+        if (msg.visionModel !== undefined) configuredVisionModel = String(msg.visionModel || '');
         if (msg.paperData) {
           paperData = msg.paperData;
           // AI 答疑记录随论文数据一起回来（旧版没有这个字段）
@@ -1903,7 +1912,7 @@
       if (engine === 'vision' || (engine === 'auto' && looksLowConfidence(paras))) {
         // 用 setTimeout 让本页先画出来，避免请求把首屏拖慢
         setTimeout(() => {
-          if (currentPage === pageNum) void requestVisionSegmentation(pageNum, { manual: false });
+          if (currentPage === pageNum) void requestVisionSegmentation(pageNum);
         }, 60);
       }
     } catch (e) {
@@ -2870,11 +2879,10 @@
   }
 
   /**
-   * 请求视觉判断。
+   * 请求视觉判断（每一页渲染时默认调用一次，没有手动入口）。
    * @param {number} pageNum
-   * @param {{manual?: boolean}} opts 手动点击时忽略缓存、撤销标记与 auto 判据
    */
-  async function requestVisionSegmentation(pageNum, opts = {}) {
+  async function requestVisionSegmentation(pageNum) {
     if (visionPending.has(pageNum)) return;
     // 【必须发"本地未手术的分段"】否则第二次判断看到的是上一次手术后的结果，
     // 编号与内容都对不上，合并/拆分会被重复叠加（旧版只改类型所以看不出来）。
@@ -2883,8 +2891,7 @@
     if (paragraphs.length === 0) return;
 
     const cached = paperData.visionStructure && paperData.visionStructure[String(pageNum)];
-    // 用户撤销过本页 → 不再自动套用（手动点「视觉重排」才会重新问一次）
-    if (!opts.manual && isUsableVisionCache(cached)) {
+    if (isUsableVisionCache(cached)) {
       const applied = visionSurgeryAllowed ? applyVisionStructure(pageNum, cached) : applyVisionSegments(pageNum, cached);
       showVisionBadge(
         `已用缓存的视觉结果校正本页（${cached.model || '视觉模型'}）：${applied.summary || `校正 ${applied.changed} 处`}`
@@ -3657,7 +3664,11 @@
 
   /**
    * 视觉缓存能不能直接用？
-   * 只认协议版本 ≥2（v1 的回包里没有 parts/group/inline，套用只会得到"类型改了但没真的合并拆分"）。
+   * ① 协议版本必须 ≥2（v1 的回包里没有 parts/group/inline，套用只会得到"类型改了但没真的合并拆分"）；
+   * ② **不能是"用另一个视觉模型判出来的"**：模型换了就重新问一次，这也是移除
+   *    「视觉重排」按钮之后，用户唯一的"重判本页"手段（换模型即可）。
+   *    新缓存记 `requested`（请求时配置的模型名）；老缓存没有这个字段，
+   *    就退化成比较"实际服务的模型"——两者相同就不重问，避免升级后凭空多花钱。
    *
    * 历史遗留的 `disabled` 标记**一律忽略**：那是早期"本页别再自动套用"那个开关写下的，
    * 现在视觉重排是默认行为，不该有哪一页被永久排除在外。
@@ -3665,7 +3676,12 @@
   function isUsableVisionCache(entry) {
     if (!entry) return false;
     if (!Array.isArray(entry.segments) || entry.segments.length === 0) return false;
-    return Number(entry.version) >= 2;
+    // 注意写成"不满足才拒"：v1 老缓存没有 version 字段，Number(undefined) 是 NaN，
+    // 用 `NaN < 2` 判会漏过去（实测被冒烟测试抓到过一次）。
+    if (!(Number(entry.version) >= 2)) return false;
+    if (!configuredVisionModel) return true; // 没配具体模型名（沿用问答模型）→ 无从比较，照用
+    if (entry.requested !== undefined) return entry.requested === configuredVisionModel;
+    return !entry.model || entry.model === configuredVisionModel;
   }
 
   /** 把视觉结果写进论文数据（同一页只花一次钱），由宿主持久化 */
@@ -3675,6 +3691,8 @@
       paperData.visionStructure[String(pageNum)] = {
         version: Number(result && result.version) || 2,
         model: (result && result.model) || '',
+        // 记下"这次是拿哪个视觉模型判的"：换了模型，这页缓存就作废重判（见 isUsableVisionCache）
+        requested: configuredVisionModel || '',
         at: Date.now(),
         columns: result && result.columns,
         fixes: (result && result.fixes) || '',
@@ -7249,15 +7267,9 @@
     });
   });
 
-  // 「视觉重排本页」：手动请视觉模型判断本页版面（忽略缓存与 auto 判据）
-  const visionBtn = dom.visionRestructureBtn || document.getElementById('visionRestructureBtn');
-  if (visionBtn) {
-    visionBtn.addEventListener('click', () => {
-      switchTab('trans');
-      if (!currentParagraphs || currentParagraphs.length === 0) return;
-      void requestVisionSegmentation(currentPage, { manual: true });
-    });
-  }
+  // 「视觉重排」手动按钮已移除：视觉判断在每一页渲染时默认就做（见 buildAcademicLayout 的调度）。
+  // 想重判某一页 → 换一个视觉模型（设置 academicReader.visionModel），缓存会自动判废重判；
+  // 想完全不要视觉改写分段 → 关掉 academicReader.visionSurgery。
 
   dom.refreshTransBtn.addEventListener('click', () => {
     switchTab('trans');
@@ -8065,6 +8077,7 @@ let aiPresetQuestion = '';
     if (msg.segmentationEngine) visionEngine = msg.segmentationEngine;
     // 视觉手术开关（关掉 = 只改类型/顺序/丢弃，不动分段）
     if (msg.visionSurgery !== undefined) visionSurgeryAllowed = msg.visionSurgery !== false;
+    if (msg.visionModel !== undefined) configuredVisionModel = String(msg.visionModel || '');
     syncAiStyleButtons();
     // 引擎标识变化 → 此后段落用新引擎重新翻译（旧引擎的缓存键不再命中）
     if (msg.engineTag && msg.engineTag !== currentEngineTag) {
