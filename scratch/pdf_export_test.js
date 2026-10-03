@@ -373,7 +373,8 @@ function makePaperData() {
     paperData: paperDataNoSnapshotTrans,
     paperName: 'cycle.pdf',
     engineTag: 'engtag',
-    includeAllPages: true
+    includeAllPages: true,
+    fontPathOverride: forcedFont
   });
   const readWholeDoc = async bytes => {
     const d = await pdfjs.getDocument({
@@ -407,7 +408,8 @@ function makePaperData() {
       originalBytes,
       paperData: paperDataByKey,
       paperName: 'cycle.pdf',
-      includeAllPages: true
+      includeAllPages: true,
+      fontPathOverride: forcedFont
     });
     check('快照带 cacheKey 时按它精确回查', (await readWholeDoc(rByKey.bytes)).includes('按cacheKey精确回查到的译文'));
 
@@ -421,7 +423,8 @@ function makePaperData() {
       originalBytes,
       paperData: paperDataLegacy,
       paperName: 'cycle.pdf',
-      includeAllPages: true
+      includeAllPages: true,
+      fontPathOverride: forcedFont
     });
     check('兼容 0.5.1 之前的无标识缓存键', (await readWholeDoc(rLegacy.bytes)).includes('旧版无标识键里的译文'));
   }
