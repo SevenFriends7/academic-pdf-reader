@@ -669,6 +669,10 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
   <header class="app-header">
     <div class="header-left">
       <span class="paper-title" id="paperTitle" title="文献标题">加载中...</span>
+      <!-- 当前实际加载的扩展版本号：由宿主 HTML 直接渲染（不依赖 viewer.js），
+           因此它能可靠地回答"VS Code 到底加载了哪一版扩展"。
+           若这里显示的不是刚安装的版本，说明 VS Code 尚未重新加载扩展（需完全退出后重开）。 -->
+      <span class="ext-version-badge" id="extVersionBadge" title="当前加载的扩展版本；若与刚安装的版本不符，说明 VS Code 还没有重新加载扩展">v${extVersion || '?'}</span>
     </div>
 
     <div class="header-center">

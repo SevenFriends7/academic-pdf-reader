@@ -3595,3 +3595,17 @@ body.theme-paper-dark .article-section-zh {
   margin-left: 6px;
   opacity: 0.75;
 }
+
+/* 工具栏上的扩展版本号：由宿主 HTML 直接渲染，用于确认实际加载的是哪一版扩展 */
+.ext-version-badge {
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: var(--text-muted, #8b949e);
+  border: 1px solid var(--border-color, #3c3c3c);
+  opacity: 0.85;
+  white-space: nowrap;
+  cursor: help;
+}

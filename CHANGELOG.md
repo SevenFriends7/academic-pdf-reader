@@ -5,6 +5,19 @@
 
 ## [Unreleased]
 
+## [0.5.9] - 2026-10-03
+
+### 新增
+- **工具栏显示当前实际加载的扩展版本号**（由**宿主 HTML 直接渲染**，不经过 viewer.js）。
+  它可靠地回答"VS Code 到底加载了哪一版扩展"：若显示的不是刚安装的版本，
+  就说明 VS Code 尚未重新加载扩展（VS Code 只在**启动时**扫描扩展目录，
+  `Reload Window` 不会切换扩展版本），需要**完全退出并重开**。
+
+### 修复
+- **CI / 发布工作流失败（GitHub 一直发失败邮件）**：`package.json` 新增
+  `jsdom` / `eslint` 依赖时未同步更新 `package-lock.json`，导致 CI 的 `npm ci`
+  报 `Missing: … from lock file` 而中断。现已更新锁文件，并在本地用 `npm ci` 实测通过。
+
 ## [0.5.8] - 2026-10-03
 
 ### 修复
