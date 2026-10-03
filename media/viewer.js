@@ -1248,7 +1248,36 @@
      */
     const isAccentItem = i => i.isAccent || (i.width <= 0 && isCombiningMark(i.str));
     const mainItems = list.filter(i => i.size >= maxSize2 * 0.92 && !isAccentItem(i));
-    const mainY = Math.max(...mainItems.map(i => i.y));
+    /*
+     * 主行基线 = "同一字号里**字形最多**的那一行"，平手时取最高的那一行。
+     *
+     * 【为什么不能取 max(y)】一条式子可能同时含两个主级基线：实测 AOT 第 5 页的
+     * `D ∈ R^{M×C}` 里，`D∈R` 在 y=562.69、指数 `M×C` 也是主级字号但基线更高（y=566.31）。
+     * 早先取 max(y) 会把主行定到指数那一行，于是 `D∈R` 被当"上标"，
+     * 转出主语倒置的 `M_{D\in R}\times C`（KaTeX 还照样渲染，肉眼很容易忽略）。
+     * 按"字形数最多的行"取：`D∈R`（3 个）赢过 `M×C`（3 个？实为 2 个），
+     * 而 `{X_{t-1}=\{X_1\}}` 这种全在同一行的式子也自然定对。
+     */
+    const mainY = (() => {
+      const votes = new Map();
+      mainItems.forEach(it => {
+        const key = Math.round(it.y * 10) / 10;
+        const rec = votes.get(key) || { y: key, n: 0 };
+        rec.n++;
+        votes.set(key, rec);
+      });
+      let best = null;
+      votes.forEach(v => {
+        // 平手时取**更低**的那一行：数学排版里主行在下面、上标在上面（取高会把上标当主行）
+        if (!best || v.n > best.n || (v.n === best.n && v.y < best.y)) best = v;
+      });
+      return best ? best.y : (mainItems[0] ? mainItems[0].y : 0);
+    })();
+    /*
+     * 基字符 = 主行上的字形 **+ 与主行同字号但位于同一条式子里的相邻上层/下层主级字形**。
+     * 这里只取同一基线；`M×C` 那种"主级字号但基线更高"的字形留给 scriptItems，
+     * 由 emit 决定它挂在哪个基字符上（结果是 `R^{M\times C}`，语义正确）。
+     */
     const baseItems = mainItems.filter(i => Math.abs(i.y - mainY) <= 0.6).sort((a, b) => a.x - b.x);
     const baseSet = new Set(baseItems);
     const scriptItems = list.filter(it => !baseSet.has(it));
@@ -1257,8 +1286,7 @@
       if (!baseRow.length || depth > 3) return '';
       // 统一到"以本层主行基线为 0"的局部坐标：递归下去的 sub/sup 也一样，判据不必改写
       const originX = Math.min(...baseRow.map(i => i.x));
-      const originY = Math.max(...baseRow.map(i => i.y));
-      const chars = [];
+      const originY = Math.max(...baseRow.map(i => i.y));      const chars = [];
       baseRow.slice().sort((a, b) => a.x - b.x).forEach(it => {
         const prev = chars[chars.length - 1];
         /*
@@ -1356,10 +1384,14 @@
      */
     return emit(baseItems, list, 0)
       .replace(/\s+/g, ' ')
-      .replace(/\s+(?=[^A-Za-z0-9\\])/g, '')
       .replace(/([{(])\s+/g, '$1')
-      // 上下标前的空格也要删：`X _{t}` → `X_{t}`（TeX 里 `_` 紧跟基字符才不歧义）
-      .replace(/\s+([_^])/g, '$1')
+      /*
+       * 空白规范化：数学模式里空格对排版毫无影响，而 PDF 文本层里的空格常常是"字体切换残留"——
+       * 实测 AOT 第 5 页文本层把 `THW` 抽成 `T HW`，于是转出 `^{T HW\times N}`。
+       * 规则：只删"紧邻命令或结构符（`\` / `_` / `^` / `{` / `}`）"的空格；
+       * 字母数字之间的空格保留（`T H W` 这种真·分量写法不动它）。
+       */
+      .replace(/\s+(?=[_^{}\\]|\\[A-Za-z])/g, '')
       .trim();
   }
   /**
@@ -1570,6 +1602,26 @@
     /** box -> 它所在的组（下标）；用于"找与 b 真正重叠的那个字形所在的组" */
     const boxGroup = new Map();
 
+    /*
+     * 字形的**实际推进宽度**（用于一切"间隙/重叠"判据）。
+     *
+     * 【为什么不能直接用 item.width】pdf.js 给的是"这一串字形的推进量，**含前导空白**"：
+     * 实测 AOT 第 5 页的 `T HW`（CMMI7，w=20.33）前面有个多余空格，减去约 1 个空格宽后是 19.26，
+     * 于是 `R`(右边缘 374.43) 与 `T`(起点 374.44) 本应"贴着"（间隙 0.01pt），
+     * 用 20.33 算出来却是 1.08pt 的间隙——虽然还落在容差内，但同类情况一旦再大一点，
+     * 上下标就会掉队成独立式子（`T HW` 与 `× N` 被拆开就是这么来的）。
+     * 这里按"字号 × 0.5 × 前导空格数"估掉空白，宁可略保守也不要虚高。
+     */
+    const advanceOf = it => {
+      const m = /^\s+/.exec(it.str);
+      if (!m) return it.width || 0;
+      return Math.max(0, (it.width || 0) - m[0].length * it.size * 0.5);
+    };
+
+    /** 一个 box 的左右边界（用实际推进宽度，避免空白造成的假间隙） */
+    const boxLeft = b => b.x;
+    const boxRight = b => b.x + advanceOf(b);
+
     const groups = [];
     visible
       .slice()
@@ -1610,8 +1662,8 @@
           let bestRight = -Infinity;
           g.items.forEach(o => {
             if (o.y < rowMid) return; // 只认主行字形（上下标不当锚点）
-            const ov = Math.min(b.x + b.width, o.x + o.width) - Math.max(b.x, o.x);
-            const gap = ov > 0 ? 0 : Math.min(Math.abs(b.x - (o.x + o.width)), Math.abs(o.x - (b.x + b.width)));
+            const ov = Math.min(boxRight(b), boxRight(o)) - Math.max(boxLeft(b), boxLeft(o));
+            const gap = ov > 0 ? 0 : Math.min(Math.abs(boxLeft(b) - boxRight(o)), Math.abs(boxLeft(o) - boxRight(b)));
             if (gap > hGap) return;
             if (o.x + o.width > bestRight) { bestRight = o.x + o.width; best = o; }
           });
@@ -1629,28 +1681,30 @@
            * 两个数一混就把 `−1` 判出局（实测：`X^{t-1}` 被拆成 `X_{t}` + `-1`）。
            * 所以这里统一用"与锚点字形的重叠/间隙"来做全部横向判据。
            */
-          const ov = anchor ? Math.min(b.x + b.width, anchor.x + anchor.width) - Math.max(b.x, anchor.x) : 0;
+          const ov = anchor ? Math.min(boxRight(b), boxRight(anchor)) - Math.max(boxLeft(b), boxLeft(anchor)) : 0;
           const anchorGap = anchor
-            ? Math.max(anchor.x - (b.x + b.width), b.x - (anchor.x + anchor.width))
+            ? Math.max(boxLeft(anchor) - boxRight(b), boxLeft(b) - boxRight(anchor))
             : Infinity; // >0 表示分离，<0 表示重叠
           const touching = ov > 0 || anchorGap <= hGap;
           /*
-           * A) 同基线紧邻：基线差在 vGap 内 + 与锚点相贴。
-           *    【为什么不再要求"字形必须是字母数字"】`X^{t-1}` 里的 `−` 是算子、不是字母数字，
-           *    早先把它排除掉，`−1` 就掉队成独立的一条（实测 `X_{t}` + `-1`）。
-           *    纯标点片段最终会被 `mathItemsToLatex` 的质量闸门丢掉，不会污染界面。
+           * A) 同基线相邻 → 直接拼进主行。
+           *    【必须要求"基线相同"】实测 AOT 第 5 页的 `D ∈ R^{M×C}`：`R`(9.96pt, y=562.69)
+           *    与指数 `M`(6.97pt, y=566.31) 的横向间隙是 **0**，只看"相邻"会把它当主行字形拼上去，
+           *    整条式子于是变成 `M_{D∈R}×C`（主语倒置，KaTeX 照样渲染，肉眼极易放过）。
+           *    相邻但基线不同 → 一律走下面的"上下标"判定。
            */
-          const sameRowAdjacent = Math.abs(dyUp) <= vGap && touching;
+          const sameRowAdjacent = Math.abs(dyUp) <= vGap * 0.5 && touching;
           const hatOn = accent && Math.abs(dyUp) <= b.size * 1.3 + 1 && dyUp >= -1 &&
-            b.x <= host.xEnd + host.baseSize * 0.6 && b.x + b.width >= host.x - 1;
+            boxLeft(b) <= host.xEnd + host.baseSize * 0.6 && boxRight(b) >= host.x - 1;
           const smaller = b.size <= host.baseSize * 0.92;
           const needOv = Math.max(2, 0.25 * Math.max(0.6, b.width));
           /*
-           * 容差 0.6pt：PDF 里"紧挨着"的下标与基字形常常只差 0.0003pt 甚至正好相接
-           * （实测 `X` 的右边缘 390.31432258 与下标 `t` 的 390.314：差 0.0003pt），
-           * 严格 `ov >= 0` 会把 `t` 判成"没贴上"，`X^{t-1}` 于是被拆成 `X` + `t-1`。
+           * 上下标：基线明显偏高（上标）或偏低（下标），横向与锚点有重叠或紧邻。
+           * 容差 0.6pt 是必需的：PDF 里紧挨着的下标与基字形常常只差 0.0003pt
+           * （实测 `X` 右边缘 390.31432258 与下标 `t` 的 390.314），
+           * 严格 `>= 0` 会把 `t` 判成"没贴上"，`X^{t-1}` 于是被拆成 `X` + `t-1`。
            */
-          const scriptOn = !accent && Math.abs(dyUp) > vGap * 0.6 && Math.abs(dyUp) <= vAllow &&
+          const scriptOn = !accent && Math.abs(dyUp) > vGap * 0.5 && Math.abs(dyUp) <= vAllow &&
             (ov >= needOv || (touching && smaller && anchorGap <= 0.6));
           if (sameRowAdjacent || hatOn || scriptOn) {
             host.items.push(b);
@@ -1778,11 +1832,20 @@
     const runs = finalGroups
       .map((g, i) => {
         const its = g.items.slice().sort((a, b) => a.x - b.x || b.y - a.y);
+        /*
+         * 【transform 必须带上字号】这里以前传的是 `[1,0,0,1,x,y]`（单位矩阵），
+         * 而 mathItemsToLatex 是用 `|transform[3]|` 当字号的——于是所有字形都被当成 1pt，
+         * 再靠 `|| height` 兜底成同一个值，**上下标的字号信息就这么被抹掉了**。
+         * 症状：`D ∈ R^{M×C}` 里 `D∈R`(9.96pt) 与指数 `M×C` 被当成同字号，
+         * 主行基线按"字形最多的行"投票时投给了指数那一行，整条式子主语倒置成
+         * `M_{D\in R}\times C`（KaTeX 照样渲染，肉眼极易放过）。
+         * 正确写法：把字号写进 transform 的 [0]/[3]，height 与它保持一致。
+         */
         const latex = mathItemsToLatex(its.map(it => ({
           str: it.str,
-          transform: [1, 0, 0, 1, it.x, it.y],
+          transform: [it.size, 0, 0, it.size, it.x, it.y],
           width: it.width,
-          height: it.height || it.size,
+          height: it.size,
           font: it.font
         })));
         return { id: i, items: its, latex, box: { minX: g.x, maxX: g.xEnd, minY: g.baseY, maxY: g.absTop } };
