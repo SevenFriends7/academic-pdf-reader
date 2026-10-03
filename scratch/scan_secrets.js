@@ -66,6 +66,22 @@ const PATTERNS = [
   { name: '疑似访问令牌（52 位字母数字）', re: /\b[a-z0-9]{52}\b/gi }
 ];
 
+/**
+ * 剔除 npm 的哈希字段后再扫描。
+ *
+ * 为什么需要：package-lock.json 里每个依赖都带 `"integrity": "sha512-<base64>"`，
+ * 其中的 base64 片段常有连续 52 位字母数字，会被上面的宽规则误报成访问令牌——
+ * 实测一次锁文件更新就报了 3 处假阳性，直接把 CI 卡在"密钥泄露扫描"这一步。
+ *
+ * 注意只剔除 integrity 字段与 sha* 哈希本身：
+ * `"resolved": "https://..."` 故意**不**剔除——真实令牌若藏在仓库地址里仍会被抓到。
+ */
+function stripPackageHashes(text) {
+  return text
+    .replace(/("integrity"\s*:\s*)"[^"]*"/g, '$1""')
+    .replace(/\bsha(?:1|256|384|512)-[A-Za-z0-9+/=]+/g, 'sha-<hash>');
+}
+
 /** 允许的"假密钥"：占位符与测试用值 */
 const ALLOW = [
   /sk-invalid-key-for-test/i,
@@ -87,6 +103,7 @@ for (const f of files) {
   } catch {
     continue;
   }
+  text = stripPackageHashes(text);
   for (const p of PATTERNS) {
     p.re.lastIndex = 0;
     let m;
