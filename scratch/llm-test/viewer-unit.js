@@ -1302,13 +1302,16 @@ console.log('\n===== T19 提示条自动消失 与 聚焦条跟随 =====');
   checkTrue('便签图钉也不再挂悬停预览', !/pin\.addEventListener\('mouseenter'/.test(code));
   checkTrue('点击高亮仍能打开批注卡片', /mark\.addEventListener\('click'/.test(code));
 
-  // —— 风格控件必须放在"始终可见"的位置（曾被放到弹窗底部而看不见） ——
+  // —— 风格控件必须放在"永不滚动"的弹窗头部（曾被放进滚动主体而看不见） ——
   checkTrue(
-    '问答弹窗的风格控件位于输入框区域内',
-    /ai-question-input-wrapper">\s*\n\s*<div id="aiModalStyleSlot"/.test(code) ||
-      /ai-question-input-wrapper[\s\S]{0,120}id="aiModalStyleSlot"/.test(code)
+    '问答弹窗的风格槽位位于固定头部内',
+    /ai-modal-header-actions[\s\S]{0,200}id="aiModalStyleSlot"/.test(code) ||
+      /id="aiModalStyleSlot"[\s\S]{0,200}btnClearAiConversation/.test(code)
   );
-  checkTrue('弹窗底部不再重复放一个槽位', (code.match(/id="aiModalStyleSlot"/g) || []).length === 1);
+  checkTrue('不再把槽位放进滚动主体（输入框区域）', !/ai-question-input-wrapper[\s\S]{0,120}id="aiModalStyleSlot"/.test(code));
+  checkTrue('全文档只有一个风格槽位', (code.match(/id="aiModalStyleSlot"/g) || []).length === 1);
+  checkTrue('弹窗标题旁显示扩展版本号（便于确认实际运行版本）', /id="aiModalVersion"/.test(code) && /msg\.extensionVersion/.test(code));
+  checkTrue('宿主下发扩展版本号', /extensionVersion:/.test(ext));
 })();
 
 console.log(`\n===== 结果: ${pass} 通过 / ${fail} 失败 =====`);

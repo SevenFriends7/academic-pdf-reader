@@ -3566,3 +3566,32 @@ body.theme-paper-dark .article-section-zh {
 .ai-style-slot-inline .ai-style-switch {
   margin-top: 0;
 }
+
+/* 回答风格切换放在弹窗**固定头部**（头部不参与滚动，任何情况下都看得见）。
+   此前放在滚动主体的底部/输入框上方，都会被长对话滚出视野。 */
+.ai-modal-header-actions #aiModalStyleSlot {
+  display: flex;
+  align-items: center;
+}
+.ai-modal-header-actions .ai-style-switch {
+  margin-top: 0;
+  margin-right: 8px;
+  gap: 4px;
+  font-size: 10.5px;
+}
+.ai-modal-header-actions .ai-style-btn {
+  padding: 1px 8px;
+  border-radius: 9px;
+  font-size: 10.5px;
+}
+.ai-modal-header-actions .ai-style-label {
+  font-size: 10.5px;
+  opacity: 0.75;
+}
+/* 弹窗标题旁的扩展版本号：截图即可确认实际运行的版本 */
+.ai-modal-version {
+  font-size: 10px;
+  color: var(--text-muted, #8b949e);
+  margin-left: 6px;
+  opacity: 0.75;
+}

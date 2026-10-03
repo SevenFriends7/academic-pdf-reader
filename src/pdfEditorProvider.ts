@@ -321,6 +321,9 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
             engineTag: this.engineTag(),
             available,
             listError,
+            // 把扩展版本号一起下发，弹窗标题旁会显示：用户截图即可确认实际运行的版本，
+            // 避免"改了没生效 / 跑的仍是旧版"这类问题反复排查。
+            extensionVersion: (this.context?.extension?.packageJSON?.version as string) || '',
             hasKey: isOpenAI
               ? !!(cfg.get<string>('apiKey', '') || '').trim()
               : !!this.translator.getGeminiKey(cfg)

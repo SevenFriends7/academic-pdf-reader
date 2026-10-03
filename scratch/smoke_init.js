@@ -181,10 +181,10 @@ if (!modalSlot) {
   console.log('      —— 从笔记卡片点问AI 打开的就是这个弹窗，缺控件就是用户反馈的问题');
   miss++;
 }
-// 控件必须位于输入框区域（始终可见），不能放在会滚出视野的弹窗底部
-const slotInInput = document.querySelector('.ai-question-input-wrapper #aiModalStyleSlot .ai-style-switch');
-console.log(`   控件位置（输入框上方，始终可见）：${slotInInput ? '✅ 正确' : '❌ 位置不在输入框区域'}`);
-if (!slotInInput) miss++;
+// 控件必须位于**固定头部**内（头部不参与滚动，任何情况下都可见）
+const slotInHeader = document.querySelector('.ai-modal-header #aiModalStyleSlot .ai-style-switch');
+console.log(`   控件位置（弹窗固定头部，永不滚走）：${slotInHeader ? '✅ 正确' : '❌ 位置仍会被滚出视野'}`);
+if (!slotInHeader) miss++;
 
 if (miss > 0) {
   console.log('\n⚠️ 初始化未抛异常，但有界面元素没建出来 —— 可能仍有问题');

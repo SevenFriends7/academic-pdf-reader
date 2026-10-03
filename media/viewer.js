@@ -287,8 +287,13 @@
             <div class="ai-modal-title">
               <span>AI 学术文献导师</span>
               <span class="ai-model-tag" id="aiModalModelTag">未连接</span>
+              <span class="ai-modal-version" id="aiModalVersion"></span>
             </div>
             <div class="ai-modal-header-actions">
+              <!-- 回答风格切换放在**固定头部**里：弹窗主体是滚动区域，
+                   此前放在主体内（先在底部、后在输入框上方）都会被滚出视野，
+                   用户反馈"代码在但看不见"。头部永不滚动，放这里必然可见。 -->
+              <div id="aiModalStyleSlot"></div>
               <button id="btnClearAiConversation" class="ai-text-btn" type="button" title="清空对话，另起一个话题">新话题</button>
               <button id="btnCloseAiModal" class="btn-close-mini" title="关闭 (Esc)">&times;</button>
             </div>
@@ -310,7 +315,6 @@
               <span class="ai-loading-text">正在连接...</span>
             </div>
             <div class="ai-question-input-wrapper">
-              <div id="aiModalStyleSlot" class="ai-style-slot-inline"></div>
               <textarea id="aiModalQuestionInput" placeholder="输入你的疑问，回车发送（Shift+回车换行）；可继续追问" rows="2"></textarea>
               <div class="ai-send-group">
                 <button id="btnAnalyzeAiModal" class="btn-analyze-ai" type="button" style="display: none;">开始分析</button>
@@ -6155,6 +6159,12 @@ let aiPresetQuestion = '';
       console.log('[Viewer] 翻译引擎已变化，段落缓存键切换为', currentEngineTag);
     }
     const tag = dom.aiModalModelTag || document.getElementById('aiModalModelTag');
+    // 在弹窗标题旁显示扩展版本号：用户截图时就能确认实际运行的是哪一版，
+    // 避免"改了却没生效 / 跑的还是旧版"这类问题反复靠猜。
+    const versionEl = document.getElementById('aiModalVersion');
+    if (versionEl && msg.extensionVersion) {
+      versionEl.textContent = `v${msg.extensionVersion}`;
+    }
     if (!tag) return;
     // 提示文案跟随引擎：OpenAI 兼容接口走的是 apiKey + modelName，不该提示"设置 Gemini API Key"
     const settingsCmd = '配置学术翻译引擎与 API Key';
