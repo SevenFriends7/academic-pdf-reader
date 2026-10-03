@@ -182,19 +182,19 @@
         },
         "academicReader.aiAnswerStyle": {
           "type": "string",
-          "default": "concise",
+          "default": "standard",
           "enum": [
             "standard",
             "concise",
             "reviewer"
           ],
           "enumDescriptions": [
-            "标准导师：结论 + 必要依据，需要推导时才展开",
-            "极简速读（默认）：结论优先，200 字内讲清",
+            "标准（默认）：结论 + 前置概念解释，一般 300~700 字，需要时展开",
+            "极简速读：200 字内讲清，最省 token",
             "审稿人视角：质疑论证与实验设计，给出追问"
           ],
           "description": "AI 问答的回答风格",
-          "markdownDescription": "AI 问答的回答风格。**默认 concise**（最省 token）：只说结论与必要依据；需要长分析时再切 standard 或 reviewer。输出有硬上限（concise 1024 / standard 2048 / reviewer 4096 token）。"
+          "markdownDescription": "AI 问答的回答风格。**默认 standard**：会先解释术语与前置概念（假设读者基础一般），一般 300~700 字。想最省 token 可切 `concise`；想要更长的审稿式分析用 `reviewer`。三种风格都有硬性输出上限（1024 / 3072 / 4096 token）。"
         },
         "academicReader.apiEndpoint": {
           "type": "string",

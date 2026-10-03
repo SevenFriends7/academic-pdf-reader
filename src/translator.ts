@@ -1409,8 +1409,8 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
     const picked = scored.slice(0, limit);
     if (picked.length === 0) return '';
 
-    // 每段截断：超长段落整段塞进去会让输入 token 迅速膨胀，而提问往往只关心其中一两句
-    const MAX_PER_PARA = 700;
+    // 每段截断：放宽到 1200 字——太短会把"论据所在的那半段"切掉，让 AI 看不到完整上下文
+    const MAX_PER_PARA = 1200;
     return picked
       .map(s => {
         const text = s.text.length > MAX_PER_PARA ? `${s.text.slice(0, MAX_PER_PARA)}…（后略）` : s.text;
@@ -1420,14 +1420,14 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
   }
 
   /**
-   * AI 回答的输出上限（token）——控制花销最硬的闸门。
-   * 旧版把上限给到 8192 / 16384，模型基本会写满：单次问答输出动辄几千 token，
-   * 又慢又费。这里按回答风格设硬上限，配合提示词里的篇幅要求一起压。
+   * AI 回答的输出上限（token）——控制花销的硬闸门，但不能压得太死。
+   * 旧版统一给到 8192 / 16384，模型基本写满（单次回答动辄 1600+ 字）；
+   * 但一味砍短又会让回答"话太少、不够用"，所以按风格分三档。
    */
   private assistantMaxTokens(style: string): number {
-    if (style === 'concise') return 1024;
+    if (style === 'concise') return 1024; // 约 600 汉字以内
     if (style === 'reviewer') return 4096;
-    return 2048;
+    return 3072; // standard：约 800~1000 汉字，够把方法与推导讲清
   }
 
   private buildAssistantPrompt(options: {
@@ -1461,7 +1461,7 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
     if (style === 'concise') {
       parts.push(
         `【回答要求】\n用不超过 200 字直接回答问题本身。先给结论，再给一到两句依据。不要套模板、不要罗列无关背景、不要复述原文。\n` +
-          `注意：问的是通用概念就直接用通用知识回答（不要因为论文里没写就拒答）；问的是本论文的具体内容则只依据上下文，不足就明说。`
+          `注意：即使篇幅短，出现的术语/缩写也要用半句话说明白（读者基础可能一般）；问的是通用概念就直接用通用知识回答（不要因为论文里没写就拒答）；问的是本论文的具体内容则只依据上下文，不足就明说。`
       );
     } else if (style === 'reviewer') {
       parts.push(
@@ -1471,8 +1471,10 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
     } else {
       parts.push(
         `【回答要求】\n直接回答，Markdown。要求：
-1. **篇幅**：正文控制在 300 字内。先给直接结论，再给必要依据；
-   只有问题本身需要推导、对比或举例时才展开，**不要为了显得全面而罗列无关背景**，不要复述原文。
+1. **结论先行，但必须讲到能读懂**：先给结论，紧接着补齐理解它所需的前置概念。
+   假设读者基础一般——出现的术语/缩写/符号要用一句话解释清楚，抽象机制配一个具体例子。
+   一般 300~700 字；涉及推导、对比、机制拆解时可以更长（上限约 1000 字）。
+   不要罗列与问题无关的背景，不要复述原文，不要在结尾写"小结/希望这能帮到你"。
 2. **先分清问题类型**：
    - 问**本论文的具体内容** → 只依据上面提供的上下文；不足以回答时明说"当前上下文未提供"，
      并指出该看论文哪一部分，**严禁编造论文中不存在的内容、数据或结论**；
@@ -1519,14 +1521,16 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
     const ctrl = new AbortController();
     this.aiRequests.set(options.requestId, ctrl);
 
-    const answerStyle = options.answerStyle || cfg.get<string>('aiAnswerStyle', 'concise');
+    // 兜底默认必须与 package.json 里 aiAnswerStyle 的 default 一致（standard），
+    // 否则设置缺失时会悄悄退化成最省的 concise——回答短到基础一般的读者看不懂。
+    const answerStyle = options.answerStyle || cfg.get<string>('aiAnswerStyle', 'standard');
 
-    // 检索上下文：段数与每段长度都收紧。
-    // 旧版最多挂 6 段、每段可上千字符，一次提问光是输入就有好几千 token。
+    // 检索上下文：段数与每段长度都放宽一些——压得太紧会让 AI"视野太窄"，
+    // 问跨段的方法/实验关系时容易答不上来。标准风格给到 6 段，简洁风格 4 段。
     const retrieved = this.retrieveContext(
       `${options.question} ${options.selectedText || ''}`.slice(0, 800),
       options.page || 1,
-      answerStyle === 'concise' ? 3 : 4
+      answerStyle === 'concise' ? 4 : 6
     );
 
     const prompt = this.buildAssistantPrompt({
@@ -1550,12 +1554,16 @@ B. **通用概念 / 术语 / 背景知识**，或读者的发散思考、联想�
 
 共同要求：
 - 直接输出 Markdown 正文，不要客套话、不要重复问题、不要在结尾写"小结/希望这能帮到你"这类空话。
-- **篇幅要给得住**：默认短答（结论 + 必要依据），只有问题本身需要推导或对比时才展开；不要为了显得全面而罗列无关背景。`;
+- **假设读者的基础一般**：不要默认对方熟悉这个细分方向的术语和套路。
+  涉及专业术语、缩写、符号时，先用一句话说明"它是什么、为什么需要它"，再进入分析；
+  抽象的机制尽量配一个具体例子（哪怕是最小化的例子）。**这是回答能不能被读懂的关键**。
+- **篇幅要给得住**：结论先行，然后补齐理解所必需的来龙去脉。
+  该展开就展开，但不要为了显得全面而罗列与问题无关的背景。`;
 
-    // 多轮：只带最近 4 轮，且每轮内容截断——否则上一轮的长回答会被反复重发，输入 token 越滚越大
+    // 多轮：带最近 6 轮（每轮截断 1200 字）——太少会让"接着上一个问题问"失去上下文
     const turns: LlmTurn[] = [];
     (options.history || [])
-      .slice(-4)
+      .slice(-6)
       .forEach(h => turns.push({ role: h.role, text: (h.text || '').slice(0, 1200) }));
     turns.push({ role: 'user', text: prompt });
 
