@@ -39,6 +39,20 @@
   let focusFollowBound = false;
   // 右下角提示条：自动消失，鼠标悬停暂停计时
   let readerToastTimer = null;
+
+  /**
+   * 回答风格三档的定义。
+   *
+   * 【必须放在最前面】这里是 const（存在暂时性死区），而创建批注卡片时会调用
+   * createAiStyleSwitch() 读它——若把定义写在文件后部，初始化阶段就会抛
+   * "Cannot access 'AI_STYLES' before initialization"，导致后续的 PDF 加载、
+   * 翻译、主题应用全部中断（用户看到的现象：PDF 空白 + 无译文 + 主题错乱）。
+   */
+  const AI_STYLES = [
+    { key: 'concise', label: '简洁', tip: '200 字内讲清，最省 token' },
+    { key: 'standard', label: '标准', tip: '先解释术语与前置概念，一般 300~700 字（默认）' },
+    { key: 'reviewer', label: '审稿', tip: '以审稿人视角质疑论证与实验设计' }
+  ];
   let activeContextAnnot = null;
   let currentEditingAnnot = null;
   let currentNotesSearchQuery = '';
@@ -5851,17 +5865,13 @@ let aiPresetQuestion = '';
 
   // ====================== 回答风格切换（所有 AI 入口共用一份定义） ======================
   /**
-   * 三档风格的定义只写在这里，控件由 createAiStyleSwitch() 产出。
+   * 三档风格的**定义已前移到文件顶部**（AI_STYLES，必须早于任何调用点，
+   * 否则初始化阶段会因暂时性死区报错）。这里只放行为函数。
    *
    * 为什么要共用：AI 提问有两个入口（问答弹窗、批注卡片的「AI 提问」栏），
    * 之前把按钮硬编码在弹窗 HTML 里，批注入口就漏掉了——用户从批注点进去没有切换控件。
    * 现在任何新增的 AI 入口只要 append 一个 createAiStyleSwitch() 即可，不会再漏。
    */
-  const AI_STYLES = [
-    { key: 'concise', label: '简洁', tip: '200 字内讲清，最省 token' },
-    { key: 'standard', label: '标准', tip: '先解释术语与前置概念，一般 300~700 字（默认）' },
-    { key: 'reviewer', label: '审稿', tip: '以审稿人视角质疑论证与实验设计' }
-  ];
 
   /** 切换风格：立即生效（本地 aiStyle）+ 写回设置（重载后保留） */
   function applyAiStyle(style) {

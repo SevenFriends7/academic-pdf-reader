@@ -1200,6 +1200,26 @@ console.log('\n===== T18 回答风格切换控件 =====');
   );
   checkTrue('按钮由工厂生成，而不是 HTML 里硬编码', !/data-style="concise"/.test(code) && /data-style="\$\{s\.key\}"/.test(code));
 
+  // 【关键守卫】AI_STYLES 是 const（暂时性死区），创建批注卡片时会间接调用
+  // createAiStyleSwitch() 去读它。若定义晚于调用点，初始化阶段就抛
+  // "Cannot access 'AI_STYLES' before initialization"，
+  // 后果是 PDF 不加载、不翻译、主题错乱——正是线上真实出现过的事故。
+  const srcLines = code.split('\n');
+  const defLine = srcLines.findIndex(l => /^\s*const AI_STYLES = \[/.test(l)) + 1;
+  const callLines = [];
+  srcLines.forEach((l, i) => {
+    const trimmed = l.trim();
+    // 跳过注释行：注释里提到函数名不算调用点
+    if (trimmed.startsWith('*') || trimmed.startsWith('//') || trimmed.startsWith('/*')) return;
+    if (/createAiStyleSwitch\(\)/.test(l) && !/function createAiStyleSwitch/.test(l)) callLines.push(i + 1);
+  });
+  const firstCall = callLines.length ? Math.min(...callLines) : Infinity;
+  checkTrue(
+    'AI_STYLES 定义早于所有 createAiStyleSwitch() 调用点（防暂时性死区崩溃）',
+    defLine > 0 && defLine < firstCall,
+    `定义在第 ${defLine} 行，最早调用在第 ${firstCall} 行`
+  );
+
   const styles = ['concise', 'standard', 'reviewer'];
   const missing = styles.filter(s => !code.includes(`key: '${s}'`));
   checkTrue(`三档齐全（${styles.join(' / ')}）`, missing.length === 0, `缺少 ${missing.join(',')}`);
