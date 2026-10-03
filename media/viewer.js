@@ -144,7 +144,7 @@
   const AI_STYLES = [
     { key: 'concise', label: '简洁', tip: '200 字内讲清，最省 token' },
     { key: 'standard', label: '标准', tip: '先解释术语与前置概念，一般 300~700 字（默认）' },
-    { key: 'reviewer', label: '审稿', tip: '以审稿人视角质疑论证与实验设计' }
+    { key: 'expert', label: '专家', tip: '通读论文全文后不限篇幅深度作答（更慢、更费 token）' }
   ];
 
   /**
@@ -7869,10 +7869,19 @@ let aiPresetQuestion = '';
    * 现在任何新增的 AI 入口只要 append 一个 createAiStyleSwitch() 即可，不会再漏。
    */
 
+  /**
+   * 回答风格归一：旧档位 `reviewer`（审稿）已改名为 `expert`（专家）。
+   * 老设置里存的仍是 'reviewer'，不归一就会出现"三个按钮全不高亮、实际用的是别的档"。
+   */
+  function normalizeAiStyle(style) {
+    const v = String(style || '').trim();
+    if (v === 'reviewer') return 'expert';
+    return AI_STYLES.some(s => s.key === v) ? v : 'standard';
+  }
+
   /** 切换风格：立即生效（本地 aiStyle）+ 写回设置（重载后保留） */
   function applyAiStyle(style) {
-    const valid = AI_STYLES.some(s => s.key === style);
-    const next = valid ? style : 'standard';
+    const next = normalizeAiStyle(style);
     aiStyle = next;
     syncAiStyleButtons();
     vscode.postMessage({ type: 'setAnswerStyle', style: next });
@@ -7959,9 +7968,72 @@ let aiPresetQuestion = '';
     if (modal) modal.style.display = 'none';
   }
 
+  /**
+   * 把**整篇文献**的文本抽出来（专家模式用）。
+   *
+   * 为什么必须现抽：宿主侧只有"用户翻过的页"（翻页时逐页 syncPageText 上来的），
+   * 检索式上下文更是只挑 6 段——而专家模式要的是**整篇**。
+   * 所以这里用 webview 手里本来就有的 pdf.js，把所有页的文本层拉一遍拼成一整份，
+   * 并缓存起来（同一篇只抽一次；换论文会重建 webview，缓存自然失效）。
+   */
+  let wholePaperTextCache = '';
+  async function collectWholePaperText() {
+    if (wholePaperTextCache) return wholePaperTextCache;
+    if (!pdfDoc) return '';
+    const n = Math.max(1, Math.min(Number(totalPages) || 0, 120)); // 上限防呆：别把上千页的文档拖死
+    const chunks = [];
+    for (let p = 1; p <= n; p++) {
+      if (p === 1 || p % 5 === 0) setAiLoading(true, `专家模式：正在通读全文…（${p}/${n} 页）`);
+      try {
+        const page = await pdfDoc.getPage(p);
+        const tc = await page.getTextContent();
+        const items = (tc.items || []).filter(it => it && typeof it.str === 'string' && it.str.trim());
+        let out = '';
+        let line = '';
+        let lastY = null;
+        items.forEach(it => {
+          const y = Array.isArray(it.transform) ? Math.round(it.transform[5]) : null;
+          // 按 y 相近聚行：文本层是一堆碎片，换行必须自己还原，否则整页会粘成一坨
+          if (lastY !== null && y !== null && Math.abs(y - lastY) > 2.5 && line) {
+            out += `${line.trim()}\n`;
+            line = '';
+          }
+          line += it.str;
+          if (it.hasEOL && line) {
+            out += `${line.trim()}\n`;
+            line = '';
+          }
+          if (y !== null) lastY = y;
+        });
+        if (line.trim()) out += line.trim();
+        if (out.trim()) chunks.push(`【第 ${p} 页】\n${out.trim()}`);
+      } catch (e) {
+        console.warn(`[Viewer] 抽取第 ${p} 页文本失败（跳过该页）:`, e);
+      }
+    }
+    wholePaperTextCache = chunks.join('\n\n');
+    return wholePaperTextCache;
+  }
+
   /** 统一的流式提问入口：弹窗与批注气泡共用同一套回调协议 */
-  function streamAiQuestion(opts) {
+  async function streamAiQuestion(opts) {
     aiPending.set(opts.requestId, opts);
+
+    /*
+     * 专家模式：先把**整篇文献**抽出来一起发过去（只抽一次，之后走缓存）。
+     * 放在这里而不是"翻页时顺手同步"，是因为专家模式要的是全篇，
+     * 而用户很可能只翻过其中几页——那些页面上根本没有的段落，模型也该看得到。
+     */
+    let fullText = '';
+    if ((aiStyle || '') === 'expert') {
+      try {
+        fullText = await collectWholePaperText();
+        if (fullText) showReaderToast(`专家模式：已通读全文 ${fullText.length} 字`);
+      } catch (e) {
+        console.warn('[Viewer] 全文抽取失败（回退到分段检索）:', e);
+      }
+    }
+
     vscode.postMessage({
       type: 'requestAiQuestion',
       requestId: opts.requestId,
@@ -7971,6 +8043,7 @@ let aiPresetQuestion = '';
       page: opts.page || currentPage,
       noteType: opts.noteType || '疑难待查',
       answerStyle: aiStyle || '',
+      fullText,
       history: opts.history || []
     });
   }
@@ -8003,7 +8076,7 @@ let aiPresetQuestion = '';
     const requestId = 'ai_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
     aiCurrentRequestId = requestId;
 
-    streamAiQuestion({
+    void streamAiQuestion({
       requestId,
       question,
       selectedText: currentAiContext.selectedText,
@@ -8108,7 +8181,7 @@ let aiPresetQuestion = '';
     aiLastModel = msg.configuredAiModel || msg.configuredModel || '';
     aiEngineIsOpenAI = !!msg.isOpenAI;
     // 回答风格改为由设置项 academicReader.aiAnswerStyle 驱动，弹窗里不再放下拉框
-    if (msg.answerStyle) aiStyle = msg.answerStyle;
+    if (msg.answerStyle) aiStyle = normalizeAiStyle(msg.answerStyle);
     // 版面分割引擎（vision / auto / local）
     if (msg.segmentationEngine) visionEngine = msg.segmentationEngine;
     // 视觉手术开关（关掉 = 只改类型/顺序/丢弃，不动分段）
@@ -8239,7 +8312,7 @@ let aiPresetQuestion = '';
       answerContent._rawAnswer = '';
     }
 
-    streamAiQuestion({
+    void streamAiQuestion({
       requestId,
       question,
       selectedText: quoteText,

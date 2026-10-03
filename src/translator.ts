@@ -1628,12 +1628,53 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
   /**
    * AI 回答的输出上限（token）——控制花销的硬闸门，但不能压得太死。
    * 旧版统一给到 8192 / 16384，模型基本写满（单次回答动辄 1600+ 字）；
-   * 但一味砍短又会让回答"话太少、不够用"，所以按风格分三档。
+   * 但一味砍短又会让回答"话太少、不够用"，所以按风格分档。
+   *
+   * **专家模式不设人为上限**（给到接口能接受的最大值）：它本来就是"读完全篇、把该讲的讲透"，
+   * 再卡一个 4096 就变成"起了个专家的头、只给标准的量"。
    */
   private assistantMaxTokens(style: string): number {
     if (style === 'concise') return 1024; // 约 600 汉字以内
-    if (style === 'reviewer') return 4096;
+    if (style === 'expert') return 16384; // 专家：不限篇幅（= 接口上限）
     return 3072; // standard：约 800~1000 汉字，够把方法与推导讲清
+  }
+
+  /**
+   * 回答风格归一。`reviewer`（审稿）已改名为 `expert`（专家）——
+   * 老设置里存的还是 'reviewer'，不归一就会落到"没有一档匹配"、悄悄退化成默认风格。
+   */
+  private normalizeAnswerStyle(style?: string): string {
+    const v = String(style || '').trim();
+    if (v === 'reviewer') return 'expert';
+    if (v === 'concise' || v === 'standard' || v === 'expert') return v;
+    return 'standard';
+  }
+
+  /**
+   * 专家模式的**全篇**上下文。
+   *
+   * 优先用 webview 现抽的整篇文本（它会用 pdf.js 把所有页都拉一遍，
+   * 包括用户没翻过的页）；拿不到就退化成宿主已有的逐页文本索引（= 翻过的页），
+   * 至少比"只给 6 段检索结果"强。
+   */
+  private buildWholePaperContext(fullText?: string): string {
+    let text = String(fullText || '').trim();
+    if (!text) {
+      const pages: number[] = [];
+      this.pageTextIndex.forEach((_v, page) => pages.push(page));
+      pages.sort((a, b) => a - b);
+      text = pages
+        .map(p => `【第 ${p} 页】\n${(this.pageTextIndex.get(p) || []).map(x => x.text).join('\n\n')}`)
+        .join('\n\n')
+        .trim();
+    }
+    if (!text) return '';
+    // 60k 字符 ≈ 2~3 万 token，足够一篇常规论文（正文 8~20 页）；再长就截断并**如实说明**
+    const MAX = 60000;
+    if (text.length > MAX) {
+      return `${text.slice(0, MAX)}\n\n（全文过长，已截断到前 ${MAX} 字；后面部分未提供）`;
+    }
+    return text;
   }
 
   private buildAssistantPrompt(options: {
@@ -1643,10 +1684,17 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
     page?: number;
     noteType?: string;
     retrieved?: string;
+    wholePaper?: string;
     answerStyle?: string;
   }): string {
     const parts: string[] = [];
     parts.push(`你正在协助读者精读一篇学术论文（当前第 ${options.page || 1} 页）。`);
+
+    if (options.wholePaper && options.wholePaper.trim()) {
+      parts.push(
+        `【论文全文（自动从 PDF 文本层抽取，可能有排版错乱或个别字丢失；涉及本文事实时以它为准）】\n${options.wholePaper.trim()}`
+      );
+    }
 
     if (options.selectedText && options.selectedText.trim()) {
       parts.push(`【读者聚焦的原文】\n${options.selectedText.trim()}`);
@@ -1663,16 +1711,22 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
 
     parts.push(`【读者的疑问】\n${options.question.trim()}`);
 
-    const style = options.answerStyle || 'standard';
+    const style = this.normalizeAnswerStyle(options.answerStyle);
     if (style === 'concise') {
       parts.push(
         `【回答要求】\n用不超过 200 字直接回答问题本身。先给结论，再给一到两句依据。不要套模板、不要罗列无关背景、不要复述原文。\n` +
           `注意：即使篇幅短，出现的术语/缩写也要用半句话说明白（读者基础可能一般）；问的是通用概念就直接用通用知识回答（不要因为论文里没写就拒答）；问的是本论文的具体内容则只依据上下文，不足就明说。`
       );
-    } else if (style === 'reviewer') {
+    } else if (style === 'expert') {
       parts.push(
-        `【回答要求】\n以审稿人视角回答：指出该论述/方法在逻辑、实验设计或论证强度上的可疑之处，给出具体的追问与验证建议。使用 Markdown，分点作答。\n` +
-          `注意：批评本论文时必须基于上面提供的上下文，不要凭空指责论文里根本没有的写法；若问题本身与论文无关，就按问题本身来谈。`
+        `【回答要求】\n你手上已经有**这篇论文的全文**，请通读之后回答（需要时引用具体页码/小节/公式编号）。用 Markdown，分点作答。\n` +
+          `1. **不限篇幅**：不要为了简短而省略推导、前提条件、对比与边界情形——该讲多细就讲多细，几千字也可以。\n` +
+          `   宁可写长，也不要留一个"读者还得自己去猜"的结论。\n` +
+          `2. **深度优先**：先给结论，再把"为什么成立 / 在什么条件下成立 / 作者这一步可能被质疑在哪"讲透。\n` +
+          `3. **事实只依据全文**：涉及本论文的数据、结论、公式、实验设置，只能用上面给的全文；\n` +
+          `   全文里找不到就明说"全文未提供"，**严禁编造**。通用背景知识与本论文结论要分清来源、分开表述。\n` +
+          `4. 术语/符号第一次出现时用一句话解释清楚（读者基础可能一般）。\n` +
+          `5. 不要客套话、不要复述问题、不要在结尾写"小结/希望这能帮到你"。`
       );
     } else {
       parts.push(
@@ -1706,6 +1760,8 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
       noteType?: string;
       history?: LlmTurn[];
       answerStyle?: string;
+      /** 专家模式：webview 现抽的**整篇文献**文本（所有页，含用户没翻过的页） */
+      fullText?: string;
     },
     onDelta: (chunk: string) => void
   ): Promise<AcademicAnswer> {
@@ -1729,19 +1785,26 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
 
     // 兜底默认必须与 package.json 里 aiAnswerStyle 的 default 一致（standard），
     // 否则设置缺失时会悄悄退化成最省的 concise——回答短到基础一般的读者看不懂。
-    const answerStyle = options.answerStyle || cfg.get<string>('aiAnswerStyle', 'standard');
+    const answerStyle = this.normalizeAnswerStyle(options.answerStyle || cfg.get<string>('aiAnswerStyle', 'standard'));
+    const isExpert = answerStyle === 'expert';
 
-    // 检索上下文：段数与每段长度都放宽一些——压得太紧会让 AI"视野太窄"，
-    // 问跨段的方法/实验关系时容易答不上来。标准风格给到 6 段，简洁风格 4 段。
-    const retrieved = this.retrieveContext(
-      `${options.question} ${options.selectedText || ''}`.slice(0, 800),
-      options.page || 1,
-      answerStyle === 'concise' ? 4 : 6
-    );
+    // 专家模式：把**整篇文献**塞进上下文（webview 现抽的全文优先）；
+    // 其余风格仍走"当前段 + 检索最相关的 6 段"——不是为了省钱才这么分，
+    // 而是短问答带上 3 万 token 的全文既慢又会让模型抓不住重点。
+    const wholePaper = isExpert ? this.buildWholePaperContext(options.fullText) : '';
+
+    const retrieved = isExpert
+      ? ''
+      : this.retrieveContext(
+          `${options.question} ${options.selectedText || ''}`.slice(0, 800),
+          options.page || 1,
+          answerStyle === 'concise' ? 4 : 6
+        );
 
     const prompt = this.buildAssistantPrompt({
       ...options,
       retrieved,
+      wholePaper,
       answerStyle
     });
 
@@ -1764,7 +1827,15 @@ B. **通用概念 / 术语 / 背景知识**，或读者的发散思考、联想�
   涉及专业术语、缩写、符号时，先用一句话说明"它是什么、为什么需要它"，再进入分析；
   抽象的机制尽量配一个具体例子（哪怕是最小化的例子）。**这是回答能不能被读懂的关键**。
 - **篇幅要给得住**：结论先行，然后补齐理解所必需的来龙去脉。
-  该展开就展开，但不要为了显得全面而罗列与问题无关的背景。`;
+  该展开就展开，但不要为了显得全面而罗列与问题无关的背景。` +
+      (isExpert
+        ? `
+
+【本次是「专家模式」】用户已经把手上的**论文全文**一并给你了（见上面的【论文全文】）。
+- 请先在脑子里通读全篇，再回答；需要时引用具体页码/小节/公式编号，让读者能按图索骥。
+- **不要自我限长**：该写多少就写多少（几千字都可以），不要因为"怕太长"而砍掉推导、条件或边界讨论。
+- 涉及本文事实时以全文为准；全文没有的就明说"全文未提供"，绝不编造。`
+        : '');
 
     // 多轮：带最近 6 轮（每轮截断 1200 字）——太少会让"接着上一个问题问"失去上下文
     const turns: LlmTurn[] = [];

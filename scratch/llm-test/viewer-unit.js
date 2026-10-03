@@ -1258,26 +1258,51 @@ console.log('\n===== T18 回答风格切换控件 =====');
     `定义在第 ${defLine} 行，最早调用在第 ${firstCall} 行`
   );
 
-  const styles = ['concise', 'standard', 'reviewer'];
+  const styles = ['concise', 'standard', 'expert'];
   const missing = styles.filter(s => !code.includes(`key: '${s}'`));
   checkTrue(`三档齐全（${styles.join(' / ')}）`, missing.length === 0, `缺少 ${missing.join(',')}`);
   checkTrue('点击后写回设置（否则重载就丢）', /type: 'setAnswerStyle', style: next/.test(code));
-  checkTrue('切换函数有三档校验（非法值回落 standard）', /const valid = AI_STYLES\.some\(s => s\.key === style\)/.test(code));
+  checkTrue(
+    '切换函数有三档校验（非法值回落 standard）',
+    /function normalizeAiStyle\(style\)/.test(code) && /return AI_STYLES\.some\(s => s\.key === v\) \? v : 'standard'/.test(code)
+  );
+  checkTrue(
+    '旧档位 reviewer（审稿）被归一为 expert（专家）',
+    /if \(v === 'reviewer'\) return 'expert'/.test(code)
+  );
   checkTrue('切换后立刻给用户反馈', /showReaderToast\(`回答风格：/.test(code));
   checkTrue('有高亮当前档位的函数（作用于所有入口）', /function syncAiStyleButtons\(\)/.test(code) && /document\.querySelectorAll\('\.ai-style-btn'\)/.test(code));
   checkTrue(
-    'modelInfo 到达后刷新高亮',
+    'modelInfo 到达后刷新高亮（且风格名先归一）',
     (() => {
       const fn = code.slice(code.indexOf('function handleModelInfo('));
       const body = fn.slice(0, fn.indexOf('\n  }'));
-      return /aiStyle = msg\.answerStyle/.test(body) && /syncAiStyleButtons\(\)/.test(body);
+      return /aiStyle = normalizeAiStyle\(msg\.answerStyle\)/.test(body) && /syncAiStyleButtons\(\)/.test(body);
     })()
   );
   checkTrue('提问请求带上所选风格', /answerStyle: aiStyle \|\| ''/.test(code));
+  // 专家模式：必须把**整篇文献**一起发过去（不是"翻过的页"）
+  checkTrue(
+    '专家模式会先抽取整篇文献再提问',
+    /async function collectWholePaperText\(\)/.test(code) &&
+      /if \(\(aiStyle \|\| ''\) === 'expert'\)/.test(code) &&
+      /fullText = await collectWholePaperText\(\)/.test(code) &&
+      /answerStyle: aiStyle \|\| '',\s*\n\s*fullText,/.test(code)
+  );
+  checkTrue('全文抽取走 pdf.js 逐页取文本层，并缓存（只抽一次）', /pdfDoc\.getPage\(p\)/.test(code) && /wholePaperTextCache = chunks\.join/.test(code));
   const ext = fs.readFileSync(path.join(path.dirname(VIEWER), '..', 'src', 'pdfEditorProvider.ts'), 'utf8');
   checkTrue(
-    '宿主侧处理 setAnswerStyle 并校验取值',
-    /case 'setAnswerStyle'/.test(ext) && /\['concise', 'standard', 'reviewer'\]\.includes\(message\.style\)/.test(ext)
+    '宿主侧处理 setAnswerStyle 并校验取值（旧名 reviewer 写回时归一成 expert）',
+    /case 'setAnswerStyle'/.test(ext) && /\['concise', 'standard', 'expert'\]\.includes\(raw\)/.test(ext)
+  );
+  checkTrue('宿主把整篇文献透传给 AI（fullText）', /fullText: typeof fullText === 'string' \? fullText : ''/.test(ext));
+  const translatorSrc = fs.readFileSync(path.join(path.dirname(VIEWER), '..', 'src', 'translator.ts'), 'utf8');
+  checkTrue(
+    '专家模式：整篇上下文 + 不限篇幅 + 拆掉输出上限',
+    /private buildWholePaperContext\(/.test(translatorSrc) &&
+      /if \(style === 'expert'\) return 16384/.test(translatorSrc) &&
+      /\*\*不限篇幅\*\*/.test(translatorSrc) &&
+      /const wholePaper = isExpert \? this\.buildWholePaperContext\(options\.fullText\) : ''/.test(translatorSrc)
   );
   const css = fs.readFileSync(path.join(path.dirname(VIEWER), 'viewer.css'), 'utf8');
   checkTrue('样式已定义（含 active 高亮）', /\.ai-style-btn\.active\s*\{/.test(css));

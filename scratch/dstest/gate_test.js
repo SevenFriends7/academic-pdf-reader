@@ -190,5 +190,32 @@ check(
   (viewerSrc.match(/sent-zh">\$\{renderEnTextHtml\(/g) || []).length === 2 && /zh-paragraph-plain">\$\{renderEnTextHtml\(/.test(viewerSrc)
 );
 
+console.log('\n[9] 专家模式：整篇上下文 + 不限篇幅');
+{
+  const whole = `【第 1 页】\n我们提出 cycle-ERF……\n${'x'.repeat(200)}`;
+  const p = t.buildAssistantPrompt({ question: '这篇论文的核心方法是什么？', selectedText: '', wholePaper: whole, answerStyle: 'expert' });
+  check('整篇全文进了提示词（不只当前段 + 检索片段）', p.includes('论文全文') && p.includes('cycle-ERF'));
+  check('专家档明确要求"不限篇幅 / 深度优先"', /不限篇幅/.test(p) && /深度优先/.test(p));
+  check('涉及本文事实只能依据全文、严禁编造', /严禁编造/.test(p));
+  check(
+    '输出上限：专家 > 标准 > 简洁（专家等于接口上限，不再人为压到 4096）',
+    t.assistantMaxTokens('expert') > t.assistantMaxTokens('standard') &&
+      t.assistantMaxTokens('standard') > t.assistantMaxTokens('concise') &&
+      t.assistantMaxTokens('expert') >= 16384,
+    `expert=${t.assistantMaxTokens('expert')} standard=${t.assistantMaxTokens('standard')} concise=${t.assistantMaxTokens('concise')}`
+  );
+  check(
+    '旧档位 reviewer 归一为 expert，空值回落 standard',
+    t.normalizeAnswerStyle('reviewer') === 'expert' &&
+      t.normalizeAnswerStyle('expert') === 'expert' &&
+      t.normalizeAnswerStyle('') === 'standard' &&
+      t.normalizeAnswerStyle('乱写的') === 'standard'
+  );
+  const long = t.buildWholePaperContext('Y'.repeat(70000));
+  check('全文过长时截断，并如实说明"后面部分未提供"', long.length < 70000 && /已截断/.test(long), `${long.length} 字`);
+  const fallback = t.buildWholePaperContext('');
+  check('拿不到现抽全文时回退到逐页索引（不报错）', typeof fallback === 'string');
+}
+
 console.log(`\n===== 结果: ${pass} 通过 / ${fail} 失败 =====`);
 process.exit(fail > 0 ? 1 : 0);

@@ -204,7 +204,11 @@ const exposed =
     renderInlineMarkdown,
     renderEnTextHtml,
     renderCardFormulaHtml,
-    seedMeta: opts => { if (opts && Number.isFinite(opts.totalPages)) totalPages = opts.totalPages; }
+    seedMeta: opts => { if (opts && Number.isFinite(opts.totalPages)) totalPages = opts.totalPages; },
+    // AI 回答风格：专家模式（旧档位 reviewer 已改名）
+    applyAiStyle,
+    getAiStyle: () => aiStyle,
+    collectWholePaperText
   };\n` +
   code.slice(idx);
 
@@ -274,7 +278,7 @@ check('宿主 HTML 自带 #aiAssistantModal（viewer.js 不会再重建它）', 
 check(
   '回答风格切换控件存在于弹窗内',
   !!document.querySelector('#aiAssistantModal .ai-style-switch'),
-  '三档：简洁 / 标准 / 审稿'
+  '三档：简洁 / 标准 / 专家'
 );
 check(
   '控件位于**固定头部**（长对话也不会被滚出视野）',
@@ -883,13 +887,23 @@ check('批注气泡里只有一份风格切换', document.querySelectorAll('.ai-
 check('弹窗里只有一份版本号', document.querySelectorAll('#aiAssistantModal #aiModalVersion').length === 1);
 
 // 切换风格：两个入口必须同步高亮（同一份状态）
-const reviewerBtn = document.querySelector('#aiAssistantModal .ai-style-btn[data-style="reviewer"]');
-if (reviewerBtn) reviewerBtn.click();
+const expertBtn = document.querySelector('#aiAssistantModal .ai-style-btn[data-style="expert"]');
+if (expertBtn) expertBtn.click();
 check(
-  '点「审稿」后，弹窗与批注栏两处控件同步高亮',
+  '点「专家」后，弹窗与批注栏两处控件同步高亮',
   document.querySelectorAll('.ai-style-btn').length === 6 &&
     document.querySelectorAll('.ai-style-btn.active').length === 2 &&
-    Array.from(document.querySelectorAll('.ai-style-btn.active')).every(b => b.getAttribute('data-style') === 'reviewer')
+    Array.from(document.querySelectorAll('.ai-style-btn.active')).every(b => b.getAttribute('data-style') === 'expert')
+);
+// 旧档位名 'reviewer' 必须被归一成 'expert'，否则老设置会让三个按钮全不高亮
+check(
+  '旧档位 reviewer 自动归一为 expert',
+  (() => {
+    S.applyAiStyle('reviewer');
+    const active = Array.from(document.querySelectorAll('.ai-style-btn.active'));
+    return active.length > 0 && active.every(b => b.getAttribute('data-style') === 'expert');
+  })(),
+  Array.from(document.querySelectorAll('.ai-style-btn.active')).map(b => b.getAttribute('data-style')).join(',')
 );
 
 if (miss > 0) {

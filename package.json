@@ -7,7 +7,7 @@
     "color": "#0b578a",
     "theme": "dark"
   },
-  "version": "1.3.7",
+  "version": "1.3.8",
   "publisher": "paper-reader",
   "license": "MIT",
   "repository": {
@@ -191,12 +191,12 @@
           "enum": [
             "standard",
             "concise",
-            "reviewer"
+            "expert"
           ],
           "enumDescriptions": [
             "标准（默认）：结论 + 前置概念解释，一般 300~700 字，需要时展开",
             "极简速读：200 字内讲清，最省 token",
-            "审稿人视角：质疑论证与实验设计，给出追问"
+            "专家：通读论文全文后不限篇幅深度作答（更慢、更费 token）"
           ],
           "description": "AI 问答的回答风格",
           "markdownDescription": "AI 问答的回答风格。**默认 standard**：会先解释术语与前置概念（假设读者基础一般），一般 300~700 字。想最省 token 可切 `concise`；想要更长的审稿式分析用 `reviewer`。三种风格都有硬性输出上限（1024 / 3072 / 4096 token）。"

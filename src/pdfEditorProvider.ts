@@ -330,7 +330,7 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
 
         // 流式 AI 问答：先 start，再若干 delta，最后 done / error
         case 'requestAiQuestion': {
-          const { requestId, question, selectedText, contextText, page, history, answerStyle } = message;
+          const { requestId, question, selectedText, contextText, page, history, answerStyle, fullText } = message;
           const aiAnswerStyle =
             answerStyle || vscode.workspace.getConfiguration('academicReader').get<string>('aiAnswerStyle', 'standard');
           try {
@@ -344,7 +344,9 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
                 page,
                 noteType: message.noteType,
                 history: Array.isArray(history) ? history : [],
-                answerStyle: aiAnswerStyle
+                answerStyle: aiAnswerStyle,
+                // 专家模式：webview 现抽的**整篇文献**（所有页）——宿主自己只有用户翻过的页
+                fullText: typeof fullText === 'string' ? fullText : ''
               },
               (chunk) => {
                 webviewPanel.webview.postMessage({ type: 'aiQuestionDelta', requestId, chunk });
@@ -423,7 +425,9 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
 
         case 'setAnswerStyle': {
           // 弹窗里一键切换回答风格 → 写回用户设置，重载或换论文后依然生效
-          const style = ['concise', 'standard', 'reviewer'].includes(message.style) ? message.style : 'standard';
+          // 'reviewer'（审稿）是旧档位名，写回时统一成 'expert'（专家），免得设置里留着一个不存在的档位
+          const raw = message.style === 'reviewer' ? 'expert' : message.style;
+          const style = ['concise', 'standard', 'expert'].includes(raw) ? raw : 'standard';
           await vscode.workspace
             .getConfiguration('academicReader')
             .update('aiAnswerStyle', style, vscode.ConfigurationTarget.Global);
