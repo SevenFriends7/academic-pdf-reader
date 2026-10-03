@@ -3609,3 +3609,23 @@ body.theme-paper-dark .article-section-zh {
   white-space: nowrap;
   cursor: help;
 }
+
+/* 弹窗头部健壮性：标题可省略，但**操作区绝不收缩**。
+   否则标题一长（标题 + 模型名 + 版本号），回答风格控件会被挤成零宽而看不见。 */
+.ai-modal-header {
+  gap: 10px;
+}
+.ai-modal-title {
+  min-width: 0;
+  overflow: hidden;
+}
+.ai-modal-title > span:first-child {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ai-modal-header-actions {
+  flex-shrink: 0;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
