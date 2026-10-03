@@ -1208,5 +1208,30 @@ console.log('\n===== T18 回答风格切换控件 =====');
   checkTrue('样式已定义（含 active 高亮）', /\.ai-style-btn\.active\s*\{/.test(css));
 })();
 
+// ---------- 19. 提示条自动消失 + 聚焦卡片跟随高亮 ----------
+console.log('\n===== T19 提示条自动消失 与 聚焦条跟随 =====');
+(function toastAndFollowTest() {
+  const ext = fs.readFileSync(path.join(path.dirname(VIEWER), '..', 'src', 'pdfEditorProvider.ts'), 'utf8');
+  const css = fs.readFileSync(path.join(path.dirname(VIEWER), 'viewer.css'), 'utf8');
+
+  // —— 提示条：宿主不再用不会自动关的原生通知 ——
+  checkTrue('宿主 showInfo 改为转发给 webview', /type: 'showToast'/.test(ext));
+  checkTrue('宿主不再调用原生通知', !/case 'showInfo':\s*\{\s*vscode\.window\.showInformationMessage/.test(ext));
+  checkTrue('webview 处理 showToast', /case 'showToast':/.test(code));
+  checkTrue('提示条有自动消失定时器', /readerToastTimer = setTimeout\(hideReaderToast/.test(code));
+  checkTrue('悬停暂停计时（否则鼠标移上去也照常消失）', /onmouseenter = \(\) => clearTimeout\(readerToastTimer\)/.test(code));
+  checkTrue('点击可立刻关闭', /box\.onclick = \(\) => \{[\s\S]{0,80}hideReaderToast\(\);/.test(code));
+  checkTrue('提示条样式存在', /\.reader-toast\s*\{/.test(css) && /\.reader-toast\.show/.test(css));
+
+  // —— 聚焦卡片跟随 ——
+  checkTrue('记录卡片锚点上下文', /activeFocusAnchor = \{ para, targetSentenceIdx, pageWrapper \}/.test(code));
+  checkTrue('位置计算被抽成可重复调用的函数', /function positionParaFocusBar\(\)/.test(code));
+  checkTrue('滚动时重算（rAF 节流）', /function requestFocusBarReposition\(\)/.test(code) && /addEventListener\('scroll', requestFocusBarReposition, \{ passive: true \}\)/.test(code));
+  checkTrue('锚点移出可视区则隐藏卡片', /bar\.dataset\.hiddenByScroll = '1'/.test(code) && /viewBottom < cRect\.top/.test(code));
+  checkTrue('滚回可视区则恢复显示', /bar\.style\.display = 'flex';\s*\n\s*bar\.style\.visibility/.test(code));
+  checkTrue('改动窗口尺寸也重算', /addEventListener\('resize', requestFocusBarReposition\)/.test(code));
+  checkTrue('页面被销毁后不再定位（避免报错）', /pageWrapper\.isConnected/.test(code));
+})();
+
 console.log(`\n===== 结果: ${pass} 通过 / ${fail} 失败 =====`);
 process.exit(fail > 0 || loadError ? 1 : 0);

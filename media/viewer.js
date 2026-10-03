@@ -33,6 +33,12 @@
   let pendingRenderPage = null;
   let activeFocusPara = null;
   let activeFocusSentIdx = undefined;
+  // 段落聚焦条的锚点上下文：记住"它跟着哪句话/哪一段"，滚动时重新定位
+  let activeFocusAnchor = null;
+  let focusBarRaf = 0;
+  let focusFollowBound = false;
+  // 右下角提示条：自动消失，鼠标悬停暂停计时
+  let readerToastTimer = null;
   let activeContextAnnot = null;
   let currentEditingAnnot = null;
   let currentNotesSearchQuery = '';
@@ -439,6 +445,11 @@
   window.addEventListener('message', async (event) => {
     const msg = event.data;
     switch (msg.type) {
+      // 宿主转发来的操作提示：在 webview 内自绘提示条，几秒后自动消失
+      case 'showToast': {
+        showReaderToast(msg.message, msg.level);
+        break;
+      }
       case 'initPdfData': {
         if (msg.fileName) {
           dom.paperTitle.textContent = msg.fileName;
@@ -1922,10 +1933,93 @@
     showParaFocusBar(para, targetSentenceIdx, anchorRect, pageWrapper);
   }
 
+  /**
+   * 重新计算聚焦条位置——它必须**跟着高亮的那句话走**。
+   *
+   * 旧实现只在弹出时算一次坐标（position: fixed），滚动后卡片就定在原地，
+   * 而原 PDF 里的高亮笔触是画在页面坐标系里的、会跟着滚——两者当场脱节。
+   * 现在滚动/缩放时都按同一套公式重算；锚点完全移出可视区则隐藏，滚回来自动恢复。
+   */
+  function positionParaFocusBar() {
+    const a = activeFocusAnchor;
+    const bar = dom.paraFocusBar;
+    if (!a || !bar) return;
+    const { para, targetSentenceIdx, pageWrapper } = a;
+    if (!pageWrapper || !pageWrapper.isConnected) {
+      hideParaFocusBar();
+      return;
+    }
+
+    const rects =
+      targetSentenceIdx !== undefined
+        ? getSentenceHighlightRects(para, targetSentenceIdx, pageWrapper)
+        : getParagraphHighlightRects(para, pageWrapper);
+    const anchorRect = rects.length > 0 ? rects[0] : null;
+    if (!anchorRect) {
+      hideParaFocusBar();
+      return;
+    }
+
+    const pageRect = pageWrapper.getBoundingClientRect();
+    const viewTop = pageRect.top + anchorRect.top;
+    const viewBottom = viewTop + anchorRect.height;
+
+    // 可视区：优先用 PDF 滚动容器，拿不到就退回窗口
+    const cRect = dom.pdfViewerContainer
+      ? dom.pdfViewerContainer.getBoundingClientRect()
+      : { top: 46, bottom: window.innerHeight };
+
+    if (viewBottom < cRect.top + 4 || viewTop > cRect.bottom - 4) {
+      // 高亮句已滚出可视区 → 收起卡片
+      bar.style.display = 'none';
+      bar.dataset.hiddenByScroll = '1';
+      return;
+    }
+
+    const barW = bar.offsetWidth || 280;
+    const barH = bar.offsetHeight || 34;
+
+    let left = pageRect.left + anchorRect.left + anchorRect.width / 2 - barW / 2;
+    let top = viewTop - barH - 10;
+    if (top < 58) top = viewBottom + 10;
+
+    left = Math.max(12, Math.min(window.innerWidth - barW - 20, left));
+    top = Math.max(50, Math.min(window.innerHeight - barH - 12, top));
+
+    bar.style.left = `${Math.round(left)}px`;
+    bar.style.top = `${Math.round(top)}px`;
+    bar.style.display = 'flex';
+    bar.style.visibility = 'visible';
+    bar.style.opacity = '1';
+    bar.dataset.hiddenByScroll = '';
+  }
+
+  function requestFocusBarReposition() {
+    if (!activeFocusAnchor || focusBarRaf) return;
+    focusBarRaf = requestAnimationFrame(() => {
+      focusBarRaf = 0;
+      positionParaFocusBar();
+    });
+  }
+
+  function bindFocusBarFollow() {
+    if (focusFollowBound) return;
+    focusFollowBound = true;
+    const target = dom.pdfViewerContainer || window;
+    target.addEventListener('scroll', requestFocusBarReposition, { passive: true });
+    window.addEventListener('resize', requestFocusBarReposition);
+    // 左右两侧的译文栏各自滚动时，PDF 区可能不动，但卡片仍需保持在原位
+    document.querySelectorAll('.column-content, .translation-column, .pdf-pane').forEach(col => {
+      col.addEventListener('scroll', requestFocusBarReposition, { passive: true });
+    });
+  }
+
   function showParaFocusBar(para, targetSentenceIdx, anchorRect, pageWrapper) {
     if (!dom.paraFocusBar || !anchorRect || !pageWrapper) return;
     activeFocusPara = para;
     activeFocusSentIdx = targetSentenceIdx;
+    activeFocusAnchor = { para, targetSentenceIdx, pageWrapper };
+    bindFocusBarFollow();
 
     let label = '当前段落';
     if (para.type === 'title') label = '论文标题';
@@ -1939,22 +2033,8 @@
     dom.paraFocusBar.style.visibility = 'visible';
     dom.paraFocusBar.style.opacity = '1';
 
-    const barW = dom.paraFocusBar.offsetWidth || 280;
-    const barH = dom.paraFocusBar.offsetHeight || 34;
-
-    const pageRect = pageWrapper.getBoundingClientRect();
-    let left = pageRect.left + anchorRect.left + (anchorRect.width / 2) - (barW / 2);
-    let top = pageRect.top + anchorRect.top - barH - 10;
-
-    if (top < 58) {
-      top = pageRect.top + anchorRect.top + anchorRect.height + 10;
-    }
-
-    left = Math.max(12, Math.min(window.innerWidth - barW - 20, left));
-    top = Math.max(50, Math.min(window.innerHeight - barH - 12, top));
-
-    dom.paraFocusBar.style.left = `${Math.round(left)}px`;
-    dom.paraFocusBar.style.top = `${Math.round(top)}px`;
+    // 统一走同一套定位逻辑（页面相对坐标 + 可视区判断）
+    positionParaFocusBar();
   }
 
   function hideParaFocusBar() {
@@ -5771,6 +5851,56 @@ let aiPresetQuestion = '';
     document.querySelectorAll('.ai-style-btn').forEach(btn => {
       btn.classList.toggle('active', btn.getAttribute('data-style') === cur);
     });
+  }
+
+  // ====================== 右下角提示条（自动消失） ======================
+  /**
+   * 旧实现走宿主 vscode.window.showInformationMessage：VS Code 的原生通知
+   * 不会自己消失，必须手动点叉，高频操作（加高亮、加批注）时很烦。
+   * 现在改成 webview 内自绘的提示条：几秒后自动淡出，鼠标悬停暂停计时。
+   */
+  function ensureReaderToast() {
+    if (dom.readerToast && dom.readerToast.isConnected) return dom.readerToast;
+    const el = document.createElement('div');
+    el.id = 'readerToast';
+    el.className = 'reader-toast';
+    document.body.appendChild(el);
+    dom.readerToast = el;
+    return el;
+  }
+
+  function hideReaderToast() {
+    const box = dom.readerToast;
+    if (!box) return;
+    box.classList.remove('show');
+    setTimeout(() => {
+      if (box && !box.classList.contains('show')) box.style.display = 'none';
+    }, 220);
+  }
+
+  function showReaderToast(text, level) {
+    if (!text) return;
+    const box = ensureReaderToast();
+    box.textContent = text;
+    box.className = `reader-toast show${level === 'error' ? ' error' : ''}`;
+    box.style.display = 'block';
+    // 强制回流，保证连续提示也能重放淡入动画
+    void box.offsetWidth;
+    box.classList.add('show');
+
+    clearTimeout(readerToastTimer);
+    const life = level === 'error' ? 6000 : 3600;
+    readerToastTimer = setTimeout(hideReaderToast, life);
+
+    box.onmouseenter = () => clearTimeout(readerToastTimer);
+    box.onmouseleave = () => {
+      clearTimeout(readerToastTimer);
+      readerToastTimer = setTimeout(hideReaderToast, 1000);
+    };
+    box.onclick = () => {
+      clearTimeout(readerToastTimer);
+      hideReaderToast();
+    };
   }
 
   function closeAiAssistantModal() {

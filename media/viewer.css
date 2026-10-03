@@ -3521,3 +3521,32 @@ body.theme-paper-dark .article-section-zh {
   border-color: var(--accent-color, #0e639c);
   color: #fff;
 }
+
+/* 右下角操作提示条：几秒后自动淡出，鼠标悬停暂停计时（替代不会自动关的 VS Code 原生通知） */
+.reader-toast {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 100000;
+  max-width: 380px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  display: none;
+  font-size: 12.5px;
+  line-height: 1.5;
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+  background: var(--vscode-notifications-background, rgba(45, 45, 45, 0.97));
+  color: var(--vscode-notifications-foreground, #eaeaea);
+  border: 1px solid var(--vscode-notifications-border, rgba(255, 255, 255, 0.16));
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.28);
+}
+.reader-toast.show {
+  opacity: 1;
+  transform: translateY(0);
+}
+.reader-toast.error {
+  border-color: var(--vscode-inputValidation-errorBorder, #d9534f);
+}

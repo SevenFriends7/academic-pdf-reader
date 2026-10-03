@@ -364,7 +364,10 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
         }
 
         case 'showInfo': {
-          vscode.window.showInformationMessage(message.message);
+          // 不再用 VS Code 原生通知：它不会自动消失，用户必须手动点叉，
+          // 而加高亮/加批注这类高频操作会迅速堆一串通知。
+          // 改为在 webview 内自绘提示条（见 viewer.js 的 showReaderToast）。
+          webviewPanel.webview.postMessage({ type: 'showToast', message: message.message, level: 'info' });
           break;
         }
 
