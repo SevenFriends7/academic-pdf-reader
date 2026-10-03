@@ -327,6 +327,16 @@
         </div>
       `;
       document.body.appendChild(aiModal);
+
+      // 版本号立即显示（不等任何消息）：用户截图即可确认实际运行的版本。
+      // 若这里显示 "v?"，说明宿主没有注入（或运行的是旧版构建）。
+      const verEl = aiModal.querySelector('#aiModalVersion');
+      if (verEl) {
+        verEl.textContent =
+          typeof window.__EXT_VERSION__ === 'string' && window.__EXT_VERSION__
+            ? `v${window.__EXT_VERSION__}`
+            : 'v?';
+      }
     }
   }
   ensureAllToolbarsExist();
@@ -6161,9 +6171,13 @@ let aiPresetQuestion = '';
     const tag = dom.aiModalModelTag || document.getElementById('aiModalModelTag');
     // 在弹窗标题旁显示扩展版本号：用户截图时就能确认实际运行的是哪一版，
     // 避免"改了却没生效 / 跑的还是旧版"这类问题反复靠猜。
+    // 版本号优先取宿主注入的 window.__EXT_VERSION__（不依赖消息到达），消息里的作为补充。
     const versionEl = document.getElementById('aiModalVersion');
-    if (versionEl && msg.extensionVersion) {
-      versionEl.textContent = `v${msg.extensionVersion}`;
+    if (versionEl) {
+      const injected = typeof window.__EXT_VERSION__ === 'string' ? window.__EXT_VERSION__ : '';
+      const fromMsg = typeof msg.extensionVersion === 'string' ? msg.extensionVersion : '';
+      const ver = injected || fromMsg;
+      versionEl.textContent = ver ? `v${ver}` : 'v?';
     }
     if (!tag) return;
     // 提示文案跟随引擎：OpenAI 兼容接口走的是 apiKey + modelName，不该提示"设置 Gemini API Key"

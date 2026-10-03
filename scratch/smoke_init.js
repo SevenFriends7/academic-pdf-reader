@@ -94,6 +94,9 @@ const pdfjsLib = { GlobalWorkerOptions: {}, getDocument: () => ({ promise: Promi
 
 const code = fs.readFileSync(VIEWER, 'utf8');
 
+// 模拟宿主注入的版本号（真实环境由 pdfEditorProvider 写进 HTML 的 <script> 里）
+window.__EXT_VERSION__ = '9.9.9-smoke';
+
 // 把创建界面容器的函数暴露出来：它在真实环境里是"打开文档/首次渲染"时调用的，
 // 而那次调用正是崩溃发生的地方（批注卡片刚建好就挂风格切换控件 → 读 AI_STYLES / aiStyle）。
 const tail = '})();';
@@ -185,6 +188,12 @@ if (!modalSlot) {
 const slotInHeader = document.querySelector('.ai-modal-header #aiModalStyleSlot .ai-style-switch');
 console.log(`   控件位置（弹窗固定头部，永不滚走）：${slotInHeader ? '✅ 正确' : '❌ 位置仍会被滚出视野'}`);
 if (!slotInHeader) miss++;
+
+// 版本号必须显示出来（用户截图即可确认跑的哪一版）
+const verText = (document.getElementById('aiModalVersion') || {}).textContent || '';
+const verOk = verText === 'v9.9.9-smoke';
+console.log(`   标题旁版本号：${verOk ? '✅ ' + verText : '❌ 未正确显示（实际：' + verText + '）'}`);
+if (!verOk) miss++;
 
 if (miss > 0) {
   console.log('\n⚠️ 初始化未抛异常，但有界面元素没建出来 —— 可能仍有问题');

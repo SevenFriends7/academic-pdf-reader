@@ -650,6 +650,9 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
 
     const nonce = getNonce();
     const v = Date.now();
+    // 把扩展版本号直接注入页面（不走消息，避免"消息没到 → 看不出跑的哪一版"）。
+    // webview 会把它显示在 AI 弹窗标题旁，用户截图即可确认实际运行的版本。
+    const extVersion = String(this.context?.extension?.packageJSON?.version || '');
 
     return /* html */ `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -659,6 +662,7 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}' ${webview.cspSource}; font-src ${webview.cspSource} data:; connect-src ${webview.cspSource} blob: data: https:; img-src ${webview.cspSource} data: blob:;">
   <title>双栏文献阅读器</title>
   <link rel="stylesheet" href="${cssUri}?v=${v}">
+  <script nonce="${nonce}">window.__EXT_VERSION__ = ${JSON.stringify(extVersion)};</script>
 </head>
 <body>
   <!-- 顶部工具栏 -->
