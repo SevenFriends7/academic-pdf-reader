@@ -114,6 +114,26 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
     const paperData = await this.storageManager.loadPaperData(document.uri);
     this.currentActivePaperData = paperData;
 
+    /**
+     * 一次性清理历史遗留的"假译文"。
+     *
+     * 1.3.0 及以前的 looksNonProse() 会把"以冒号/逗号结尾的正文片段"误判成图表标签，
+     * 于是把**原文本身**当译文写进缓存（alignment 里留着"已原样保留（未调用翻译接口）"）。
+     * 判据修好之后，这些旧条目仍会按内容指纹命中缓存 —— 用户会一直看到"这段没翻译"，
+     * 除非手动逐页重译。所以每次打开论文时做一次**定向**清理：
+     * 只有"note 写着原样保留"且"内容确实像在叙述"的条目才删；
+     * 真正的标题/机构/图注/公式残渣一个字都不动。幂等，不写盘也没关系（下次再算一遍）。
+     */
+    try {
+      const pruned = this.translator.pruneStaleNonProseCache(paperData as any);
+      if (pruned > 0) {
+        console.log(`[AcademicReader] 清理了 ${pruned} 条"原文当译文"的历史缓存（判据已修正，重新翻译这些段）`);
+        await this.storageManager.savePaperData(document.uri, paperData);
+      }
+    } catch (err: any) {
+      console.warn('[AcademicReader] 清理历史假译文失败（不影响阅读）:', err?.message);
+    }
+
     webviewPanel.webview.html = this.getHtmlForWebview(webviewPanel.webview, document.uri);
 
     // 处理来自 Webview 的交互消息

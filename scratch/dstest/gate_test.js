@@ -123,5 +123,42 @@ check(
   String(gate(BODY_SRC, LOW))
 );
 
+console.log('\n[5] "非叙述内容"判据：被切开的正文片段必须照常翻译');
+// 【真实反馈】第 4 页有两个正文片段（以 ":" / "," 结尾、通篇没有句末标点）被这条判据
+// 误判成"人名/机构/图表标签"，于是宿主**一次 API 都没调**，直接把英文原文当译文写进缓存——
+// 用户看到的就是"这一段的译文是英文原文"。视觉手术把"正文+公式+正文"拆开之后，这种片段会变多。
+const PROSE_FRAGMENT_1 =
+  'With the cyclic reference set, we can obtain the prediction for the initial reference mask in the same manner as sequential processing:';
+const PROSE_FRAGMENT_2 =
+  'In implementation, we utilize the combination of cross-entropy loss and mask IOU loss as supervision at both sides of the cyclic loop, which can be formulated as,';
+check('以冒号结尾的正文片段 → 照常翻译', t.looksNonProse(PROSE_FRAGMENT_1) === false, `looksNonProse=${t.looksNonProse(PROSE_FRAGMENT_1)}`);
+check('以逗号结尾的正文片段 → 照常翻译', t.looksNonProse(PROSE_FRAGMENT_2) === false, `looksNonProse=${t.looksNonProse(PROSE_FRAGMENT_2)}`);
+// 反例：这些本来就该"原样保留"，不能被误伤（改了判据之后仍必须为 true）
+check('单个词 / 图内标签簇 → 仍不翻译', t.looksNonProse('Method') === true && t.looksNonProse('Segmentation Network Loss Key Value Memory') === true);
+check('表格表头（有括号数字但无逗号无虚词）→ 仍不翻译', t.looksNonProse('Extra data OL J S (%) J U (%) F S (%) F U (%) G (%) FPS') === true);
+check('论文标题（大写词占多数）→ 仍不翻译', t.looksNonProse('Delving into the Cyclic Mechanism in Semi-supervised Video Object Segmentation') === true);
+check('公式残渣 / 脚注符号 → 仍不翻译', t.looksNonProse('| Ω | ̂') === true && t.looksNonProse('∗ †') === true);
+
+console.log('\n[6] 历史假译文的定向清理（只在目标语言是中文时动手）');
+const fakeCache = {
+  translations: {
+    A: PROSE_FRAGMENT_1, // 原文当译文（假）
+    B: '图2：分割网络在训练和推理阶段所提出的循环机制概览。', // 真译文
+    C: 'Extra data OL J S (%) J U (%) F S (%) F U (%) G (%) FPS', // 表头原样保留（合法）
+    D: 'Delving into the Cyclic Mechanism in Semi-supervised Video Object Segmentation' // 标题原样保留（合法）
+  },
+  sentenceTranslations: { A: [PROSE_FRAGMENT_1] },
+  alignment: {
+    A: { note: '该段像是人名/机构/图表标签等非叙述内容，已原样保留（未调用翻译接口）' },
+    B: { note: '' },
+    C: { note: '' },
+    D: { note: '' }
+  }
+};
+const prunedCount = t.pruneStaleNonProseCache(fakeCache);
+check('原文当译文的条目被清掉', prunedCount === 1 && !fakeCache.translations.A && !fakeCache.alignment.A, `pruned=${prunedCount}`);
+check('真译文与"合法的原样保留"（表头/标题）一条都没动', !!fakeCache.translations.B && !!fakeCache.translations.C && !!fakeCache.translations.D);
+check('幂等：再清理一次为 0', t.pruneStaleNonProseCache(fakeCache) === 0);
+
 console.log(`\n===== 结果: ${pass} 通过 / ${fail} 失败 =====`);
 process.exit(fail > 0 ? 1 : 0);

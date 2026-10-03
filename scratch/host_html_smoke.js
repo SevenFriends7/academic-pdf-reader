@@ -189,6 +189,15 @@ const exposed =
     seedPaperData: pd => { paperData = pd; },
     seedVisionSurgery: on => { visionSurgeryAllowed = !!on; },
     getVisionStructureCache: () => paperData.visionStructure,
+    // 归档回填：手术会重新编号段落，在途回包必须按内容指纹核对后才许写
+    updateArchivedParagraph,
+    getArchive: page => pageParaArchive.get(page) || [],
+    seedArchive: (page, list) => {
+      pageParaArchive.set(page, list);
+    },
+    deleteArchive: page => {
+      pageParaArchive.delete(page);
+    },
     // 公式渲染：KaTeX 是页面里的全局（jsdom 里没加载脚本，由测试自己塞桩验证两条分支）
     renderInlineMarkdown,
     renderEnTextHtml,
@@ -537,6 +546,17 @@ console.log('\n[视觉手术：按模型判断合并续句、拆开"正文+公�
     )
   );
   check(
+    '但**整条公式残渣**（很长）照渲染——那正是该被渲染成公式的东西',
+    /vision-inline-math/.test(
+      S.renderEnTextHtml('Hence, we have Y ̂ t − 1 ⊂ { Y 1 } { Y i | i ∈ [2, t − 1] }.', [
+        { find: 'Y ̂ t − 1 ⊂ { Y 1 } { Y i | i ∈ [2, t − 1] }', latex: '\\mathcal{Y}_{t-1}\\subset\\{Y_1\\}' }
+      ])
+    ),
+    S.renderEnTextHtml('Hence, we have Y ̂ t − 1 ⊂ { Y 1 } { Y i | i ∈ [2, t − 1] }.', [
+      { find: 'Y ̂ t − 1 ⊂ { Y 1 } { Y i | i ∈ [2, t − 1] }', latex: '\\mathcal{Y}_{t-1}\\subset\\{Y_1\\}' }
+    ]).slice(0, 120)
+  );
+  check(
     '正文里的普通 $ 不被误当成公式',
     !/md-math/.test(S.renderEnTextHtml('The price was $5 and $6 in total.', [])),
     S.renderEnTextHtml('The price was $5 and $6 in total.', [])
@@ -579,6 +599,24 @@ console.log('\n[视觉手术：按模型判断合并续句、拆开"正文+公�
     ((S.getVisionStructureCache() || {})['1'] || {}).disabled === true &&
       postedMessages.slice(beforeUndoMsgs).some(m => m.type === 'syncVisionStructure' && m.structure && m.structure.disabled === true)
   );
+}
+
+// ------------------------------------------------------------------ 归档回填的内容指纹护栏
+console.log('\n[归档回填：手术重新编号后，在途回包不许写到"编号相同、其实是另一段"上]');
+{
+  const S = window.__SMOKE__;
+  S.seedArchive(9, [
+    { id: 0, type: 'body', cleanText: 'alpha paragraph', cacheKey: '9_tag_K_alpha', translation: '' },
+    { id: 1, type: 'formula', cleanText: 'L cycle,t = L ( Y t )', cacheKey: '9_tag_K_formula', translation: '' }
+  ]);
+  // 在途回包的指纹是别段的（实测症状：公式段拿到了隔壁小节标题的译文）
+  S.updateArchivedParagraph(9, 1, { translation: '3.3 梯度校正' }, '9_tag_K_heading');
+  check('指纹对不上 → 一个字都不写（旧版会把隔壁段的译文贴过来）', S.getArchive(9)[1].translation === '', JSON.stringify(S.getArchive(9)[1].translation));
+  S.updateArchivedParagraph(9, 1, { translation: '公式段的正确译文' }, '9_tag_K_formula');
+  check('指纹对上 → 正常回填', S.getArchive(9)[1].translation === '公式段的正确译文', JSON.stringify(S.getArchive(9)[1].translation));
+  // 收尾：这一页是造出来的，不能留给后面的精读稿导出测试
+  S.deleteArchive(9);
+  check('造出来的归档页已清掉（不影响后面的导出测试）', S.getArchive(9).length === 0);
 }
 
 console.log('\n[数学公式渲染：KaTeX 本地打包，渲染失败也绝不吞掉公式]');

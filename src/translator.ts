@@ -361,9 +361,14 @@ export class PaperTranslator {
     if (/[.!?。！？]["'”’)\]]?\s*$/.test(t)) return false;
     // 章节标题（"2. Related Work" / "III. Method"）照常翻译
     if (/^(\d+(\.\d+)*\.?|[IVXLC]+\.)\s+\S/.test(t)) return false;
-    // 通篇没有任何句末标点、却有相当长度 → 典型的图表内部标签簇
-    // （坐标轴标签、图例、子图编号被拼成一段），不是句子。
-    if (t.length > 60 && !/[.!?。！？]/.test(t)) return true;
+    // 通篇没有任何句末标点、却有相当长度 → 过去一律当成"图表内部标签簇"
+    // （坐标轴标签、图例、子图编号被拼成一段）。
+    //
+    // 【踩过的坑】正文被**从中间切开**的片段也长这样：以 `:` / `,` 结尾、内部一个句号都没有。
+    // 视觉手术把"正文 + 公式 + 正文"拆成三段之后，这种片段会大量出现，于是它们全被
+    // "原样保留、不调用翻译接口"——用户看到的就是"这一段的译文是英文原文"。
+    // 所以再加一条判据：有逗号/分号，且有 the/we/can/of 这类虚词 → 人家在叙述，不是标签。
+    if (t.length > 60 && !/[.!?。！？]/.test(t)) return !this.looksLikeClauseRun(t);
     if (t.length > 200) return false;
 
     const words = (t.match(/[A-Za-z][A-Za-z'\-]*/g) || []).length;
@@ -371,6 +376,82 @@ export class PaperTranslator {
     const proper = (t.match(/\b[A-Z][a-z]+\b/g) || []).length;
     if (proper / Math.max(1, words) > 0.5) return true; // 大写词占多数 → 名单/机构
     return t.length < 60; // 短且无句末标点 → 标签
+  }
+
+  /**
+   * 像"在叙述"而不是"一堆标签"吗？
+   *
+   * 图表标签簇是 `Extra data OL J S (%) J U (%) F S (%) FPS` / `Segmentation Network Loss`：
+   * 既没有逗号分号，也没有 the/we/can/of 这类虚词。而"正文被切开"的片段是
+   * `With the cyclic reference set, we can obtain the prediction for the initial reference mask in the
+   * same manner as sequential processing:` —— 逗号 + 一串虚词，明显在叙述。
+   * 两条同时满足才算叙述，宁严不宽：把标签误送去翻译只是多一次请求，
+   * 把正文误判成标签则会让用户看到"整段没翻译"。
+   */
+  private looksLikeClauseRun(t: string): boolean {
+    const commas = (t.match(/[,;:，；：]/g) || []).length;
+    if (commas < 1) return false;
+    const funcWords = (
+      t.match(
+        /\b(?:the|a|an|of|to|in|for|and|or|that|this|these|those|we|our|us|is|are|was|were|be|been|being|can|could|will|would|should|may|might|must|with|as|by|on|at|from|it|its|which|where|when|while|than|then|thus|hence|however|also|if|but|so|such|each|both|all|not|no|more|most|other|into|over|after|before|during|between|without|via)\b/gi
+      ) || []
+    ).length;
+    const words = (t.match(/[A-Za-z][A-Za-z'\-]*/g) || []).length;
+    return funcWords >= 3 && funcWords / Math.max(1, words) >= 0.15;
+  }
+
+  /**
+   * 清掉历史遗留的"假译文"缓存（详见 pdfEditorProvider 里的调用注释）。
+   *
+   * 两条判据取并集，都要求"内容确实像在叙述"（真正的标题/机构/图注/公式残渣没有从句结构，
+   * 不会被误伤）：
+   *   ① alignment 的 note 写着"未调用翻译接口"——这是当年那条 looksNonProse 短路路径留下的；
+   *   ② 值里**一个汉字都没有**、却明显是英文散文 —— 目标是中文时，这种值必然是假的
+   *      （模型不可能把英文"译"成英文还通过校验，只可能是"原文被当成了译文"）。
+   * 只有目标语言是中文时才做，避免把"翻成英文"的正常结果删掉。
+   *
+   * @returns 清理掉的条目数
+   */
+  public pruneStaleNonProseCache(data: {
+    translations?: Record<string, string>;
+    sentenceTranslations?: Record<string, string[]>;
+    alignment?: Record<string, { note?: string }>;
+  }): number {
+    if (!data || typeof data !== 'object') return 0;
+    let lang = 'zh-CN';
+    try {
+      lang = this.cfg().get<string>('targetLanguage', 'zh-CN') || 'zh-CN';
+    } catch {
+      /* 配置读不到就按默认的中文处理 */
+    }
+    if (!lang.startsWith('zh')) return 0;
+
+    const align = data.alignment || {};
+    // 键取"有译文的"与"有 alignment 记录的"并集：
+    // 有些假译文是更早的版本写下的，压根没有 alignment 记录（实测第 4 页就有两条），
+    // 只看 alignment 会漏掉它们。
+    const allKeys = new Set<string>([
+      ...Object.keys(data.translations || {}),
+      ...Object.keys(align)
+    ]);
+    const stale = Array.from(allKeys).filter(k => {
+      const note = String((align[k] && align[k].note) || '');
+      const whole = (data.translations && data.translations[k]) || '';
+      const perSentence = ((data.sentenceTranslations && data.sentenceTranslations[k]) || []).join(' ');
+      // 这些条目的"译文"就是原文本身，所以直接拿它当原文来判断是不是在叙述
+      const text = whole || perSentence;
+      if (String(text).length <= 60) return false; // 短的多半是"标签原样保留"，合法
+      if (!this.looksLikeClauseRun(text)) return false;
+      const markedByOldShortcut = note.indexOf('未调用翻译接口') >= 0;
+      const noCjkAtAll = this.countCjk(text) === 0;
+      return markedByOldShortcut || noCjkAtAll;
+    });
+    stale.forEach(k => {
+      if (data.translations) delete data.translations[k];
+      if (data.sentenceTranslations) delete data.sentenceTranslations[k];
+      if (data.alignment) delete data.alignment[k];
+    });
+    return stale.length;
   }
 
   /**

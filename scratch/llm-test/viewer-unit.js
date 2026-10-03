@@ -1530,6 +1530,29 @@ console.log('\n===== T21 视觉手术（合并 / 拆分 / 图块 / 锚点定位�
     M.visionSurgery(list3, { segments: [{ index: 0, type: 'body', action: 'merge_next' }] });
     checkTrue('只合并模型明确判断过的相邻段', list3.length === 2);
 
+    // 合并时两段的行内公式替换表必须**合起来**：
+    // 模型常把公式的替换表给在"被判 merge_next 的下一段"上，只留前一段的会让公式又变回残渣
+    const m1 = mkPara(0, 'body', 'the inference stage, the corresponding predicted mask Y ̂ t is used as the approximation of the reference');
+    const m2 = mkPara(1, 'body', 'mask. Hence, we have Y ̂ t − 1 ⊂ { Y 1 } { Y i | i ∈ [2, t − 1] }.');
+    const list6 = [m1, m2];
+    M.visionSurgery(list6, {
+      segments: [
+        { index: 0, type: 'body', order: 1, action: 'merge_next', inline: [{ find: 'Y ̂ t', latex: '\\hat{Y}_t' }] },
+        {
+          index: 1,
+          type: 'body',
+          order: 2,
+          action: 'keep',
+          inline: [{ find: 'Y ̂ t − 1 ⊂ { Y 1 }', latex: '\\mathcal{Y}_{t-1}' }]
+        }
+      ]
+    });
+    checkTrue(
+      '合并后两段的行内公式替换表都在（否则后一段的公式又变回残渣）',
+      list6.length === 1 && (list6[0].visionInline || []).length === 2,
+      JSON.stringify((list6[0].visionInline || []).map(x => x.find))
+    );
+
     // 护栏一：下一段以大写开头 = 新段落的开头（模型有把"本段续上一段"错标成 merge_next 的倾向）
     const g = mkPara(0, 'body', 'background camel will serve as the foundation for our');
     const h = mkPara(1, 'body', 'Based on these observations, we design a new module.');

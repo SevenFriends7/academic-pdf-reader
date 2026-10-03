@@ -2628,12 +2628,20 @@
     archiveSyncTimer = setTimeout(flushPendingArchiveSync, 700);
   }
 
-  /** 译文到达后回填归档，否则导出时只会看到"未翻译" */
-  function updateArchivedParagraph(pageNum, paraId, patch) {
+  /**
+   * 译文到达后回填归档，否则导出时只会看到"未翻译"。
+   *
+   * @param {string} [expectCacheKey] 回包自带的内容指纹键。视觉手术会**重新编号**段落，
+   *   在途回包可能落到"编号相同、其实是另一段"的归档项上——实测症状：某公式段拿到了
+   *   隔壁小节标题的译文（"3.3 Gradient correction" → "3.3 梯度校正"）。给了这个键就核对
+   *   归档项自己的指纹，核对不上**一个字都不写**。
+   */
+  function updateArchivedParagraph(pageNum, paraId, patch, expectCacheKey) {
     const list = pageParaArchive.get(pageNum);
     if (!list) return;
     const hit = list.find(p => p.id === paraId);
     if (!hit) return;
+    if (expectCacheKey && hit.cacheKey && hit.cacheKey !== expectCacheKey) return;
     let changed = false;
     if (patch.translation && !hit.translation) {
       hit.translation = patch.translation;
@@ -3279,6 +3287,11 @@
       sentenceTranslations: [],
       joinedByVision: true
     });
+    // 行内公式替换表要**两段合起来**：模型常把公式的替换表给在下一段上，
+    // 只留前一段的会导致合并后那条公式又变回残渣。
+    const mergedInline = (a.visionInline || []).concat(b.visionInline || []);
+    if (mergedInline.length) merged.visionInline = mergedInline.slice(0, 12);
+    else delete merged.visionInline;
 
     const aSents = Array.isArray(a.sentencesEn) ? a.sentencesEn : [];
     const bSents = Array.isArray(b.sentencesEn) ? b.sentencesEn : [];
@@ -3390,6 +3403,18 @@
       if (list.map(p => p.id).join(',') !== before) stats.orderChanged = 1;
     }
 
+    // ---- 1.5) 行内公式替换表先按编号挂到各段上 ----
+    // 【为什么必须在合并之前】模型常把公式的替换表给在"被判 merge_next 的下一段"上；
+    // 合并要把它和前一段的替换表**合起来**，否则后一段的会随合并一起丢掉——
+    // 实测症状：合并后的正文里那条公式只剩残渣可看（用户看到的"没有 latex 渲染"）。
+    segs.forEach(s => {
+      if (!Array.isArray(s.inline) || s.inline.length === 0) return;
+      const para = byId.get(s.index);
+      if (!para) return;
+      para.visionInline = s.inline.slice(0, 8);
+      stats.inline++;
+    });
+
     // ---- 2) 拆分：把"混了多种内容"的一段按锚点切开（锚点由模型按文本层残渣写法给出）----
     const out = [];
     list.forEach(p => {
@@ -3443,11 +3468,6 @@
         // 模型偶尔把整段公式的 latex 放在顶层、只拆出正文片：兜底给第一片留住它，
         // 否则那条公式就只剩残渣可看了。
         if (idx === 0 && !piece.visionLatex && seg.latex) piece.visionLatex = String(seg.latex).trim();
-        // 行内公式替换表跟着分片走（哪一片里含那段残渣，显示层就在哪一片里替换）
-        if (Array.isArray(seg.inline) && seg.inline.length) {
-          piece.visionInline = seg.inline.slice(0, 8);
-          stats.inline++;
-        }
         out.push({ seg: null, para: piece });
       });
     });
@@ -3492,10 +3512,8 @@
         }
       }
       if (seg.latex) para.visionLatex = String(seg.latex).trim();
-      if (Array.isArray(seg.inline) && seg.inline.length) {
-        para.visionInline = seg.inline.slice(0, 8);
-        stats.inline++;
-      }
+      // 行内公式替换表在合并**之前**就按编号挂好了（见步骤 1.5）：这里绝不能再按本段的
+      // inline 覆盖一次，否则合并时刚合起来的替换表会被覆盖回只剩前一段的。
       if (seg.why) para.visionWhy = seg.why;
       para.visionAction = seg.action || 'keep';
       if (seg.action === 'drop' && para.type !== 'noise') {
@@ -4738,8 +4756,9 @@
         paperData.sentenceTranslations = paperData.sentenceTranslations || {};
         paperData.sentenceTranslations[key] = sentenceTranslations;
       }
-      // 归档快照同步回填，否则导出精读稿时这些段落会显示"未翻译"
-      updateArchivedParagraph(page, paraIndex, { translation: translated, sentenceTranslations });
+      // 归档快照同步回填，否则导出精读稿时这些段落会显示"未翻译"。
+      // 带上回包的内容指纹：手术重新编号后，在途回包不能落到身份已经变了的同一编号上。
+      updateArchivedParagraph(page, paraIndex, { translation: translated, sentenceTranslations }, cacheKey);
       paperData.alignment = paperData.alignment || {};
       paperData.alignment[key] = { aligned: !!aligned, mode: mode || '', note: note || '', model: model || '' };
 
@@ -4819,7 +4838,7 @@
         const cacheKey = getParaCacheKey(msg.page, currentParagraphs[idx]);
         paperData.translations[cacheKey] = p.translation;
         // 同一段落可能已经被归档过（先渲染后解析），这里补上译文
-        updateArchivedParagraph(msg.page, currentParagraphs[idx].id, { translation: p.translation });
+        updateArchivedParagraph(msg.page, currentParagraphs[idx].id, { translation: p.translation }, cacheKey);
         const textEl = document.getElementById(`transText_${msg.page}_${currentParagraphs[idx].id}`);
         if (textEl) {
           textEl.innerHTML = formatTranslatedParagraph(p.translation, currentParagraphs[idx]);
@@ -7440,6 +7459,20 @@ let aiPresetQuestion = '';
   }
 
   /**
+   * 这段文字像"公式残渣"（而不是一句散文）吗？判据与 isFormulaLikePara 同源：
+   * 符号/数字占主导、字母很少。用于决定"很长的一条 find 要不要照渲染"。
+   */
+  function looksLikeMathResidue(s) {
+    const t = String(s == null ? '' : s);
+    const letters = (t.match(/[A-Za-z]/g) || []).length;
+    const symbols = (t.match(/[=+\-*/^_{}[\]()<>≤≥≈≠∈∑∫∂∇×·|\\]/g) || []).length;
+    const digits = (t.match(/\d/g) || []).length;
+    const denom = letters + symbols + digits;
+    if (denom === 0) return false;
+    return (symbols + digits) / denom >= 0.35;
+  }
+
+  /**
    * 英文原文里的行内公式渲染（**只影响显示**：charMap 坐标与送翻译的原文都不变，
    * 所以划线高亮、点中文跳英文、逐句对齐一律不受影响）。
    *
@@ -7455,10 +7488,12 @@ let aiPresetQuestion = '';
       const find = item && item.find ? String(item.find) : '';
       const latex = item && item.latex ? String(item.latex) : '';
       if (!find || !latex || find.length < 2) return;
-      // 过长的 find 会把"逐字替换"变成"整句重排"（实测模型会这么标）→ 这种直接不采纳。
-      // 判据：超过 30 字，或占了这段原文的一半以上（后者挡住"整段就一句公式"的情况）。
+      // 过长的 find 会把"逐字替换"变成"整句重排"（实测模型会这么标）→ 一般直接不采纳。
+      // 但**纯公式残渣**是例外：模型常把一整条公式（如 "{ Y 1 } { Y i | i ∈ [2, t − 1] }"）
+      // 当成一个 find 给出来 —— 那正是"该被渲染成公式"的东西，长度不该拦它。
+      // 真正要拦的是"一句散文被整句替换成一条公式"。
       const maxFind = Math.min(30, Math.max(8, src.length * 0.5));
-      if (find.length > maxFind) return;
+      if (find.length > maxFind && !(find.length <= 120 && looksLikeMathResidue(find))) return;
       const at = locateAnchorIndex(src, find, 0);
       if (at < 0) return;
       if (reps.some(r => at < r.end && at + find.length > r.start)) return;
