@@ -2,6 +2,9 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import { ArchivedParagraph } from './pageArchive';
+
+export type { ArchivedParagraph } from './pageArchive';
 
 export interface AnnotationItem {
   id: string;
@@ -36,16 +39,6 @@ export interface PaperMetadata {
    * 不存的话，重开插件后导出只剩"本次翻过的那一页"，精读稿会平白变薄。
    */
   pageArchive?: Record<string, ArchivedParagraph[]>;
-}
-
-/** 导出用的轻量段落快照（不含任何 DOM 引用） */
-export interface ArchivedParagraph {
-  id: number;
-  type: string;
-  cleanText: string;
-  sentencesEn?: Array<{ text: string }>;
-  translation?: string;
-  sentenceTranslations?: string[];
 }
 
 export interface AiQaItem {

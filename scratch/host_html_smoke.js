@@ -161,6 +161,8 @@ const exposed =
     buildReadingDocMarkdown,
     archivePageParagraphs,
     recordAiQa,
+    // 段落快照是**节流合并**后同步给宿主的；测试里要确定性，直接手动冲一次
+    flushArchiveSync: flushPendingArchiveSync,
     seedPaperData: pd => { paperData = pd; },
     seedMeta: opts => { if (opts && Number.isFinite(opts.totalPages)) totalPages = opts.totalPages; }
   };\n` +
@@ -337,6 +339,8 @@ S.recordAiQa({
   model: 'deepseek-chat'
 });
 const md = S.buildReadingDocMarkdown();
+// 段落快照是节流同步的，这里手动冲一次，让后面的"是否交给宿主"断言是确定性的
+S.flushArchiveSync();
 // DUMP_DOC=1 时把生成的文稿原样打印出来；DUMP_DOC=<路径> 时同时存成文件，方便人眼审阅排版
 if (process.env.DUMP_DOC) {
   const dumpTarget = process.env.DUMP_DOC;

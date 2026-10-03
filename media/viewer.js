@@ -74,6 +74,9 @@
    * 译文在快照时可能还没到，收到后由 updateArchivedParagraph() 回填。
    */
   const pageParaArchive = new Map();
+  /** 待同步给宿主的段落快照（按页合并 + 节流，见 syncPageArchive） */
+  const pendingArchiveSync = new Map();
+  let archiveSyncTimer = null;
   let activeHighlightCard = null;
   let selectedHighlightColor = 'yellow';
   let currentSelectionInfo = null;
@@ -1816,9 +1819,11 @@
     });
 
     currentParagraphs = paras;
-    // 留一份本页段落的轻量快照，供「导出全文双语精读稿」使用（翻页后 currentParagraphs 会被替换）
-    archivePageParagraphs(pageNum, paras);
     renderTranslationCards(pageNum, currentParagraphs);
+    // 【顺序很重要】归档必须在 renderTranslationCards 之后：
+    // 卡片渲染时才会把缓存里的译文回填到段落上，先归档就会存下一堆"没有译文"的快照
+    // （导出 PDF 时表现为整篇都是"（本段尚未翻译）"）。
+    archivePageParagraphs(pageNum, paras);
 
     // 把本页正文同步给扩展，供 AI 问答做全文检索（旧版问答只能看到一个段落）
     try {
@@ -2382,8 +2387,16 @@
     const sig = getParaSig(para.cleanText || para.text || '');
     if (!sig) return '';
     // 只按内容指纹精确命中（不再做前缀模糊匹配——那会把别段的译文贴过来）
-    const directKey = `${pageNum}_${sig}`;
-    if (paperData.translations[directKey]) return paperData.translations[directKey];
+    //
+    // 【必须查带引擎标识的键】缓存**写入**用的是 getParaCacheKey()（`${page}_${引擎标识}_${指纹}`），
+    // 这里以前只查 `${page}_${指纹}`，于是重开插件后一律查不到——
+    // 表现是每段都要再向宿主问一遍（宿主命中缓存才把译文送回来），
+    // 而且导出用的段落快照在那之前生成，就全是"未翻译"（用户反馈的"译文没同步"）。
+    // 无标识键保留做兜底：0.5.1 之前存下的缓存没有标识。
+    const tagged = `${pageNum}_${currentEngineTag ? `${currentEngineTag}_` : ''}${sig}`;
+    if (paperData.translations[tagged]) return paperData.translations[tagged];
+    const legacyKey = `${pageNum}_${sig}`;
+    if (paperData.translations[legacyKey]) return paperData.translations[legacyKey];
     return '';
   }
 
@@ -2392,11 +2405,13 @@
     let list = null;
     if (para.sentenceTranslations && Array.isArray(para.sentenceTranslations) && para.sentenceTranslations.length > 0) {
       list = para.sentenceTranslations;
-    } else {
+    } else if (paperData.sentenceTranslations) {
       const sig = getParaSig(para.cleanText || para.text || '');
-      const directKey = sig ? `${pageNum}_${sig}` : null;
-      if (directKey && paperData.sentenceTranslations && paperData.sentenceTranslations[directKey]) {
-        list = paperData.sentenceTranslations[directKey];
+      if (sig) {
+        // 与 findCachedTranslation 同理：先查带引擎标识的键，再兜底无标识键
+        const tagged = `${pageNum}_${currentEngineTag ? `${currentEngineTag}_` : ''}${sig}`;
+        const legacyKey = `${pageNum}_${sig}`;
+        list = paperData.sentenceTranslations[tagged] || paperData.sentenceTranslations[legacyKey] || null;
       }
     }
 
@@ -2424,21 +2439,50 @@
           type: p.type || 'body',
           cleanText: p.cleanText,
           sentencesEn: (p.sentencesEn || []).map(s => ({ text: s.text })),
-          translation: p.translation || '',
-          sentenceTranslations: Array.isArray(p.sentenceTranslations) ? p.sentenceTranslations.slice() : []
+          // 【必须在这里解析】段落对象上的 translation 只有在"本次会话刚翻好"时才有值；
+          // 命中缓存（重开插件再导出）时它是空的，译文其实躺在 paperData.translations 里。
+          // 只存 p.translation 就会出现"译文没同步到导出"——0.5.13 就是这样漏的。
+          translation: findCachedTranslation(pageNum, p) || p.translation || '',
+          sentenceTranslations: findCachedSentences(pageNum, p) || (Array.isArray(p.sentenceTranslations) ? p.sentenceTranslations.slice() : []),
+          // 记下缓存键，宿主可以据此**精确**回查（不必重算指纹、猜引擎标识）
+          cacheKey: getParaCacheKey(pageNum, p)
         }));
       if (snapshot.length === 0) return;
       pageParaArchive.set(pageNum, snapshot);
-      // 同步给宿主持久化。否则下次打开插件再导出，只有"这次翻过的那一页"，
-      // 精读稿会莫名其妙变薄——读者会以为导出坏了。
-      try {
-        vscode.postMessage({ type: 'syncPageArchive', page: pageNum, paragraphs: snapshot });
-      } catch (e) {
-        /* 同步失败不影响本次会话内导出 */
-      }
+      syncPageArchive(pageNum, snapshot);
     } catch (e) {
       console.warn('[Viewer] 归档本页段落失败（只影响导出）:', e);
     }
+  }
+
+  /**
+   * 把一页的段落快照交给宿主持久化。
+   *
+   * 合并节流：译文是一条条回来的，每来一条都整页同步会写很多次盘；
+   * 但也不能不发——否则重开插件再导出时，宿主的快照里没有译文。
+   */
+  /** 立刻把待同步的段落快照发给宿主（节流到期或需要确定性时调用） */
+  function flushPendingArchiveSync() {
+    if (archiveSyncTimer) {
+      clearTimeout(archiveSyncTimer);
+      archiveSyncTimer = null;
+    }
+    if (pendingArchiveSync.size === 0) return;
+    const batch = [...pendingArchiveSync.entries()];
+    pendingArchiveSync.clear();
+    batch.forEach(([page, paragraphs]) => {
+      try {
+        vscode.postMessage({ type: 'syncPageArchive', page, paragraphs });
+      } catch (e) {
+        /* 同步失败不影响本次会话内导出 */
+      }
+    });
+  }
+
+  function syncPageArchive(pageNum, snapshot) {
+    pendingArchiveSync.set(pageNum, snapshot);
+    if (archiveSyncTimer) return;
+    archiveSyncTimer = setTimeout(flushPendingArchiveSync, 700);
   }
 
   /** 译文到达后回填归档，否则导出时只会看到"未翻译" */
@@ -2447,10 +2491,17 @@
     if (!list) return;
     const hit = list.find(p => p.id === paraId);
     if (!hit) return;
-    if (patch.translation) hit.translation = patch.translation;
-    if (patch.sentenceTranslations && patch.sentenceTranslations.length > 0) {
-      hit.sentenceTranslations = patch.sentenceTranslations.slice();
+    let changed = false;
+    if (patch.translation && !hit.translation) {
+      hit.translation = patch.translation;
+      changed = true;
     }
+    if (patch.sentenceTranslations && patch.sentenceTranslations.length > 0 && (!hit.sentenceTranslations || hit.sentenceTranslations.length === 0)) {
+      hit.sentenceTranslations = patch.sentenceTranslations.slice();
+      changed = true;
+    }
+    // 同步回宿主：不然宿主快照里这一页还是"没有译文"，导出 PDF 就缺中文
+    if (changed) syncPageArchive(pageNum, list);
   }
 
   /**

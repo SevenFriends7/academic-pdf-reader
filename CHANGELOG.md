@@ -5,6 +5,38 @@
 
 ## [Unreleased]
 
+## [0.5.14] - 2026-10-03
+
+### 修复
+- **导出的 PDF 里没有译文**（用户反馈"译文没有同步到导出的 pdf"）。两个原因叠加：
+
+  1. **段落快照生成得太早**：`archivePageParagraphs()` 在 `renderTranslationCards()` **之前**执行，
+     而缓存译文是在渲染卡片时才回填的 → 存下来的每段 `translation` 都是空串；
+     并且快照只在归档那一刻同步给宿主一次，后续回填只改了内存里那份。
+  2. **PDF 导出只信 `para.translation`**，从不回查 `paperData.translations`——
+     而译文其实好端端躺在那里（键形如 `${page}_${引擎标识}_${内容指纹}`）。
+     Markdown 导出用的 `resolveArchivedTranslation()` 会回查，所以只有 PDF 这条路缺中文。
+
+  现在：
+  - 快照改到 `renderTranslationCards()` **之后**生成，并用 `findCachedTranslation()/findCachedSentences()` 现场解析译文；
+  - 快照额外记录 `cacheKey`，宿主据此可**精确**回查，不必自己重算指纹；
+  - 宿主新增 `src/pageArchive.ts`，把「段落 → 译文」的解析规则收成一处
+    （依次尝试：快照译文 → `cacheKey` → `${page}_${引擎标识}_${指纹}` → 无标识旧键），
+    PDF 导出与宿主同步共用，宿主不再靠猜；`hashParagraphText()` 与 webview 的 `getParaSig()` 必须逐字节一致（已注释说明）；
+  - `syncPageArchive` 改为**合并**：空译文绝不覆盖已存译文（重开插件重读同一页时正会触发）；
+  - 译文回填后会把该页快照**节流合并**（700ms）同步给宿主，宿主那份不再停留在"没有译文"。
+- **`findCachedTranslation()` / `findCachedSentences()` 只查无引擎标识的缓存键**，
+  而缓存**写入**用的是带标识的 `getParaCacheKey()`。于是重开插件后一律查不到缓存译文：
+  每段都要再向宿主问一遍，而导出快照在那之前就生成了 → 全程"未翻译"。
+  现在先查带标识键，再无标识键兜底（兼容 0.5.1 之前存下的数据）。
+
+### 测试
+- `npm run test:pdf` 新增 5 条断言专门复现这个 bug：
+  快照无译文但缓存在（真实场景）→ 附录必须出现中文；按 `cacheKey` 精确回查；无标识旧键兼容；
+  空译文不覆盖已存译文；以及"不再出现『本段尚未翻译』"。
+- 另用**真实数据端到端验证**过一次：真实论文 11 页 + 34 条高亮 → 13 页 PDF（原文 11 + 附录 2），
+  附录可提取到 371 个汉字，且不含"本段尚未翻译"。
+
 ## [0.5.13] - 2026-10-03
 
 ### 新增

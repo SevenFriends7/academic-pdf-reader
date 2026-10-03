@@ -14,12 +14,17 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { PDFDocument, PDFFont, PDFPage, rgb, BlendMode } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
-import { AnnotationItem, ArchivedParagraph, PaperMetadata } from './notesStorage';
+import { AnnotationItem, PaperMetadata } from './notesStorage';
+import {
+  ArchivedParagraph,
+  resolveArchivedSentences,
+  resolveArchivedTranslation
+} from './pageArchive';
 
 export interface PdfExportOptions {
   /** 原始 PDF 的字节 */
   originalBytes: Uint8Array;
-  /** 论文数据（批注、段落快照、AI 答疑） */
+  /** 论文数据（批注、段落快照、AI 答疑、译文缓存） */
   paperData: PaperMetadata;
   /** 论文名（写进附录标题） */
   paperName: string;
@@ -27,6 +32,8 @@ export interface PdfExportOptions {
   fontPathOverride?: string;
   /** 是否把所有页都放进 PDF（false 时只放有批注的页） */
   includeAllPages?: boolean;
+  /** 当前翻译引擎标识（用于回查 `${page}_${引擎标识}_${指纹}` 形式的译文缓存） */
+  engineTag?: string;
 }
 
 export interface PdfExportResult {
@@ -290,12 +297,15 @@ class FlowWriter {
 /** 附录里按段落聚合出来的内容（原文 + 译文 + 该段的批注/答疑） */
 interface AppendixEntry {
   para: ArchivedParagraph;
+  /** 解析后的译文（不只看 para.translation，还要回查译文缓存 —— 见 resolveArchivedTranslation） */
+  translation: string;
+  sentences: string[] | null;
   colors: string[];
   annotations: AnnotationItem[];
   qa: Array<{ question: string; answer: string; model?: string; at: number; selectedText?: string }>;
 }
 
-function buildAppendix(paperData: PaperMetadata) {
+function buildAppendix(paperData: PaperMetadata, engineTag?: string) {
   const archive = paperData.pageArchive || {};
   const annotations = Array.isArray(paperData.annotations) ? paperData.annotations : [];
   const qaList = Array.isArray(paperData.aiQa) ? paperData.aiQa : [];
@@ -316,6 +326,9 @@ function buildAppendix(paperData: PaperMetadata) {
         );
         return {
           para: p,
+          // 关键：译文可能不在快照里，而在 paperData.translations 里
+          translation: resolveArchivedTranslation(page, p, paperData.translations, engineTag),
+          sentences: resolveArchivedSentences(page, p, paperData.sentenceTranslations, engineTag),
           colors: [...new Set(own.map(a => a.color))],
           annotations: own,
           qa
@@ -329,7 +342,7 @@ function buildAppendix(paperData: PaperMetadata) {
     })
     .filter(
       p =>
-        p.entries.some(e => e.para.translation || e.annotations.length || e.qa.length) ||
+        p.entries.some(e => e.translation || e.annotations.length || e.qa.length) ||
         p.orphanAnnotations.length > 0 ||
         p.orphanQa.length > 0
     );
@@ -425,7 +438,7 @@ export async function buildAnnotatedPdf(opts: PdfExportOptions): Promise<PdfExpo
     );
   }
 
-  const { pages: appendixSource } = buildAppendix(paperData);
+  const { pages: appendixSource } = buildAppendix(paperData, opts.engineTag);
   let appendixPages = 0;
 
   if (font) {
@@ -461,7 +474,7 @@ export async function buildAnnotatedPdf(opts: PdfExportOptions): Promise<PdfExpo
       let ordinal = 0;
       pg.entries.forEach(entry => {
         const para = entry.para;
-        const hasContent = para.translation || entry.annotations.length || entry.qa.length;
+        const hasContent = entry.translation || entry.annotations.length || entry.qa.length;
         if (!hasContent) return;
         ordinal++;
         const typeLabel =
@@ -485,8 +498,13 @@ export async function buildAnnotatedPdf(opts: PdfExportOptions): Promise<PdfExpo
           bar: barColor,
           spaceAfter: 2
         });
-        if (para.translation) {
-          writer.paragraph(para.translation, {
+        if (entry.translation) {
+          // 句级对齐时逐句成行，读起来才能和原文一一对上
+          const zh =
+            entry.sentences && para.sentencesEn && entry.sentences.length === para.sentencesEn.length
+              ? entry.sentences.join('\n')
+              : entry.translation;
+          writer.paragraph(zh, {
             size: 10.5,
             color: [0.07, 0.28, 0.5],
             bar: barColor,

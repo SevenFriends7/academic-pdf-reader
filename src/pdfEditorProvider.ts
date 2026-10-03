@@ -4,6 +4,7 @@ import { PaperTranslator, applyTermGlossary } from './translator';
 import { LlmError, DEFAULT_TRANSLATION_MODEL } from './llmClient';
 import { NotesStorageManager, PaperMetadata } from './notesStorage';
 import { buildAnnotatedPdf } from './pdfExport';
+import { mergeArchivedParagraphs } from './pageArchive';
 
 /**
  * 段落内容指纹：FNV-1a + 长度。
@@ -412,7 +413,10 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
         case 'syncPageArchive': {
           if (message.page && Array.isArray(message.paragraphs) && message.paragraphs.length > 0) {
             paperData.pageArchive = paperData.pageArchive || {};
-            paperData.pageArchive[String(message.page)] = message.paragraphs;
+            const key = String(message.page);
+            // 合并而不是覆盖：重开插件重读同一页时，新快照可能还没回填译文，
+            // 直接替换会把之前存好的译文抹掉（导出 PDF 就只剩"（本段尚未翻译）"）。
+            paperData.pageArchive[key] = mergeArchivedParagraphs(paperData.pageArchive[key], message.paragraphs);
             try {
               await this.storageManager.savePaperData(document.uri, paperData);
             } catch (err: any) {
@@ -726,7 +730,10 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
             paperData,
             paperName: path.basename(uri.fsPath),
             fontPathOverride: cfg.get<string>('pdfExportFontPath', ''),
-            includeAllPages: true
+            includeAllPages: true,
+            // 译文缓存键里带着引擎标识；不传的话，重开插件后（段落快照里没有译文时）
+            // 就查不到 `${page}_${引擎标识}_${指纹}` 的译文 —— 用户看到的就是"译文没同步"
+            engineTag: this.engineTag()
           });
 
           const baseName = path.basename(uri.fsPath, path.extname(uri.fsPath));

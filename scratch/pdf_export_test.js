@@ -43,7 +43,18 @@ esbuild.buildSync({
   outfile: bundlePath,
   logLevel: 'error'
 });
+const pageArchiveBundlePath = path.join(buildDir, 'pageArchive.cjs');
+esbuild.buildSync({
+  entryPoints: [path.join(ROOT, 'src', 'pageArchive.ts')],
+  bundle: true,
+  platform: 'node',
+  format: 'cjs',
+  target: 'node18',
+  outfile: pageArchiveBundlePath,
+  logLevel: 'error'
+});
 const { buildAnnotatedPdf, findCjkFontPath } = require(bundlePath);
+const { mergeArchivedParagraphs, hashParagraphText } = require(pageArchiveBundlePath);
 
 let pass = 0;
 let fail = 0;
@@ -269,6 +280,76 @@ function makePaperData() {
     });
     check('附录文字没有溢出页面右边界', overflow.length === 0, overflow.length ? `溢出的行：${overflow.length}` : '');
   }
+
+  console.log('\n[5] 译文解析（用户反馈："译文没有同步到导出的 pdf"）');
+  // 真实场景：重开插件后，段落快照里的 translation 是空的（生成快照时缓存还没回填），
+  // 译文只存在于 paperData.translations 里，键形如 `${page}_${引擎标识}_${内容指纹}`。
+  const taggedKey = `1_engtag_${hashParagraphText(EN1)}`;
+  const paperDataNoSnapshotTrans = makePaperData();
+  paperDataNoSnapshotTrans.pageArchive['1'][0].translation = '';
+  paperDataNoSnapshotTrans.pageArchive['1'][0].sentenceTranslations = [];
+  paperDataNoSnapshotTrans.translations = { [taggedKey]: ZH1 };
+  paperDataNoSnapshotTrans.sentenceTranslations = { [taggedKey]: [ZH1] };
+
+  const rNoSnap = await buildAnnotatedPdf({
+    originalBytes,
+    paperData: paperDataNoSnapshotTrans,
+    paperName: 'cycle.pdf',
+    engineTag: 'engtag',
+    includeAllPages: true
+  });
+  const readLastPageText = async bytes => {
+    const d = await pdfjs.getDocument({
+      data: new Uint8Array(bytes),
+      isEvalSupported: false,
+      standardFontDataUrl: fs.existsSync(standardFontsDir) ? standardFontsDir : undefined
+    }).promise;
+    const t = (await (await d.getPage(d.numPages)).getTextContent()).items.map(it => it.str).join('');
+    return t.replace(/\s+/g, '');
+  };
+
+  if (!result.fontPath) {
+    console.log('   ⚠️  无中文字体，跳过（与上一节同样的原因）');
+  } else {
+    const tNoSnap = await readLastPageText(rNoSnap.bytes);
+    check('快照里没译文、译文只在缓存里 → 附录仍出现中文', tNoSnap.includes(ZH1.replace(/\s+/g, '')));
+    check('不再出现"本段尚未翻译"', !tNoSnap.includes('本段尚未翻译'));
+
+    // cacheKey 优先：宿主不必重算指纹
+    const paperDataByKey = makePaperData();
+    paperDataByKey.pageArchive['1'][0].translation = '';
+    paperDataByKey.pageArchive['1'][0].sentenceTranslations = [];
+    paperDataByKey.pageArchive['1'][0].cacheKey = 'weird_key_from_webview';
+    paperDataByKey.translations = { weird_key_from_webview: '按 cacheKey 精确回查到的译文' };
+    const rByKey = await buildAnnotatedPdf({
+      originalBytes,
+      paperData: paperDataByKey,
+      paperName: 'cycle.pdf',
+      includeAllPages: true
+    });
+    check('快照带 cacheKey 时按它精确回查', (await readLastPageText(rByKey.bytes)).includes('按cacheKey精确回查到的译文'));
+
+    // 无引擎标识的旧键兜底
+    const paperDataLegacy = makePaperData();
+    paperDataLegacy.pageArchive['1'][0].translation = '';
+    // 也清掉段落自带的句级译文：否则逐句版本会正确地胜出，测不到"无标识键"这条路
+    paperDataLegacy.pageArchive['1'][0].sentenceTranslations = [];
+    paperDataLegacy.translations = { [`1_${hashParagraphText(EN1)}`]: '旧版无标识键里的译文' };
+    const rLegacy = await buildAnnotatedPdf({
+      originalBytes,
+      paperData: paperDataLegacy,
+      paperName: 'cycle.pdf',
+      includeAllPages: true
+    });
+    check('兼容 0.5.1 之前的无标识缓存键', (await readLastPageText(rLegacy.bytes)).includes('旧版无标识键里的译文'));
+  }
+
+  // 合并策略：空译文不许覆盖已有译文（重开插件重读同一页时会发生）
+  const merged = mergeArchivedParagraphs(
+    [{ id: 0, type: 'body', cleanText: EN1, translation: '已经存好的译文' }],
+    [{ id: 0, type: 'body', cleanText: EN1, translation: '', sentenceTranslations: [] }]
+  );
+  check('合并段落快照时，空译文不会覆盖已存译文', merged[0].translation === '已经存好的译文', JSON.stringify(merged[0].translation));
 
   console.log('\n[4] 退化路径与接线');
   // 4a：给一个"没有汉字"的字体 → 必须如实降级（只出原文页 + 警告），不能画出豆腐块骗人
