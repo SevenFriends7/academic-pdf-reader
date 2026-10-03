@@ -692,6 +692,24 @@ function writeHighlightSheet(
       bar: [r, g, b],
       spaceAfter: 2
     });
+    /*
+     * 规范 LaTeX（视觉模型从页面图像转写）。
+     *
+     * 【为什么值得写进来】"原文摘录"是 PDF 字符层抽出来的**残渣**（真实例子：
+     * `AttLT (X l, X l, Y) = AttID (X | W l, …)`——上标丢失、`^` 变成 `|`），
+     * 读者把导出的 PDF 当笔记用时，公式是错的、也没法复制去别处。
+     * pdf-lib 不能排版 LaTeX，但把**规范源码**原样写出来是有用的：可复制进 LaTeX 编辑器/搜索。
+     */
+    const canonicalLatex = String(entry?.para?.visionLatex || '').trim();
+    if (canonicalLatex) {
+      writer.paragraph(`公式（规范 LaTeX）：${canonicalLatex}`, {
+        size: 9.5,
+        indent: 10,
+        color: [0.16, 0.26, 0.47],
+        spaceAfter: 2,
+        lineGap: 3.6
+      });
+    }
     if (zh) {
       writer.paragraph(`译文：${zh}`, { size: 10.5, indent: 10, color: [0.07, 0.28, 0.5], spaceAfter: 2 });
     } else if (entry?.para.type === 'formula') {

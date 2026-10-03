@@ -925,6 +925,157 @@ body.theme-paper-dark .btn-secondary:hover {
   display: flex;
 }
 
+/* ====================== 全文公式与符号索引 ====================== */
+.index-toolbar {
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border-color);
+}
+.index-search-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  padding: 5px 9px;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+.index-search-input:focus {
+  outline: none;
+  border-color: #818cf8;
+}
+.index-list-container {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 14px 24px;
+}
+
+.index-entry {
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  background: var(--bg-card);
+}
+.index-entry-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.index-page-tag {
+  font-size: 11px;
+  color: #818cf8;
+  border: 1px solid rgba(129, 140, 248, 0.4);
+  border-radius: 3px;
+  padding: 0 5px;
+}
+.index-kind-tag {
+  font-size: 11px;
+  color: var(--text-muted);
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  padding: 0 5px;
+}
+.index-note {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.index-formula-body {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 4px 0;
+  color: var(--text-primary);
+}
+.index-entry-symbols {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.index-sym-chip {
+  font-size: 11px;
+  font-family: 'JetBrains Mono', Consolas, monospace;
+  color: var(--text-secondary);
+  background: rgba(148, 163, 184, 0.14);
+  border-radius: 3px;
+  padding: 0 5px;
+}
+.index-entry-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+.index-entry-actions button {
+  background: none;
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
+  border-radius: 4px;
+  padding: 2px 9px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.index-entry-actions button:hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+  background: var(--bg-card-hover);
+}
+.index-entry-actions .btn-index-ask {
+  color: #818cf8;
+  border-color: rgba(129, 140, 248, 0.45);
+}
+.index-entry-actions .btn-index-ask:hover {
+  color: #a5b4fc;
+  border-color: #818cf8;
+  background: rgba(129, 140, 248, 0.12);
+}
+
+.index-sym-table {
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.index-sym-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 10px;
+  align-items: center;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border-color);
+  cursor: pointer;
+  font-size: 12px;
+}
+.index-sym-row:last-child {
+  border-bottom: none;
+}
+.index-sym-row:hover {
+  background: rgba(148, 163, 184, 0.1);
+}
+.index-sym-name {
+  font-family: 'JetBrains Mono', Consolas, monospace;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.index-sym-count {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.index-sym-page {
+  color: #818cf8;
+  font-size: 11px;
+  white-space: nowrap;
+}
+/* 从索引跳回卡片时闪一下，让读者立刻找到落点 */
+.trans-card.index-flash {
+  animation: indexFlash 1.6s ease-out;
+}
+@keyframes indexFlash {
+  0% { box-shadow: 0 0 0 2px rgba(129, 140, 248, 0.9); }
+  100% { box-shadow: 0 0 0 2px rgba(129, 140, 248, 0); }
+}
+
 .pane-view-header {
   padding: 10px 14px;
   border-bottom: 1px solid var(--border-color);
@@ -3033,6 +3184,47 @@ body.theme-paper-dark .article-section-zh {
   overflow-y: auto;
 }
 
+/*
+ * "已附上规范 LaTeX"徽标。
+ * 【为什么要有】PDF 文本层抽出来的公式是残渣（`X | W l`），而视觉模型已经转写了规范 LaTeX。
+ * 提问时会把规范式一起交给模型——这件事必须让读者看得见，否则他没法判断 AI 拿到的是残渣还是规范式
+ * （也让"聚焦公式"这一能力可被发现）。鼠标悬停可看到具体那条式子。
+ */
+.ai-math-badge {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 1px 7px;
+  border-radius: 3px;
+  font-size: 11px;
+  color: #34d399;
+  background: rgba(52, 211, 153, 0.12);
+  border: 1px solid rgba(52, 211, 153, 0.35);
+  cursor: help;
+}
+
+/*
+ * 弹窗里的规范公式预览。
+ * 读者点开弹窗看到的"聚焦原文"是 PDF 文本层残渣（上标丢失、`^` 变 `|`），
+ * 这里把视觉模型转写的规范式子排版出来——一眼确认"我要问的是这条"，模型拿到的也是同一条。
+ */
+.ai-math-preview {
+  margin-top: 6px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: rgba(129, 140, 248, 0.08);
+  border: 1px solid rgba(129, 140, 248, 0.25);
+  overflow-x: auto;
+}
+.ai-math-preview-line {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 0;
+  color: var(--text-primary, #e2e8f0);
+}
+.ai-math-preview-line .katex {
+  font-size: 1.05em;
+}
+
 .ai-prompt-chips {
   display: flex;
   align-items: center;
@@ -3058,6 +3250,17 @@ body.theme-paper-dark .article-section-zh {
   color: var(--text-primary);
   border-color: var(--text-muted);
   background: var(--bg-card-hover);
+}
+
+/* 公式专用芯片：「讲透这条公式」——与普通分析问题区分开，读者一眼能找到 */
+.ai-chip-math {
+  color: #818cf8;
+  border-color: rgba(129, 140, 248, 0.45);
+}
+.ai-chip-math:hover {
+  color: #a5b4fc;
+  border-color: #818cf8;
+  background: rgba(129, 140, 248, 0.12);
 }
 
 .ai-question-input-wrapper {
@@ -3356,8 +3559,7 @@ body.theme-paper-dark .article-section-zh {
 }
 
 /* Markdown 细节补充 */
-.markdown-body .md-pre {
-  background: rgba(0, 0, 0, 0.35);
+.markdown-body .md-pre {  background: rgba(0, 0, 0, 0.35);
   border: 1px solid var(--border-color);
   border-radius: 6px;
   padding: 8px 10px;
@@ -3370,6 +3572,56 @@ body.theme-paper-dark .article-section-zh {
   border-radius: 3px;
   font-family: 'JetBrains Mono', Consolas, monospace;
   font-size: 12px;
+}
+
+/*
+ * 逐符号表（GFM 表格）。
+ * 【为什么专门调这块】解释公式时模型最常输出的就是"符号 | 含义"表，
+ * 读者要在窄窄的 AI 弹窗里逐行对照符号，所以：整表可横向滚动（公式列很宽）、
+ * 表头吸顶不随滚动消失、符号列用等宽字体便于与正文里的符号核对。
+ */
+.markdown-body .md-table-wrap {
+  overflow-x: auto;
+  margin: 10px 0;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+}
+.markdown-body .md-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.markdown-body .md-table th,
+.markdown-body .md-table td {
+  border-bottom: 1px solid var(--border-color);
+  border-right: 1px solid var(--border-color);
+  padding: 5px 9px;
+  text-align: left;
+  vertical-align: top;
+}
+.markdown-body .md-table th:last-child,
+.markdown-body .md-table td:last-child {
+  border-right: none;
+}
+.markdown-body .md-table tbody tr:last-child td {
+  border-bottom: none;
+}
+.markdown-body .md-table thead th {
+  background: rgba(148, 163, 184, 0.16);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.markdown-body .md-table tbody tr:hover td {
+  background: rgba(148, 163, 184, 0.08);
+}
+/* 第一列多为符号本身，等宽 + 不换行，方便与正文对照 */
+.markdown-body .md-table td:first-child {
+  white-space: nowrap;
+  font-family: 'JetBrains Mono', Consolas, monospace;
+}
+.markdown-body .md-table .md-math-rendered {
+  font-family: inherit;
 }
 .markdown-body .md-math {
   font-family: 'Cambria Math', 'Times New Roman', serif;
@@ -3425,6 +3677,41 @@ body.theme-paper-dark .article-section-zh {
 }
 .card-formula-body .katex {
   font-size: 1.15em;
+}
+/*
+ * 公式卡片工具条：「讲透这条公式」（带着规范 LaTeX 问 AI）与「复制 LaTeX」。
+ * 放在公式正下方、注释之前——读者刚看完式子，要的就是"这条到底什么意思"和"把式子拿走"。
+ */
+.card-formula-tools {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.btn-formula-ask,
+.btn-formula-copy {
+  background: none;
+  border: 1px solid rgba(129, 140, 248, 0.45);
+  color: #818cf8;
+  border-radius: 4px;
+  padding: 3px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.btn-formula-ask:hover,
+.btn-formula-copy:hover {
+  color: #a5b4fc;
+  border-color: #818cf8;
+  background: rgba(129, 140, 248, 0.12);
+}
+.btn-formula-copy {
+  border-color: var(--border-color);
+  color: var(--text-muted);
+}
+.btn-formula-copy:hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+  background: var(--bg-card-hover);
 }
 .card-formula-note {
   font-size: 11px;

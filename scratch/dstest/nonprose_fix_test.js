@@ -83,11 +83,28 @@ const dir = path.join(process.env.APPDATA, 'Code', 'User', 'globalStorage', 'pap
 if (!fs.existsSync(dir)) {
   console.log('   ⚠️  找不到 globalStorage，跳过真实数据核对');
 } else {
-  const newest = fs
+  /*
+   * 【必须挑"含有这些键的那份存档"，不能拿最新的】
+   * 这条测试验的是真实数据上的一次清理（键是内容指纹，只属于 cycle.pdf）。
+   * 原先取"mtime 最新的存档"，但用户随手翻另一篇论文（AOT/STM）就会把最新的换成别的，
+   * 那几个键自然找不到 → 测试变红，看着像代码坏了，其实是数据指错了。
+   * 现在改成"在所有存档里找**含目标键**的那一份"，找不到才回退到最新的一份。
+   */
+  const allPapers = fs
     .readdirSync(dir)
     .filter(f => f.startsWith('paper_') && f.endsWith('.json'))
     .map(f => ({ f, t: fs.statSync(path.join(dir, f)).mtimeMs }))
-    .sort((a, b) => b.t - a.t)[0].f;
+    .sort((a, b) => b.t - a.t);
+  const probeKeys = ['4_74b30526_d0790fd7-135', '4_74b30526_1bc10d44-162'];
+  const newest =
+    (allPapers.find(p => {
+      try {
+        const j = JSON.parse(fs.readFileSync(path.join(dir, p.f), 'utf8'));
+        return probeKeys.every(k => j.translations && j.translations[k] !== undefined);
+      } catch (e) {
+        return false;
+      }
+    }) || allPapers[0]).f;
   const paper = JSON.parse(fs.readFileSync(path.join(dir, newest), 'utf8'));
   const before = {
     translations: Object.keys(paper.translations || {}).length,

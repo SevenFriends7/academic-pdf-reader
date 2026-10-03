@@ -13,7 +13,7 @@ const PAPERS_DIR = process.env.PAPERS_DIR || path.join(ROOT, 'test-papers');
 const PAGE = Number(process.argv[2] || 6);
 const FILE = process.argv[3] || 'STM.pdf';
 
-const code = fs.readFileSync(path.join(ROOT, 'media', 'viewer.js'), 'utf8');
+const code = fs.readFileSync(process.env.VIEWER_SRC || path.join(ROOT, 'media', 'viewer.js'), 'utf8');
 
 /** 抽出排版管线（到 orderedLines 生成为止） */
 function extractLayout(src) {

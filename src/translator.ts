@@ -173,6 +173,24 @@ const FORMULA_LATEX_RULE =
   '公式一律转写成 LaTeX 并用 $...$ 包起来（独立成行的公式用 $$...$$），例如 $\\hat{Y}_t = S_\\theta(X_t)$，' +
   '不要保留 "Y ̂ t" 这种从 PDF 文本层抄来的残渣；数学符号、变量名、缩写、文献引用编号仍原样保留';
 
+/**
+ * AI 回答里的数学写法要求。
+ *
+ * 【为什么必须单独写一条】翻译侧早就有 FORMULA_LATEX_RULE，但**问答侧三个档位的提示词里
+ * 一个字都没提数学**，于是模型按自己的习惯用 Markdown 反引号包符号。实测某篇论文的 4 条真实
+ * 回答里 `$...$` 是 **0 个**、反引号片段 33~129 个且 65~100 个是数学
+ * （`W_K`、`X^l W^l`、`Q ∈ R^{HW×C}`…），界面上全成了灰底代码块——
+ * 用户原话："我现在读人工智能的文章最重要的就是理解公式，你公式都搞不好我怎么读的好？"
+ *
+ * 渲染侧虽然加了"像数学的反引号片段按公式渲染"的兜底（管住历史回答），
+ * 但**提示词才是正路**：反引号的语义是代码，数学就该写 `$...$`。
+ */
+const ANSWER_MATH_RULE =
+  '**数学写法（重要）**：变量、符号、公式一律写成 LaTeX 行内公式 $...$（独立成行用 $$...$$），' +
+  '例如 $W_K$、$X^l W^l$、$\\hat{Y}_t$、$Q \\in \\mathbb{R}^{HW\\times C}$、$\\mathrm{AttID}(Q,K,V,Y \\mid D)$；' +
+  '**不要用反引号包变量或公式**（反引号只留给真正的代码、命令与文件名）。' +
+  '这是硬要求：读者就是靠排版好的公式读论文的。';
+
 const EN_LANGS: Record<string, string> = {
   'zh-CN': '简体中文',
   'zh-TW': '繁体中文',
@@ -1677,6 +1695,22 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
     return text;
   }
 
+  /** 聚焦公式时的回答要求：读者就是要读懂这一条式子本身，别跑题到论文背景 */
+  private buildFormulaFocusRequirement(focusMath: string): string {
+    return (
+      `【这是一条公式，读者就是要读懂它本身】请严格按下面顺序讲，不要先扯研究背景：\n` +
+      `1. 先用 \`$$...$$\` 写出**这条公式的规范形式**（用下面给的规范写法；上面从 PDF 文本层抽出的原文\n` +
+      `   可能是残渣，例如上标丢失、\`^\` 变成了 \`|\`，**不要照抄残渣**）；\n` +
+      `2. 一张**逐符号表**（Markdown 表格，列：符号 | 读法/含义 | 形状或取值范围 | 依据（页码/公式号/小节））；\n` +
+      `   公式里出现的每个符号都要有一行，包括下标/上标/运算符（如 \`tr\`、\`\\mid\`、\`\\odot\`）；\n` +
+      `3. 一句话说清**这条式子在做什么**（是定义新算子、还是把前式代入、还是等价改写）；\n` +
+      `4. **代一个具体的小例子走一遍**：给小的维度（如 $T=2,H=W=1,C=2$）或小矩阵，把每一步的数值算出来；\n` +
+      `5. 与相邻公式的关系：它由哪一式而来、下一式怎么用它；\n` +
+      `6. 若上面文本层的残渣与规范写法不一致，明确指出并以**规范写法**为准。\n` +
+      (focusMath ? `【这条公式的规范写法（视觉模型从页面图像转写）】\n\`\`\`latex\n${focusMath}\n\`\`\`` : '')
+    );
+  }
+
   private buildAssistantPrompt(options: {
     question: string;
     selectedText: string;
@@ -1686,6 +1720,8 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
     retrieved?: string;
     wholePaper?: string;
     answerStyle?: string;
+    /** 聚焦公式的规范 LaTeX（视觉模型转写）；非空即视为"公式类提问" */
+    focusMath?: string;
   }): string {
     const parts: string[] = [];
     parts.push(`你正在协助读者精读一篇学术论文（当前第 ${options.page || 1} 页）。`);
@@ -1744,6 +1780,18 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
 4. 引用本论文原文时标注来自哪一段（如「第 3 页·第 2 段」）；引用通用知识不要伪装成论文引用。`
       );
     }
+    // 三个档位都适用：数学写成 $...$，别用反引号（见 ANSWER_MATH_RULE 的注释）
+    parts.push(`【数学写法】\n${ANSWER_MATH_RULE}`);
+    /*
+     * 公式类提问：聚焦公式本身。
+     *
+     * 【为什么要单独一段】读者最常卡住的地方就是公式里的符号（用户原话："我现在读人工智能的文章
+     * 最重要的就是理解公式"）。而默认的回答要求是"结论先行 + 背景 + 动机"，模型很容易把一条公式
+     * 讲成一篇研究背景综述，符号反而没讲清。所以只要这次聚焦的是公式（webview 送来了规范 LaTeX），
+     * 就追加一段**强制顺序**的要求：规范式 → 逐符号表 → 这条式子做什么 → 代小例子走一遍 → 与相邻公式的关系。
+     */
+    const focusMath = String(options.focusMath || '').trim();
+    if (focusMath) parts.push(this.buildFormulaFocusRequirement(focusMath));
     return parts.join('\n\n');
   }
 
@@ -1762,6 +1810,8 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
       answerStyle?: string;
       /** 专家模式：webview 现抽的**整篇文献**文本（所有页，含用户没翻过的页） */
       fullText?: string;
+      /** 聚焦公式的规范 LaTeX（视觉模型从页面图像转写）；非空即视为"公式类提问" */
+      focusMath?: string;
     },
     onDelta: (chunk: string) => void
   ): Promise<AcademicAnswer> {

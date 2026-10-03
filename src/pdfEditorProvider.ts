@@ -330,7 +330,7 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
 
         // 流式 AI 问答：先 start，再若干 delta，最后 done / error
         case 'requestAiQuestion': {
-          const { requestId, question, selectedText, contextText, page, history, answerStyle, fullText } = message;
+          const { requestId, question, selectedText, contextText, page, history, answerStyle, fullText, focusMath } = message;
           const aiAnswerStyle =
             answerStyle || vscode.workspace.getConfiguration('academicReader').get<string>('aiAnswerStyle', 'standard');
           try {
@@ -345,6 +345,9 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
                 noteType: message.noteType,
                 history: Array.isArray(history) ? history : [],
                 answerStyle: aiAnswerStyle,
+                // 规范公式（视觉模型从页面图像转写的 LaTeX）：文本层抽出来的公式是残渣，
+                // 不给模型规范式它就只能猜记号（读者问公式时答案会含糊、符号对不上号）
+                focusMath: typeof focusMath === 'string' ? focusMath : '',
                 // 专家模式：webview 现抽的**整篇文献**（所有页）——宿主自己只有用户翻过的页
                 fullText: typeof fullText === 'string' ? fullText : ''
               },
@@ -1063,6 +1066,9 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
     <div class="header-right">
       <div class="tab-switch">
         <button id="tabTransBtn" class="tab-btn active" title="段落双语对照">对照翻译</button>
+        <button id="tabIndexBtn" class="tab-btn" title="全文公式与符号索引（读论文时查符号最常用）">
+          公式·符号 (<span id="indexCount">0</span>)
+        </button>
         <button id="tabNotesBtn" class="tab-btn" title="查看文献高亮与批注">
           批注笔记 (<span id="notesCount">0</span>)
         </button>
@@ -1137,9 +1143,31 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
         </div>
       </div>
 
-      <!-- 视图 2: 文献批注与笔记列表 -->
-      <div id="notesView" class="pane-view">
+      <!-- 视图 2: 全文公式与符号索引 -->
+      <div id="indexView" class="pane-view">
         <div class="pane-view-header">
+          <div class="header-info">
+            <span class="badge badge-accent">公式·符号索引</span>
+            <span class="subtitle" id="indexSubtitle">读过的页会自动收录</span>
+          </div>
+          <div class="view-switch-tools">
+            <button id="indexFilterFormula" class="view-toggle-btn active" title="只列公式">公式</button>
+            <button id="indexFilterSymbol" class="view-toggle-btn" title="只列符号">符号</button>
+          </div>
+        </div>
+        <div class="index-toolbar">
+          <input id="indexSearchInput" class="index-search-input" type="search" placeholder="搜索符号或公式，例如 W^l、\alpha、AttID" />
+        </div>
+        <div id="indexListContainer" class="index-list-container">
+          <div class="empty-state">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4h16v16H4z"/><path d="M8 9h8M8 13h5"/></svg>
+            <p>还没有可索引的公式。<br>翻过几页（视觉模型判过版式的页）就会自动收录在这里。</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- 视图 3: 文献批注与笔记列表 -->
+      <div id="notesView" class="pane-view">        <div class="pane-view-header">
           <div class="header-info">
             <span class="badge badge-accent">文献批注库</span>
             <span class="subtitle">点击批注卡片即可跳回左侧原段落</span>
@@ -1315,11 +1343,17 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
       <div class="ai-modal-body">
         <div class="ai-modal-context">
           <div class="ai-context-text" id="aiModalQuote"></div>
+          <!-- 聚焦的公式会带上"规范 LaTeX"一起提问：这里让读者看得见这件事（默认隐藏） -->
+          <div class="ai-math-badge" id="aiModalMathBadge" style="display: none;"></div>
+          <!-- 规范公式本身就排版在弹窗里：读者聚焦的就是这条式子，别再让他看残渣 -->
+          <div class="ai-math-preview" id="aiModalMathPreview" style="display: none;"></div>
         </div>
         <div class="ai-prompt-chips">
           <button type="button" class="ai-chip" data-q="这句话的真实技术意图与核心动机是什么？请用通俗中文讲透。">核心动机</button>
           <button type="button" class="ai-chip" data-q="作者在此处与以往前人方法有何本质区别？优势在哪里？">与前人区别</button>
           <button type="button" class="ai-chip" data-q="这句话里涉及的术语、公式或方法背后的数学原理是什么？">术语与公式</button>
+          <!-- 公式专用：逐符号讲透（聚焦公式本身，不跑题到论文背景） -->
+          <button type="button" class="ai-chip ai-chip-math" data-q="请把这条公式讲透：先用 $$...$$ 写出规范形式，再逐符号列表说明（符号、含义、形状或取值范围、在哪里定义），然后说清它在做什么，最后代一个具体的小例子走一遍。">讲透这条公式</button>
           <button type="button" class="ai-chip" data-q="我对这里的结论存有疑难，请结合上下文帮我深度剖析推导过程。">推导过程</button>
         </div>
         <div id="aiModalTranscript" class="ai-transcript">

@@ -20,6 +20,14 @@ export interface ArchivedParagraph {
    * 不必自己重算指纹、也不必猜引擎标识。
    */
   cacheKey?: string;
+  /**
+   * 规范 LaTeX（视觉模型从页面图像转写）。
+   * 公式段落用它导出 `$$...$$` 精读稿、也在批注 PDF 里作为"规范 LaTeX"写出来——
+   * 字符层 cleanText 只是残渣（上标丢失、`^` 变成 `|`），不能当公式用。
+   */
+  visionLatex?: string;
+  /** 行内公式替换表（find = 文本层残渣子串，latex = 可渲染写法） */
+  visionInline?: Array<{ find?: string; latex?: string }>;
 }
 
 /**

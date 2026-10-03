@@ -208,7 +208,16 @@ const exposed =
     // AI 回答风格：专家模式（旧档位 reviewer 已改名）
     applyAiStyle,
     getAiStyle: () => aiStyle,
-    collectWholePaperText
+    collectWholePaperText,
+    // 全文公式与符号索引
+    switchTab,
+    extractMathSymbols,
+    buildMathIndex,
+    invalidateMathIndex,
+    seedVisionStructure: v => {
+      paperData.visionStructure = v || {};
+      invalidateMathIndex();
+    }
   };\n` +
   code.slice(idx);
 
@@ -807,6 +816,17 @@ S.archivePageParagraphs(1, [
     sentencesEn: [{ text: 'IoU mIoU' }],
     translation: '',
     sentenceTranslations: []
+  },
+  {
+    // 真实数据：AOT 第 5 页公式 (4)。字符层是残渣（上标丢、`^` 变 `|`），
+    // 精读稿必须导出**规范 LaTeX**，否则读者回 Obsidian 翻笔记时公式全是错的。
+    id: 2,
+    type: 'formula',
+    cleanText: 'V = AttID (Q, K, V, Y | D) = Att (Q, K, V + ID (Y, D)), (4)',
+    visionLatex: "V' = \\mathit{AttID}(Q, K, V, Y \\mid D) = \\mathit{Att}(Q, K, V + \\mathrm{ID}(Y, D))",
+    sentencesEn: [],
+    translation: '',
+    sentenceTranslations: []
   }
 ]);
 S.archivePageParagraphs(2, [
@@ -873,12 +893,20 @@ check(
 check(
   '段落快照会同步给宿主持久化（否则重开插件再导出就只剩最后一页）',
   postedMessages.some(
-    m => m.type === 'syncPageArchive' && m.page === 1 && Array.isArray(m.paragraphs) && m.paragraphs.length === 2
+    m => m.type === 'syncPageArchive' && m.page === 1 && Array.isArray(m.paragraphs) && m.paragraphs.length === 3
   )
 );
 check(
   'AI 答疑会同步给宿主持久化（不再关窗即失）',
   postedMessages.some(m => m.type === 'recordAiQa' && m.item && m.item.answer)
+);
+check(
+  '精读稿里的公式导出成规范 LaTeX（$$...$$，Obsidian 可直接渲染）',
+  md.includes('$$\nV\' = \\mathit{AttID}(Q, K, V, Y \\mid D)') && !/^\*\*原文\*\*\n\n> V = AttID \(Q, K, V, Y \| D\)/m.test(md)
+);
+check(
+  '同时保留字符层抽取备查（并注明可能有误）',
+  /字符层抽取结果（可能有误，仅备查）：V = AttID \(Q, K, V, Y \| D\)/.test(md)
 );
 
 console.log('\n[反复打开问答弹窗不会重复堆叠控件]');
@@ -905,6 +933,130 @@ check(
   })(),
   Array.from(document.querySelectorAll('.ai-style-btn.active')).map(b => b.getAttribute('data-style')).join(',')
 );
+
+console.log('\n[公式聚焦 —— 弹窗里必须核对得到"要问的是哪条式子"]');
+{
+  // 真实数据：AOT 第 5 页公式 (4)。文本层抽出来是残渣（`Y | D` 其实是 `Y \mid D`），
+  // 规范式来自视觉模型转写（visionLatex）。读者点公式卡片上的「讲透这条公式」时，
+  // 弹窗里就该把**规范式子**排版出来，并标明已附给模型。
+  const formulaPara = {
+    id: 6,
+    type: 'formula',
+    cleanText: 'V = AttID (Q, K, V, Y | D) = Att (Q, K, V + ID (Y, D)) = Att (Q, K, V + E), (4)',
+    visionLatex: "V' = \\mathit{AttID}(Q, K, V, Y \\mid D) = \\mathit{Att}(Q, K, V + \\mathrm{ID}(Y, D))"
+  };
+  check('公式卡片上有「讲透这条公式」按钮', /btn-formula-ask/.test(S.renderCardFormulaHtml(formulaPara)), '');
+  const copyBtn = /data-latex="([^"]*)"/.exec(S.renderCardFormulaHtml(formulaPara));
+  check('公式卡片上有「复制 LaTeX」且带着公式源码', !!copyBtn && /mathit\{AttID\}/.test(copyBtn[1]));
+  check('快捷提问里有公式专用芯片「讲透这条公式」', !!document.querySelector('#aiAssistantModal .ai-chip-math'));
+
+  window.__SMOKE__.openAiAssistantModal({
+    selectedText: formulaPara.cleanText,
+    contextText: formulaPara.cleanText,
+    page: 5,
+    focusPara: formulaPara
+  });
+  const badge = document.getElementById('aiModalMathBadge');
+  const preview = document.getElementById('aiModalMathPreview');
+  check('弹窗显示"已附上规范 LaTeX"徽标', !!badge && badge.style.display !== 'none' && /规范 LaTeX/.test(badge.textContent));
+  check(
+    '弹窗把规范公式排版出来（不是只显示残渣）',
+    !!preview && preview.style.display !== 'none' && /md-math/.test(preview.innerHTML) && /mathit\{AttID\}/.test(preview.textContent),
+    preview ? preview.textContent.trim().slice(0, 60) : '缺失'
+  );
+  check(
+    '规范式在 jsdom 里走兜底也能看出是公式（真实 IDE 里 KaTeX 在场会排版成公式）',
+    !!preview && (!/katex/.test(preview.innerHTML) ? /^\$\$/.test(preview.textContent.trim()) : true)
+  );
+  check('弹窗里的规范式用的是 visionLatex 那条（不是文本层残渣）', !!preview && !/Y \| D/.test(preview.textContent));
+
+  // 没有公式的普通段落：不能凭空显示公式区
+  window.__SMOKE__.openAiAssistantModal({ selectedText: '普通正文', contextText: '普通正文', page: 5 });
+  const badge2 = document.getElementById('aiModalMathBadge');
+  const preview2 = document.getElementById('aiModalMathPreview');
+  check('普通段落不显示公式徽标与预览', badge2.style.display === 'none' && preview2.style.display === 'none');
+}
+
+console.log('\n[全文公式与符号索引 —— 读懂公式的关键入口]');
+{
+  check('页签里有「公式·符号」入口', !!document.getElementById('tabIndexBtn'));
+  check('索引面板与搜索框都在真实 HTML 里', !!document.getElementById('indexView') && !!document.getElementById('indexSearchInput'));
+  check('公式/符号两个筛选按钮都在', !!document.getElementById('indexFilterFormula') && !!document.getElementById('indexFilterSymbol'));
+
+  // 真实数据：AOT 第 5 页式 (3)(4)(5) + 行内公式表（就是读者实际读的那一页）
+  S.archivePageParagraphs(5, [
+    { id: 4, type: 'formula', cleanText: 'E = ID (Y, D) = Y P D, (3) N × M tr', translation: '', sentenceTranslations: [] },
+    { id: 6, type: 'formula', cleanText: 'V = AttID (Q, K, V, Y | D) = Att (Q, K, V + ID (Y, D)), (4)', translation: '', sentenceTranslations: [] }
+  ]);
+  S.seedVisionStructure({
+    '5': {
+      version: 2,
+      fixes: '拆出公式(3)(4)',
+      segments: [
+        {
+          index: 4,
+          type: 'formula',
+          latex: 'E = \\mathit{ID}(Y, D) = YPD',
+          inline: [{ find: 'D ∈ R', latex: 'D \\in \\mathbb{R}^{M \\times C}' }]
+        },
+        {
+          index: 6,
+          type: 'split',
+          parts: [
+            { type: 'body' },
+            { type: 'formula', at: 'V = AttID', latex: "V' = \\mathit{AttID}(Q, K, V, Y \\mid D) = \\mathit{Att}(Q, K, V + \\mathrm{ID}(Y, D))" }
+          ]
+        }
+      ]
+    }
+  });
+  const idx = S.buildMathIndex();
+  check('索引收录了视觉回包里的公式', idx.formulas.length === 3, `${idx.formulas.length} 条`);
+  check(
+    '公式带着页码与卡片定位（能跳回去）',
+    idx.formulas.every(f => Number.isFinite(f.page) && Number.isFinite(f.paraId)) &&
+      idx.formulas.some(f => f.page === 5 && f.paraId === 6),
+    JSON.stringify(idx.formulas.map(f => [f.page, f.paraId]))
+  );
+  const symNames = idx.symbols.map(s => s.name);
+  check('符号从 LaTeX 里抽出来了（变量、上下标、算子名）', symNames.includes('Y') && symNames.includes('YPD') && symNames.includes('AttID'), JSON.stringify(symNames.slice(0, 12)));
+  check('结构性命令不算符号（\\mid 之类不该进索引）', !symNames.includes('\\mid') && !symNames.includes('\\mathbb'));
+  const ySym = idx.symbols.find(s => s.name === 'Y');
+  check('符号记了出现次数与首次出现页', !!ySym && ySym.count >= 2 && ySym.firstPage === 5, ySym ? `×${ySym.count} 首现 p${ySym.firstPage}` : '缺');
+  check('索引徽标显示公式条数', (document.getElementById('indexCount') || {}).textContent === '3');
+
+  S.switchTab('index');
+  const rendered = document.getElementById('indexListContainer');
+  check('切到索引页签后渲染出条目', !!rendered && rendered.querySelectorAll('.index-entry').length === 3, rendered ? String(rendered.querySelectorAll('.index-entry').length) : '缺失');
+  check(
+    '每条公式都能「定位 / 讲透这条公式 / 复制 LaTeX」',
+    !!rendered &&
+      rendered.querySelectorAll('.btn-index-locate').length === 3 &&
+      rendered.querySelectorAll('.btn-index-ask').length === 3 &&
+      rendered.querySelectorAll('.btn-index-copy').length === 3
+  );
+  check('公式下面列出它用到的符号', !!rendered && rendered.querySelectorAll('.index-sym-chip').length > 0);
+  // 符号视图：点「符号」筛选后应变成符号表
+  document.getElementById('indexFilterSymbol').click();
+  check(
+    '切到符号视图后列出符号 + 次数 + 首现页',
+    !!rendered && rendered.querySelectorAll('.index-sym-row').length > 0 && /×\d+/.test(rendered.textContent)
+  );
+  document.getElementById('indexFilterFormula').click();
+  // 搜索过滤
+  const searchEl = document.getElementById('indexSearchInput');
+  searchEl.value = 'AttID';
+  searchEl.dispatchEvent(new window.Event('input', { bubbles: true }));
+  check(
+    '搜索能过滤（搜 AttID 只剩含它的那条）',
+    !!rendered && rendered.querySelectorAll('.index-entry').length === 1,
+    rendered ? String(rendered.querySelectorAll('.index-entry').length) : '缺失'
+  );
+  searchEl.value = '';
+  searchEl.dispatchEvent(new window.Event('input', { bubbles: true }));
+  S.switchTab('trans');
+  check('切回对照翻译页签后索引面板隐藏', !document.getElementById('indexView').classList.contains('active'));
+}
 
 if (miss > 0) {
   console.log(`\n❌ 真实宿主 HTML 下有 ${miss} 项没通过 —— 用户在界面上就是"看不到这个控件"`);

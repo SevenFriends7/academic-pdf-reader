@@ -533,6 +533,38 @@ function makePaperData() {
     const formulaText = await readWholeDoc(rFormula.bytes);
     check('该页译文页写明"公式/符号段落，无需翻译"', formulaText.includes('公式/符号段落，无需翻译'));
     check('不再对它说"这一条还没有译文"', !formulaText.includes('这一条还没有译文'));
+    // 规范 LaTeX（视觉模型转写）要写进批注 PDF：字符层"原文摘录"是残渣，读者拿它当笔记时公式是错的
+    const canonical = '\\hat{X}_t \\subset \\{ \\hat{X}_i \\mid i \\in [2, t] \\}';
+    const withLatex = makePaperData();
+    withLatex.annotations = paperDataFormulaOnly.annotations;
+    withLatex.pageArchive = {
+      '2': [
+        {
+          id: 0,
+          type: 'formula',
+          cleanText: 'X ̂ t ⊂ { X ̂ i | i ∈ [2, t] }.',
+          visionLatex: canonical,
+          translation: '',
+          sentenceTranslations: []
+        }
+      ]
+    };
+    const rLatex = await buildAnnotatedPdf({
+      originalBytes,
+      paperData: withLatex,
+      paperName: 'cycle.pdf',
+      includeAllPages: false,
+      fontPathOverride: forcedFont
+    });
+    const latexText = await readWholeDoc(rLatex.bytes);
+    check(
+      '批注 PDF 里写出规范 LaTeX（可复制，而不是只有字符层残渣）',
+      // pdf.js 抽文本时会把空格吞掉（`规范 LaTeX` → `规范LaTeX`），断言要容忍
+      /规范\s*LaTeX/.test(latexText) && latexText.includes('hat{X}_t'),
+      /规范\s*LaTeX/.test(latexText) ? '' : '没找到规范 LaTeX 行'
+    );
+    const noLatexText = await readWholeDoc(rFormula.bytes);
+    check('没有规范式时不写这一行（旧档不会平白多一行）', !/规范\s*LaTeX/.test(noLatexText));
   }
 
   // 自动用系统程序打开是踩过的坑：用户机器上 .pdf 没有关联程序时，

@@ -413,11 +413,17 @@
           <div class="ai-modal-body">
             <div class="ai-modal-context">
               <div class="ai-context-text" id="aiModalQuote"></div>
+              <!-- 聚焦的公式会带上"规范 LaTeX"一起提问：这里让读者看得见这件事（默认隐藏） -->
+              <div class="ai-math-badge" id="aiModalMathBadge" style="display: none;"></div>
+              <!-- 规范公式本身就排版在弹窗里：读者聚焦的就是这条式子，别再让他看残渣 -->
+              <div class="ai-math-preview" id="aiModalMathPreview" style="display: none;"></div>
             </div>
             <div class="ai-prompt-chips">
               <button type="button" class="ai-chip" data-q="这句话的真实技术意图与核心动机是什么？请用通俗中文讲透。">核心动机</button>
               <button type="button" class="ai-chip" data-q="作者在此处与以往前人方法有何本质区别？优势在哪里？">与前人区别</button>
               <button type="button" class="ai-chip" data-q="这句话里涉及的术语、公式或方法背后的数学原理是什么？">术语与公式</button>
+              <!-- 公式专用：逐符号讲透（聚焦公式本身，不跑题到论文背景） -->
+              <button type="button" class="ai-chip ai-chip-math" data-q="请把这条公式讲透：先用 $$...$$ 写出规范形式，再逐符号列表说明（符号、含义、形状或取值范围、在哪里定义），然后说清它在做什么，最后代一个具体的小例子走一遍。">讲透这条公式</button>
               <button type="button" class="ai-chip" data-q="我对这里的结论存有疑难，请结合上下文帮我深度剖析推导过程。">推导过程</button>
             </div>
             <div id="aiModalTranscript" class="ai-transcript">
@@ -458,7 +464,13 @@
     zoomFitBtn: document.getElementById('zoomFitBtn'),
     zoomPercent: document.getElementById('zoomPercent'),
     tabTransBtn: document.getElementById('tabTransBtn'),
+    tabIndexBtn: document.getElementById('tabIndexBtn'),
     tabNotesBtn: document.getElementById('tabNotesBtn'),
+    indexView: document.getElementById('indexView'),
+    indexListContainer: document.getElementById('indexListContainer'),
+    indexSearchInput: document.getElementById('indexSearchInput'),
+    indexFilterFormula: document.getElementById('indexFilterFormula'),
+    indexFilterSymbol: document.getElementById('indexFilterSymbol'),
     notesCount: document.getElementById('notesCount'),
     translateAllBtn: document.getElementById('translateAllBtn'),
     exportNotesBtn: document.getElementById('exportNotesBtn'),
@@ -818,6 +830,9 @@
             message: `视觉重排：${summary}（${model}）`,
             level: 'info'
           });
+          // 这一页的公式/符号刚判完 → 索引要重算（徽标数字与面板内容都跟着更新）
+          invalidateMathIndex();
+          if (dom.indexView && dom.indexView.classList.contains('active')) renderMathIndexPanel();
         }
         break;
       }
@@ -1579,12 +1594,26 @@
       });
     })();
 
-    // 8.6 最终阅读顺序重排：把"同一条图注/同一张图"的行聚到一起，并按它们的 y 位置摆放。
+    // 8.6 最终阅读顺序重排：把"同一条图注/同一张图"的行聚成块，再把块**回填进它所属的那一栏**，
+    // 与该栏正文按 y 混排，最终形成"先左栏从上到下、再右栏从上到下"。
     //
     // 为什么必须重排：前面是按"桶"拼接顺序的（col1 → col2 → 通栏），
     // 而一条通栏图注常常只有前几行是通栏的、**最后一行较窄会被分进某一栏**——
     // 于是同一条图注被拆到页面两端，变成两张卡片（表现为"第一个图注和最后一个其实是同一段"）。
-    // 这里改为按"块"排：图表/图注行聚成块，位于正文之上的排在最前，其余排在正文之后。
+    //
+    // 【旧实现错在哪】旧版拿"块的底边"与"整页正文的顶边（单一阈值 colTop）"做全局二分：
+    //   ① colTop 是**全局单值**，而双栏页两栏正文起点常常不同（实测 STM 第 6 页左栏正文从
+    //      y≈139 起、右栏从 y≈422 起），用一个阈值比两栏，必然误判其中一栏；
+    //   ② 拿"块的底边"比"正文的顶边"：块越高（Table 2 在左栏从 y=460 一直延伸到 y=247）
+    //      底边越低，就被判成"不在正文之上"→ 整块被搬到正文**之后**；
+    //   ③ 块不分栏：右栏的 Table 3 底边高，被判成 topBlock 提到正文**之前**，
+    //      于是右栏的图表跑到左栏的图表前面。
+    //   三者叠加就是用户反馈的"有时候这个段的顺序是乱的"——实测 STM 第 6 页输出为
+    //   表1 → 表3图注 → 标题 → 正文 → 表2 → 表2图注（表1、表3的数据行还被并成了同一段）。
+    //
+    // 【现在的做法】先把块聚成"图表单元"，判栏只用于**单元**，正文行用它自己的 section，
+    // 然后**在栏内**按 y 混排。这样不再需要任何全局阈值，两栏的正文起点不同也各自成立；
+    // 通栏单元仍按老规矩：真正在正文之上的排最前，其余排在两栏之后、脚注之前。
     (function reorderFigureBlocks() {
       const isColLine = l => (l.section === 'col1' || l.section === 'col2') && l.section !== 'figure-label';
       const colLines = orderedLines.filter(isColLine);
@@ -1631,12 +1660,132 @@
       });
 
       const colTop = Math.max(...colLines.map(l => l.y));
-      // 块整体位于正文之上（留 8pt 容差：图注尾行常与正文首行齐平）→ 排在最前
-      const topBlocks = blocks.filter(b => b.bottomY > colTop - 8).sort((a, b) => b.bottomY - a.bottomY);
-      const restBlocks = blocks.filter(b => b.bottomY <= colTop - 8).sort((a, b) => b.bottomY - a.bottomY);
-      const flat = bs => bs.reduce((acc, b) => acc.concat(b.lines.slice().sort((x, y) => y.y - x.y)), []);
+      const byY = lines => lines.slice().sort((x, y) => y.y - x.y);
+      // 单元内的行：块按底边自上而下，块内行也自上而下（与旧的块展平顺序一致）
+      const unitLines = u =>
+        u.blocks
+          .slice()
+          .sort((a, b) => b.bottomY - a.bottomY)
+          .reduce((acc, b) => acc.concat(byY(b.lines)), []);
+      const hOverlap = (a, b) => a.minX <= b.maxX + 20 && b.minX <= a.maxX + 20;
+      const straddlesGutter = b =>
+        !isSingleColumnPage && b.minX < gutterX - GUTTER_CLEARANCE && b.maxX > gutterX + GUTTER_CLEARANCE;
 
-      orderedLines = [...heads, ...flat(topBlocks), ...colLines, ...flat(restBlocks), ...feet];
+      // ---- 先把"块"聚成"图表单元" ----
+      // 【为什么块之上还要一层】一张横跨两栏的大图（实测 STM 第 3 页 Figure 2），
+      // 它的标签会被分栏逻辑劈到左右两栏、图注又常常是通栏的，于是**同一张图**变成好几个块。
+      // 若按块各自决定位置，左标签被当左栏块、右标签被当右栏块，图注被当通栏块排到最前——
+      // 结果正文被插进图的中间（实测"标签 → 正文 → 标签"）。
+      // 只有把属于同一张图表的块当成**一个整体**，才能既不被拆散、又能整体决定它排在正文之前还是之后。
+      const FIG_UNIT_GAP = 120; // 约 10 行正文，够跨过图注与图之间的空隙
+
+      /**
+       * 两个块能不能算同一张图表？三条规矩，都是被真实页面逼出来的：
+       *  ① 上块是图注 → 不与下块合并。这些论文的图注一律在内容**下方**，
+       *     所以图注的下面是"另一张图表"。没有这条，STM 第 6 页 Table 2 的数据行
+       *     会被并进 Table 1 的单元、STM 第 7 页整页的图表会被并成一个巨块拖到页尾。
+       *  ② 下块是图注 → 合并（图注紧跟它的数据行/图）。
+       *  ③ 两块都是图表内容 → 中间**夹着**图注就不能合并：
+       *     实测 STM 第 7 页 Figure 4 的右半在 y≈534、Table 5 的数据行在 y≈460，
+       *     两者只差 74pt，中间正好是 Figure 4 的图注——夹了图注就是两张不同的图表。
+       */
+      const sameFigureUnit = (a, b) => {
+        const [upper, lower] = a.topY >= b.topY ? [a, b] : [b, a];
+        const gap = upper.bottomY - lower.topY;
+        if (gap < 0 || gap > FIG_UNIT_GAP) return false;
+        if (!hOverlap(a, b)) return false;
+        if (upper.section === 'caption') return false; // ①
+        if (lower.section === 'caption') return true; // ②
+        const x1 = Math.min(a.minX, b.minX); // ③
+        const x2 = Math.max(a.maxX, b.maxX);
+        return !blocks.some(
+          c =>
+            c.section === 'caption' &&
+            hOverlap(c, { minX: x1, maxX: x2 }) &&
+            c.topY <= upper.bottomY + 1 &&
+            c.bottomY >= lower.topY - 1
+        );
+      };
+
+      const parent = blocks.map((_, i) => i);
+      const find = i => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+      const union = (i, j) => {
+        const a = find(i);
+        const b = find(j);
+        if (a !== b) parent[b] = a;
+      };
+      for (let i = 0; i < blocks.length; i++) {
+        for (let j = i + 1; j < blocks.length; j++) {
+          if (sameFigureUnit(blocks[i], blocks[j])) union(i, j);
+        }
+      }
+      const units = [];
+      const unitOf = new Map();
+      blocks.forEach((b, i) => {
+        const root = find(i);
+        if (!unitOf.has(root)) {
+          const u = { blocks: [], minX: Infinity, maxX: -Infinity, topY: -Infinity, bottomY: Infinity };
+          unitOf.set(root, u);
+          units.push(u);
+        }
+        const u = unitOf.get(root);
+        u.blocks.push(b);
+        u.minX = Math.min(u.minX, b.minX);
+        u.maxX = Math.max(u.maxX, b.maxX);
+        u.topY = Math.max(u.topY, b.topY);
+        u.bottomY = Math.min(u.bottomY, b.bottomY);
+      });
+
+      // 单元归栏：只要含"整个横跨分栏线"的块、或它的块分布在分栏线两侧，就算通栏单元。
+      // 单栏页一律算 col1——否则一个整页宽单元的"中心"会正好贴着 gutterX 左右摇摆。
+      const colOfUnit = u => {
+        if (isSingleColumnPage) return 'col1';
+        let left = false;
+        let right = false;
+        let cross = false;
+        u.blocks.forEach(b => {
+          if (straddlesGutter(b)) cross = true;
+          else if ((b.minX + b.maxX) / 2 < gutterX) left = true;
+          else right = true;
+        });
+        if (cross || (left && right)) return 'cross';
+        return left ? 'col1' : 'col2';
+      };
+
+      // 栏内条目：正文行用自己参与排序；图表单元用它的**顶边**参与排序
+      // （单元内保持自上而下），于是"表2数据行(460→247) → 表2图注(222) → 左栏正文(139)"能自然排对。
+      const items = { col1: [], col2: [] };
+      const crossUnits = [];
+      units.forEach(u => {
+        const c = colOfUnit(u);
+        if (c === 'cross') {
+          crossUnits.push(u);
+          return;
+        }
+        items[c].push({ y: u.topY, lines: unitLines(u) });
+      });
+      colLines.forEach(l => items[l.section === 'col2' ? 'col2' : 'col1'].push({ y: l.y, lines: [l] }));
+
+      // 整个单元都位于正文之上（比的是单元的**最下边**，留 8pt 容差：
+      // 图注尾行常与正文首行齐平）→ 排在最前；
+      // 其余通栏单元（页中、页底的通栏图注）排在两栏之后、脚注之前。
+      const topCross = crossUnits.filter(u => u.bottomY > colTop - 8).sort((a, b) => b.topY - a.topY);
+      const restCross = crossUnits.filter(u => u.bottomY <= colTop - 8).sort((a, b) => b.topY - a.topY);
+      const flat = us => us.reduce((acc, u) => acc.concat(unitLines(u)), []);
+      const emitCol = c =>
+        items[c]
+          .slice()
+          .sort((a, b) => b.y - a.y)
+          .reduce((acc, it) => acc.concat(it.lines), []);
+
+      orderedLines = [
+        ...heads,
+        ...flat(topCross),
+        ...emitCol('col1'),
+        ...emitCol('col2'),
+        ...flat(restCross),
+        ...feet
+      ];
     })();
 
     // 9. 段落聚合并构建字符级精确映射表 (charMap)
@@ -1863,10 +2012,28 @@
       const looksContinuation = t => /^[a-z0-9(“"'\[]/.test((t || '').trim());
       const colOf = p => ((p.minX + p.maxX) / 2 < gutterX ? 'col1' : 'col2');
 
+      // 8.6 改成"图表块按栏内联"之后，**右栏顶部的图表会插在左栏尾段与右栏首段之间**：
+      // 实测 STM 第 6 页左栏尾句 "…each for a single" 续到右栏 "target object."，
+      // 中间隔着 Table 3 的数据行和图注；第 1 页 Figure 1 同理（"With deep learning" → "approaches, …"）。
+      // 旧实现只比较相邻两段，于是这条跨栏句被图表切断，两半各自送去翻译 → 两张读不懂的残句卡片
+      // （正是上面 9.5 注释里说的那种症状）。
+      // 这里允许向后跳过"纯图表段落"去找续句，但**只跳图表**：一遇到正文/标题/脚注就停，
+      // 绝不把两段本来无关的正文粘起来。
+      const FIGURE_TYPES = { caption: 1, 'figure-label': 1, cross: 1 };
+      const nextBodyIndex = start => {
+        for (let j = start + 1; j < paras.length; j++) {
+          if (paras[j].type === 'body') return j;
+          if (!FIGURE_TYPES[paras[j].type]) return -1;
+        }
+        return -1;
+      };
+
       for (let i = 0; i < paras.length - 1; i++) {
         const a = paras[i];
-        const b = paras[i + 1];
-        if (a.type !== 'body' || b.type !== 'body') continue;
+        if (a.type !== 'body') continue;
+        const j = nextBodyIndex(i);
+        if (j < 0) continue;
+        const b = paras[j];
         if (colOf(a) !== 'col1' || colOf(b) !== 'col2') continue;
         if (endsSentence(a.cleanText) || !looksContinuation(b.cleanText)) continue;
 
@@ -1885,7 +2052,7 @@
         a.maxX = Math.max(a.maxX, b.maxX);
         a.sentencesEn = splitEnglishSentencesSmart(a.cleanText);
         a.joinedAcrossColumn = true;
-        paras.splice(i + 1, 1);
+        paras.splice(j, 1);
         i--; // 合并后同一位置可能还要继续吃下一段
       }
     })();
@@ -2585,6 +2752,17 @@
           // 只存 p.translation 就会出现"译文没同步到导出"——0.5.13 就是这样漏的。
           translation: findCachedTranslation(pageNum, p) || p.translation || '',
           sentenceTranslations: findCachedSentences(pageNum, p) || (Array.isArray(p.sentenceTranslations) ? p.sentenceTranslations.slice() : []),
+          /*
+           * 规范公式必须跟着快照一起走。
+           *
+           * 【踩过的坑】这里以前只存 cleanText/sentencesEn/translation，**把 visionLatex 与
+           * visionInline 丢了**，于是导出的精读稿里公式永远是字符层残渣
+           * （`AttLT (X l, X l, Y) = AttID (X | W l, …)`——上标丢失、`^` 变成 `|`）。
+           * 读者把精读稿拿回 Obsidian 长期读，看到的公式全是错的。
+           * 现在公式导出成 `$$...$$`、正文里的行内公式按替换表写成 `$...$`（见 buildReadingDocMarkdown）。
+           */
+          visionLatex: String(p.visionLatex || '').trim(),
+          visionInline: Array.isArray(p.visionInline) ? p.visionInline.slice(0, 8) : [],
           // 记下缓存键，宿主可以据此**精确**回查（不必重算指纹、猜引擎标识）
           cacheKey: getParaCacheKey(pageNum, p)
         }));
@@ -3052,26 +3230,32 @@
   }
 
   /**
-   * 在 cleanText 里定位视觉模型给的"片段开头文字"。
+   * 在 cleanText 里定位视觉模型给的"片段开头文字"，返回命中的**区间** [start, end)。
    *
    * 为什么不能只用 indexOf：模型是**看图**写的，常把残渣顺手写对——
    * 文本层是 "Y ̂ t = S θ (X t )"（带组合抑扬符），模型可能写 "Ŷt = Sθ(Xt)"；
    * 空白、上下标、连字符、全角字符也常有出入。所以三级降级：
    *   ① 原样 indexOf；② 归一化后 indexOf（带下标映射）；③ 滑窗 + 二元组 Dice ≥ 0.72。
-   * 都失败返回 -1 —— 调用方**跳过这一处手术**，绝不猜一个位置去切。
+   * 都失败返回 null —— 调用方**跳过这一处手术**，绝不猜一个位置去切。
+   *
+   * 【为什么必须返回 end】②③ 两级是**去掉空白/组合符之后**比的，命中片段的原文长度
+   * 经常不等于 anchor 的长度。调用方若拿 `start + anchor.length` 当结尾就会**多吃字符**：
+   * 实测中文译文里的 "Y ∈ {0, 1}" 比模型写的 find "Y ∈ { 0, 1 }" 短两个字，
+   * 多吃的正好是后面那个上标的 `^{`，界面上于是留下悬空的 `}` 和一段重复的公式
+   * （用户反馈的"翻译乱套了"）。
    */
-  function locateAnchorIndex(text, anchor, from) {
+  function locateAnchorRange(text, anchor, from) {
     const t = String(text == null ? '' : text);
     const a = String(anchor == null ? '' : anchor).trim();
     const start = Math.max(0, Number(from) || 0);
-    if (!t || !a || start >= t.length) return -1;
+    if (!t || !a || start >= t.length) return null;
 
     const exact = t.indexOf(a, start);
-    if (exact >= 0) return exact;
+    if (exact >= 0) return { start: exact, end: exact + a.length };
 
     const nt = normalizeForMatch(t);
     const na = normalizeForMatch(a);
-    if (na.norm.length < 2) return -1;
+    if (na.norm.length < 2) return null;
 
     let nFrom = nt.map.length;
     for (let i = 0; i < nt.map.length; i++) {
@@ -3080,8 +3264,16 @@
         break;
       }
     }
+    /** 归一化区间 [from, from+len) 换回原文区间（结尾取该字符在原文里的**结束**位置） */
+    const toRange = (from, len) => {
+      const s = nt.map[from];
+      const lastAt = nt.map[Math.min(from + len - 1, nt.map.length - 1)];
+      const cp = t.codePointAt(lastAt);
+      return { start: s, end: lastAt + (cp === undefined ? 1 : String.fromCodePoint(cp).length) };
+    };
+
     const at = nt.norm.indexOf(na.norm, nFrom);
-    if (at >= 0) return nt.map[at];
+    if (at >= 0) return toRange(at, na.norm.length);
 
     const lens = [na.norm.length, na.norm.length - 2, na.norm.length + 2].filter(
       n => n >= 4 && n <= nt.norm.length
@@ -3091,12 +3283,20 @@
       const step = len > 40 ? 2 : 1;
       for (let i = nFrom; i + len <= nt.norm.length; i += step) {
         const score = bigramDice(nt.norm.slice(i, i + len), na.norm);
-        if (!best || score > best.score) best = { start: i, score };
+        if (!best || score > best.score) best = { start: i, len, score };
         if (score >= 0.985) break;
       }
     }
-    if (best && best.score >= 0.72) return nt.map[best.start];
-    return -1;
+    if (best && best.score >= 0.72) return toRange(best.start, best.len);
+    return null;
+  }
+
+  /**
+   * 只要起点（老接口，行为一字未变）。要"命中的真实结尾"请用 locateAnchorRange。
+   */
+  function locateAnchorIndex(text, anchor, from) {
+    const r = locateAnchorRange(text, anchor, from);
+    return r ? r.start : -1;
   }
 
   /**
@@ -3383,7 +3583,54 @@
 
     // ---- 2) 拆分：把"混了多种内容"的一段按锚点切开（锚点由模型按文本层残渣写法给出）----
     const out = [];
-    list.forEach(p => {
+
+    /** 按 parts 的锚点把 para 切开；锚点定位不到、或切不出两片 → 返回 null */
+    const trySplit = (para, parts) => {
+      const cuts = [];
+      let from = 0;
+      for (let k = 1; k < parts.length; k++) {
+        const anchor = parts[k] && parts[k].at;
+        const at = anchor ? locateAnchorIndex(para.cleanText, anchor, from) : -1;
+        if (at < 0) return null;
+        cuts.push(at);
+        from = at;
+      }
+      const bounds = [0].concat(cuts).concat([(para.cleanText || '').length]);
+      const made = [];
+      for (let k = 0; k < parts.length; k++) {
+        const sl = sliceParaPart(para, bounds[k], bounds[k + 1]);
+        if (!sl.text) continue;
+        made.push(buildSplitPiece(para, sl, parts[k], k === 0));
+      }
+      return made.length >= 2 ? { cuts, made } : null;
+    };
+
+    // 被"跨段拆分"吸收掉的后一段（它不再单独出卡片）。
+    // 声明放在 canAbsorb **之前**：本仓库被 const 暂时性死区坑过两次，顺序别省。
+    const absorbed = new Set();
+
+    /** 这一段是否适合被"跨段拆分"吸收（模型自己判过 split/drop 的段绝不碰） */
+    const canAbsorb = next => {
+      if (!next || absorbed.has(next)) return false;
+      const s = segByIndex.get(Number(next.id));
+      return !s || (s.action !== 'split' && s.action !== 'drop');
+    };
+
+    /**
+     * 拆分被挪到**后面几段**时，片子要等循环走到那一段再输出（不能就地输出）：
+     * 否则"公式片"会跑到它前面的正文之前，阅读顺序又被搞乱（实测 AOT 第 5 页：
+     * 第 6 段的公式(5) 的锚点在第 9 段，就地输出会让公式排到第 7、8 段前面）。
+     */
+    const pendingSplits = new Map(); // 起始段对象 → 该处拆分切出来的片子
+
+    list.forEach((p, listIdx) => {
+      // 走到"被挪过来的拆分"的起点：先把它切出来的片子按顺序输出
+      if (pendingSplits.has(p)) {
+        pendingSplits.get(p).forEach(piece => out.push({ seg: null, para: piece }));
+        return;
+      }
+      if (absorbed.has(p)) return;
+      let deferred = false; // 本段只是"拆分起点在别处"的报告者，自己仍要出卡片
       const seg = segByIndex.get(Number(p.id));
       if (!seg) {
         out.push({ seg: null, para: p });
@@ -3398,29 +3645,87 @@
         out.push({ seg, para: p });
         return;
       }
-      const cuts = [];
-      let from = 0;
-      let ok = true;
-      for (let k = 1; k < parts.length; k++) {
-        const anchor = parts[k] && parts[k].at;
-        const at = anchor ? locateAnchorIndex(p.cleanText, anchor, from) : -1;
-        if (at < 0) {
-          ok = false;
-          break;
+
+      let res = trySplit(p, parts);
+
+      /*
+       * 【实测的真 bug：拆分锚点根本不在本段里】
+       * 模型是看图判断的，它给的 parts 锚点经常落在**别的段落**上。三种形态都实测到了：
+       *   · AOT 第 3 页：parts[0] 在本段、"公式片"的锚点 "′ N t m m N t m m Y = A (F (I, I, Y 1)"
+       *     落在**紧接着的下一段**（本地把这段切成了两段，模型看图认为它们是同一个块）；
+       *   · AOT 第 4 页：连 parts[0] 都不在本段 —— 模型把 index 标成了第 7 段，
+       *     而两个锚点分别在**第 10、11 段**里（第 11 段本来就是那条公式）；
+       *   · AOT 第 5 页：parts[0] **没有锚点**（模型认为正文从本段开始），而 parts[1] 的锚点
+       *     在第 9 段、parts[2] 的锚点在第 10 段 —— 这时"本段开始"这个前提本身就是错的。
+       * 旧实现只在本段里找锚点，找不到就整段放弃 —— 模型给的公式 latex 被**静默丢掉**，
+       * 那段（type=formula）于是没有任何 latex，公式整条不渲染
+       * （用户看到的"段落内的公式提取不完整导致 latex 渲染失败"）。
+       *
+       * 兜底：按**锚点**重新解析这段拆分真正跨越的段落 ——
+       *   ① 起点候选：含 parts[0] 锚点的那一段（不在本段时往后最多找 3 段）；
+       *      parts[0] 没有锚点时，先用本段试，失败再用**含 parts[1] 锚点的那一段**当起点
+       *      （锚点是唯一可信的信号，index 不可信）；
+       *   ② 从起点往后逐段接起来重试，直到所有锚点都能定位（最多吃 3 段）；
+       *   ③ 只接模型没单独判过 split/drop 的段，且**内容一字不改**（切点会原样分回各片）。
+       * 起点不是本段时，本段自己照旧按它的判断出卡片，拆分作用在被挪到的那几段上。
+       */
+      if (!res) {
+        const firstAt = parts[0] && parts[0].at;
+        const secondAt = parts[1] && parts[1].at;
+        // 这里只做**搜索**：已被别的拆分吸收掉的段要**跳过**（continue）而不是停下（break）——
+        // 实测 AOT 第 5 页：第 6 段的拆分先吸收了第 9、10 段，第 7 段的锚点在第 12 段，
+        // 若在这里 break 就永远搜不到，拆分又白丢一次。
+        const findStart = (anchor, maxAhead) => {
+          for (let s = listIdx + 1; s < list.length && s <= listIdx + maxAhead; s++) {
+            if (absorbed.has(list[s])) continue;
+            if (locateAnchorIndex(list[s].cleanText, anchor, 0) >= 0) return s;
+          }
+          return -1;
+        };
+        const starts = [];
+        if (firstAt) {
+          if (locateAnchorIndex(p.cleanText, firstAt, 0) >= 0) starts.push(listIdx);
+          else {
+            const at = findStart(firstAt, 3);
+            if (at >= 0) starts.push(at);
+          }
+        } else {
+          starts.push(listIdx); // 本段就是首片（绝大多数情况）
+          if (secondAt) {
+            const at = findStart(secondAt, 5);
+            if (at >= 0) starts.push(at);
+          }
         }
-        cuts.push(at);
-        from = at;
-      }
-      const bounds = [0].concat(cuts).concat([(p.cleanText || '').length]);
-      const made = [];
-      if (ok) {
-        for (let k = 0; k < parts.length; k++) {
-          const sl = sliceParaPart(p, bounds[k], bounds[k + 1]);
-          if (!sl.text) continue;
-          made.push(buildSplitPiece(p, sl, parts[k], k === 0));
+        for (const spanStart of starts) {
+          if (res) break;
+          const usedParts = [];
+          let acc = spanStart === listIdx ? p : null;
+          for (let s = spanStart; s < list.length && usedParts.length < 3; s++) {
+            const cand = list[s];
+            if (absorbed.has(cand)) break;
+            if (s !== spanStart && !canAbsorb(cand)) break;
+            acc = acc ? mergeParagraphs(acc, cand) : cand;
+            usedParts.push(cand);
+            if (usedParts.length < 2) continue;
+            const retry = trySplit(acc, parts);
+            if (!retry) continue;
+            res = retry;
+            usedParts.forEach(u => absorbed.add(u));
+            if (spanStart === listIdx) {
+              stats.notes.push('一处拆分点跨到了下一段（锚点落在下一段文本里），已先把两段接起来再拆');
+            } else {
+              // 本段没被卷进拆分：片子**等循环走到起点那一段**再输出（顺序才不乱），
+              // 本段自己仍按它的判断出卡片 → 由下面的 deferred 分支负责。
+              pendingSplits.set(list[spanStart], res.made);
+              deferred = true;
+              stats.notes.push('一处拆分被标到了别的段上（锚点其实在后面几段里），已按锚点挪到正确的段');
+            }
+            break;
+          }
         }
       }
-      if (!ok || made.length < 2) {
+
+      if (!res) {
         stats.anchorMissed++;
         stats.notes.push(
           `一段的拆分点没能在文本层里定位（${String((parts[1] && parts[1].at) || '').slice(0, 30)}…），已跳过该处拆分`
@@ -3429,8 +3734,12 @@
         return;
       }
       stats.split++;
-      stats.anchored += cuts.length;
-      made.forEach((piece, idx) => {
+      stats.anchored += res.cuts.length;
+      if (deferred) {
+        out.push({ seg, para: p });
+        return;
+      }
+      res.made.forEach((piece, idx) => {
         // 模型偶尔把整段公式的 latex 放在顶层、只拆出正文片：兜底给第一片留住它，
         // 否则那条公式就只剩残渣可看了。
         if (idx === 0 && !piece.visionLatex && seg.latex) piece.visionLatex = String(seg.latex).trim();
@@ -3774,6 +4083,26 @@
    * 这里以**你读过的每一页的段落**为骨架，把原文、译文、我的批注、AI 答疑
    * 交织在同一段之下，导出的是一份能直接读、能归档、能给别人的文稿。
    */
+  /**
+   * 导出用：把行内公式替换表应用到文本上，产出带 `$...$` 的 Markdown。
+   *
+   * 与界面显示（renderEnTextHtml）用**同一套定位逻辑**（locateAnchorRange 取真实命中区间），
+   * 这样"界面上看到的公式"与"导出笔记里的公式"一致；定位不到就不动原文（绝不乱切）。
+   * 导出里只用 `$...$`，不用 KaTeX：精读稿是给 Obsidian / Typora 这类工具读的。
+   */
+  function applyInlineMathToMarkdown(text, inline) {
+    let out = String(text == null ? '' : text);
+    (Array.isArray(inline) ? inline : []).forEach(item => {
+      const find = String((item && item.find) || '').trim();
+      const latex = String((item && item.latex) || '').trim();
+      if (!find || !latex) return;
+      const r = locateAnchorRange(out, find, 0);
+      if (!r) return;
+      out = out.slice(0, r.start) + `$${latex}$` + out.slice(r.end);
+    });
+    return out;
+  }
+
   function buildReadingDocMarkdown() {
     const paperTitle = ((dom.paperTitle && dom.paperTitle.textContent) || '未命名文献').trim();
     const baseName = paperTitle.replace(/\.pdf$/i, '');
@@ -3867,10 +4196,25 @@
 
         // 原文 / 译文：对齐时逐句成行（方便逐句精读对照），否则整段
         const enLines = para.sentencesEn && para.sentencesEn.length ? para.sentencesEn.map(s => s.text) : [sourceText];
-        if (para.type === 'title' || para.type === 'heading') {
+        /*
+         * 公式段落：导出**规范 LaTeX**（视觉模型从页面图像转写），而不是字符层残渣。
+         *
+         * 【为什么必须改】精读稿是要拿回 Obsidian / Typora 里长期读的，而字符层抽出来的公式是残渣
+         * （真实例子：`AttLT (X l, X l, Y) = AttID (X | W l, …)`——上标全丢、`^` 变成 `|`）。
+         * 以前只导出这段残渣，读者翻笔记时看到的公式全是错的。
+         * 现在把规范式写成 `$$...$$`（Obsidian 直接排版），残渣降级成一行小字"字符层抽取（可能有误）"备查。
+         * 正文段落里的**行内公式**同样按替换表写成 `$...$`（见 applyInlineMathToMarkdown）。
+         */
+        const visionLatex = String(para.visionLatex || '').trim();
+        const visionInline = Array.isArray(para.visionInline) ? para.visionInline : [];
+        const inlineMd = t => (visionInline.length ? applyInlineMathToMarkdown(t, visionInline) : t);
+        if (para.type === 'formula' && visionLatex) {
+          md += `**公式（视觉模型从页面图像转写，可直接渲染）**\n\n$$\n${visionLatex}\n$$\n\n`;
+          md += `<sub>公式不翻译；下面是字符层抽取结果（可能有误，仅备查）：${escapeHtml(sourceText)}</sub>\n\n`;
+        } else if (para.type === 'title' || para.type === 'heading') {
           if (translation) md += `${mdQuote(translation)}\n\n`;
         } else {
-          md += `**原文**\n\n${mdQuoteLines(enLines)}\n\n`;
+          md += `**原文**\n\n${mdQuoteLines(enLines.map(inlineMd))}\n\n`;
           if (translation) {
             const zhLines = sentences && sentences.length === enLines.length ? sentences : [translation];
             md += `**译文**\n\n${mdQuoteLines(zhLines)}\n\n`;
@@ -3959,7 +4303,12 @@
     return `
       <div class="card-formula-block${inline ? ' card-formula-inline' : ''}">
         <div class="card-formula-label">${inline ? '本段公式（视觉模型从页面图像转写为 LaTeX）' : '公式（由视觉模型从页面图像转写为 LaTeX）'}</div>
-        <div class="card-formula-body">${renderMathSpan(latex, true)}</div>
+        <div class="card-formula-body">${renderVisionMathHtml(latex, true)}</div>
+        <div class="card-formula-tools">
+          <!-- 一键问 AI：把这条规范 LaTeX 一起带上（见 collectFocusMath），让模型逐符号讲透 -->
+          <button class="btn-formula-ask" data-para-id="${para.id}" type="button" title="按“逐符号 + 小例子”讲透这条公式（会把规范 LaTeX 一起交给模型）">讲透这条公式</button>
+          <button class="btn-formula-copy" data-latex="${escapeHtml(latex)}" type="button" title="复制这条公式的 LaTeX 源码">复制 LaTeX</button>
+        </div>
         <div class="card-formula-note">公式不翻译；下方原文仅供核对字符层抽取结果</div>
         <div class="card-formula-raw">${escapeHtml(String(para.cleanText || '').slice(0, 300))}</div>
       </div>
@@ -4246,6 +4595,8 @@
             selectedText: sentText,
             contextText: para.cleanText,
             page: currentPage,
+            // 交出聚焦段落：若这句里含公式，collectFocusMath 会把对应的规范 LaTeX 一并送给模型
+            focusPara: para,
             presetQuestion: `请结合论文上下文，深度剖析并解答此句的核心学术含义、技术动机与研究背景：\n"${sentText}"`,
           });
           return;
@@ -4408,11 +4759,19 @@
       if (btnAi) {
         btnAi.addEventListener('click', (e) => {
           e.stopPropagation();
+          // 公式段落的提问默认就聚焦公式本身：问题模板换成"逐符号 + 小例子"，
+          // 并显式交出 focusPara，让 collectFocusMath 取到规范 LaTeX（visionLatex）。
+          const isFormulaPara = para.type === 'formula' || !!String(para.visionLatex || '').trim();
           openAiAssistantModal({
             selectedText: para.cleanText.slice(0, 240),
             contextText: para.cleanText,
             page: pageNum,
-            presetQuestion: '请结合论文全文上下文，深度剖析本段落的核心论点、技术动机与研究逻辑。',
+            focusPara: para,
+            noteType: isFormulaPara ? '公式' : '疑难待查',
+            presetQuestion: isFormulaPara
+              ? '请把这条公式讲透：先用 $$...$$ 写出规范形式，再逐符号列表说明（符号、读法、含义、形状或取值范围、在论文哪里定义），' +
+                '然后一句话说清它在做什么，最后代一个具体的小例子走一遍，并指出它和相邻公式的关系。'
+              : '请结合论文全文上下文，深度剖析本段落的核心论点、技术动机与研究逻辑。'
           });
         });
       }
@@ -4449,6 +4808,41 @@
         if (retryBtn) {
           e.stopPropagation();
           retransFn(retryBtn);
+        }
+
+        /*
+         * 公式卡片上的两个按钮：都围绕"这条公式本身"。
+         * · 讲透这条公式 → 带着**规范 LaTeX** 问 AI（focusPara 让 collectFocusMath 拿得到 visionLatex），
+         *   并把"逐符号 + 小例子"的模板问题预填进输入框；
+         * · 复制 LaTeX → 读者要拿去别处（笔记、LaTeX 编辑器、搜索引擎）才是真需求。
+         */
+        const askBtn = e.target.closest('.btn-formula-ask');
+        if (askBtn) {
+          e.stopPropagation();
+          const target = currentParagraphs.find(pp => pp && pp.id === para.id) || para;
+          openAiAssistantModal({
+            selectedText: `${target.visionLatex || target.cleanText || ''}`,
+            contextText: target.cleanText || '',
+            page: pageNum,
+            focusPara: target,
+            noteType: '公式',
+            presetQuestion:
+              '请把这条公式讲透：先用 $$...$$ 写出规范形式，再逐符号列表说明（符号、读法、含义、形状或取值范围、在论文哪里定义），' +
+              '然后一句话说清它在做什么，最后代一个具体的小例子走一遍，并指出它和相邻公式的关系。'
+          });
+          return;
+        }
+        const copyLatexBtn = e.target.closest('.btn-formula-copy');
+        if (copyLatexBtn) {
+          e.stopPropagation();
+          const tex = copyLatexBtn.getAttribute('data-latex') || '';
+          if (tex) {
+            navigator.clipboard
+              .writeText(tex)
+              .then(() => showReaderToast('已复制 LaTeX 源码'))
+              .catch(() => showReaderToast('复制失败，请手动选中公式'));
+          }
+          return;
         }
       });
 
@@ -6993,22 +7387,307 @@
   });
 
   // ====================== Tab 切换与工具栏控制 ======================
-  function switchTab(tab) {
-    if (tab === 'trans') {
-      dom.tabTransBtn.classList.add('active');
-      dom.tabNotesBtn.classList.remove('active');
-      dom.transView.classList.add('active');
-      dom.notesView.classList.remove('active');
-    } else {
-      dom.tabTransBtn.classList.remove('active');
-      dom.tabNotesBtn.classList.add('active');
-      dom.transView.classList.remove('active');
-      dom.notesView.classList.add('active');
+  // ====================== 全文公式与符号索引 ======================
+  /*
+   * 【为什么要做这个索引】读者（用户原话）"读人工智能的文章最重要的就是理解公式"，
+   * 而论文的符号永远是"第一次出现时定义、之后到处用"——读到第 6 页忘了 $W^l$ 是什么，
+   * 只能往回翻着找。索引把**全文符号**（含出现次数与首次出现页）与**全文公式**列在一起，
+   * 点一下就能跳回原文/卡片，或者直接问 AI"逐符号讲透这条"。
+   *
+   * 【数据来源为什么是视觉回包】`visionStructure[page].segments[]` 是**按页持久化**的，
+   * 里面就有规范 LaTeX（实测 15/15 片都带）；而页面卡片只在"当前页已渲染"时存在。
+   * 所以索引覆盖的是"读过且视觉模型判过版式的所有页"，与翻到哪一页无关。
+   */
+  let mathIndexCache = null;
+  let indexFilter = 'formula';
+  let indexQuery = '';
+
+  /** 结构性命令：排版指令/括号/运算号，不是"符号"（`\alpha`、`\partial` 这类是符号，保留） */
+  const MATH_INDEX_SKIP_CMDS = new Set([
+    'left', 'right', 'big', 'Big', 'bigg', 'Bigg', 'frac', 'dfrac', 'tfrac', 'sqrt', 'overline',
+    'underline', 'mathrm', 'mathit', 'mathbf', 'mathcal', 'mathbb', 'mathfrak', 'mathsf', 'mathtt',
+    'text', 'textbf', 'textit', 'operatorname', 'begin', 'end', 'array', 'matrix', 'pmatrix',
+    'bmatrix', 'vmatrix', 'cases', 'aligned', 'align', 'split', 'quad', 'qquad', 'hspace', 'vspace',
+    'cdot', 'cdots', 'ldots', 'dots', 'times', 'div', 'pm', 'mp', 'leq', 'geq', 'neq', 'approx',
+    'equiv', 'sim', 'propto', 'to', 'rightarrow', 'leftarrow', 'Rightarrow', 'Leftarrow',
+    'leftrightarrow', 'mid', 'vert', 'Vert', 'lvert', 'rvert', 'langle', 'rangle', 'colon',
+    'label', 'tag', 'notag', 'nonumber', 'displaystyle', 'textstyle', 'limits', 'nolimits',
+    'hat', 'widehat', 'tilde', 'widetilde', 'bar', 'vec', 'dot', 'ddot', 'overline',
+    // 关系/集合/求和算子：写公式要用，但读者不会去"查 \in 是什么意思"，进符号索引只会是噪声
+    'in', 'notin', 'ni', 'subset', 'subseteq', 'supset', 'supseteq', 'cup', 'cap', 'setminus',
+    'forall', 'exists', 'nexists', 'infty', 'sum', 'prod', 'int', 'iint', 'oint', 'lim',
+    'log', 'ln', 'lg', 'exp', 'sin', 'cos', 'tan', 'arcsin', 'arccos', 'arctan', 'sinh', 'cosh',
+    'tanh', 'max', 'min', 'arg', 'det', 'dim', 'ker', 'deg', 'gcd', 'bmod', 'pmod', 'mod',
+    'ast', 'star', 'circ', 'bullet', 'oplus', 'otimes', 'odot', 'wedge', 'vee', 'neg', 'land', 'lor',
+    'left(', 'right)', 'text{', 'mathstrut', 'phantom', 'overset', 'underset', 'stackrel',
+    'xrightarrow', 'xleftarrow', 'overbrace', 'underbrace', 'substack', 'binom', 'choose'
+  ]);
+
+  /**
+   * 从 LaTeX 里抽出"符号"（变量名 + 上下标 + 希腊字母 + 算子名）。
+   * 例：`\mathit{AttID}(X^l W^l, Y \mid D)` → `AttID`、`X^l`、`W^l`、`Y`、`D`
+   */
+  function extractMathSymbols(tex) {
+    let s = String(tex == null ? '' : tex);
+    // `\mathit{AttID}` / `\mathrm{ID}` / `\operatorname{softmax}` → 里面的名字才是符号
+    s = s.replace(/\\(?:math(?:it|rm|bf|cal|bb|frak|sf|tt)|text(?:bf|it)?|operatorname)\s*\{([^{}]*)\}/g, ' $1 ');
+    // 其余命令：结构性命令丢掉，`\alpha` 这类保留成符号
+    s = s.replace(/\\([a-zA-Z]+)/g, (m, name) => (MATH_INDEX_SKIP_CMDS.has(name) ? ' ' : ` \\${name} `));
+    s = s.replace(/[{}]/g, ' ');
+    const tokens = s.match(/\\?[A-Za-z][A-Za-z0-9]*(?:\s*[_^]\s*(?:\{[^{}]{1,24}\}|[A-Za-z0-9\\]{1,6}))*/g) || [];
+    const out = [];
+    tokens.forEach(t => {
+      const name = t.replace(/\s+/g, '').replace(/\{([^{}]*)\}/g, '$1');
+      if (!name || name.length > 28) return;
+      if (!/[A-Za-z\\]/.test(name)) return;
+      if (!out.includes(name)) out.push(name);
+    });
+    return out;
+  }
+
+  /** 汇总全文公式与符号（按页从视觉回包 + 已归档段落里收集；带缓存） */
+  function buildMathIndex() {
+    if (mathIndexCache) return mathIndexCache;
+    const formulas = [];
+    const symbols = new Map();
+    const seenTex = new Set();
+    const pageKeys = Object.keys((paperData && paperData.visionStructure) || {})
+      .map(Number)
+      .filter(Number.isFinite)
+      .sort((a, b) => a - b);
+    pageKeys.forEach(page => {
+      const vsAll = (paperData && paperData.visionStructure) || {};
+      const entry = vsAll[String(page)] || vsAll[page] || {};
+      const archive = (pageParaArchive.get(page) || []).slice();
+      const paraOf = idx => archive.find(p => Number(p.id) === Number(idx));
+      (entry.segments || []).forEach(seg => {
+        const para = paraOf(seg.index);
+        const add = (tex, kind) => {
+          const t = String(tex || '').trim();
+          if (!t || seenTex.has(t)) return;
+          seenTex.add(t);
+          const id = `f${formulas.length}`;
+          formulas.push({
+            id,
+            tex: t,
+            kind,
+            page,
+            paraId: para ? para.id : Number(seg.index),
+            residue: para ? String(para.cleanText || '').slice(0, 160) : '',
+            note: String(seg.why || '').slice(0, 40),
+            symbols: extractMathSymbols(t)
+          });
+          formulas[formulas.length - 1].symbols.forEach(sym => {
+            if (!symbols.has(sym)) symbols.set(sym, { name: sym, count: 0, firstPage: page, firstTex: t, formulas: [] });
+            const rec = symbols.get(sym);
+            rec.count++;
+            if (rec.formulas.length < 40) rec.formulas.push({ page, tex: t, paraId: para ? para.id : Number(seg.index) });
+          });
+        };
+        if (seg.latex) add(seg.latex, 'block');
+        (seg.parts || []).forEach(part => {
+          if (part && part.latex) add(part.latex, part.type === 'formula' ? 'block' : 'inline');
+        });
+        (seg.inline || []).forEach(item => {
+          if (item && item.latex) add(item.latex, 'inline');
+        });
+      });
+    });
+    const symbolList = [...symbols.values()].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+    mathIndexCache = { formulas, symbols: symbolList };
+    return mathIndexCache;
+  }
+
+  /** 索引失效（新的一页判完版式/换了文献时调用） */
+  function invalidateMathIndex() {
+    mathIndexCache = null;
+    updateMathIndexBadge();
+  }
+
+  function updateMathIndexBadge() {
+    const el = document.getElementById('indexCount');
+    if (!el) return;
+    const idx = mathIndexCache || buildMathIndex();
+    el.textContent = String(idx.formulas.length);
+  }
+
+  /** 点索引条目：跳到对照翻译页签里的那张卡片，并在左侧 PDF 上高亮这一段 */
+  function jumpToIndexEntry(page, paraId) {
+    switchTab('trans');
+    if (page !== currentPage) renderPage(page);
+    setTimeout(() => {
+      const card = document.getElementById(`transCard_${page}_${paraId}`);
+      if (card) {
+        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        card.classList.add('index-flash');
+        setTimeout(() => card.classList.remove('index-flash'), 1600);
+      }
+      const para = (Array.isArray(currentParagraphs) ? currentParagraphs : []).find(p => p && Number(p.id) === Number(paraId));
+      if (para) {
+        try {
+          focusParagraphOnPdf(para);
+        } catch (e) {
+          console.warn('[Viewer] 索引跳转高亮失败:', e);
+        }
+      }
+    }, page !== currentPage ? 260 : 60);
+  }
+
+  /** 直接针对索引里的这条公式问 AI（把规范 LaTeX 一起带上，见 collectFocusMath） */
+  function askAiFromIndex(entry) {
+    const synthetic = {
+      id: entry.paraId,
+      type: entry.kind === 'block' ? 'formula' : 'body',
+      cleanText: entry.residue || entry.tex,
+      visionLatex: entry.kind === 'block' ? entry.tex : '',
+      visionInline: entry.kind === 'block' ? [] : [{ find: entry.residue || '', latex: entry.tex }]
+    };
+    openAiAssistantModal({
+      selectedText: entry.residue || entry.tex,
+      contextText: entry.residue || entry.tex,
+      page: entry.page,
+      focusPara: synthetic,
+      noteType: '公式',
+      presetQuestion:
+        '请把这条公式讲透：先用 $$...$$ 写出规范形式，再逐符号列表说明（符号、读法、含义、形状或取值范围、在论文哪里定义），' +
+        '然后一句话说清它在做什么，最后代一个具体的小例子走一遍，并指出它和相邻公式的关系。'
+    });
+  }
+
+  function renderMathIndexPanel() {
+    const host = document.getElementById('indexListContainer');
+    if (!host) return;
+    const idx = mathIndexCache || buildMathIndex();
+    updateMathIndexBadge();
+    const subtitle = document.getElementById('indexSubtitle');
+    const q = indexQuery.trim().toLowerCase();
+    const match = (hay, tex) => !q || String(hay || '').toLowerCase().includes(q) || String(tex || '').toLowerCase().includes(q);
+
+    if (idx.formulas.length === 0) {
+      host.innerHTML = `<div class="empty-state"><p>还没有可索引的公式。<br>翻过几页（视觉模型判过版式的页）就会自动收录在这里。</p></div>`;
+      if (subtitle) subtitle.textContent = '读过的页会自动收录';
+      return;
     }
+
+    if (indexFilter === 'formula') {
+      const list = idx.formulas.filter(f => match(f.tex, f.residue) || f.symbols.some(s => s.toLowerCase().includes(q)));
+      if (subtitle) subtitle.textContent = `${idx.formulas.length} 条公式 · ${idx.symbols.length} 个符号`;
+      host.innerHTML = list.length
+        ? list
+            .map(
+              f => `
+        <div class="index-entry" data-page="${f.page}" data-para-id="${f.paraId}">
+          <div class="index-entry-head">
+            <span class="index-page-tag">第 ${f.page} 页</span>
+            ${f.kind === 'inline' ? '<span class="index-kind-tag">行内</span>' : ''}
+            ${f.note ? `<span class="index-note">${escapeHtml(f.note)}</span>` : ''}
+          </div>
+          <div class="index-formula-body">${renderVisionMathHtml(f.tex, true)}</div>
+          <div class="index-entry-symbols">${f.symbols.slice(0, 14).map(s => `<span class="index-sym-chip">${escapeHtml(s)}</span>`).join('')}</div>
+          <div class="index-entry-actions">
+            <button class="btn-index-locate" type="button">定位</button>
+            <button class="btn-index-ask" type="button" data-page="${f.page}" data-para-id="${f.paraId}">讲透这条公式</button>
+            <button class="btn-index-copy" type="button" data-latex="${escapeHtml(f.tex)}">复制 LaTeX</button>
+          </div>
+        </div>`
+            )
+            .join('')
+        : `<div class="empty-state"><p>没有匹配的公式。</p></div>`;
+      return;
+    }
+
+    // 符号视图：符号 + 出现次数 + 首次出现页（点一下跳到首次出现的那条公式）
+    const symList = idx.symbols.filter(s => !q || s.name.toLowerCase().includes(q));
+    if (subtitle) subtitle.textContent = `${idx.symbols.length} 个符号 · 来自 ${idx.formulas.length} 条公式`;
+    host.innerHTML = symList.length
+      ? `<div class="index-sym-table">${symList
+          .map(
+            s => `
+        <div class="index-sym-row" data-page="${s.firstPage}" data-para-id="${s.formulas[0] ? s.formulas[0].paraId : ''}" title="首次出现在第 ${s.firstPage} 页">
+          <span class="index-sym-name">${escapeHtml(s.name)}</span>
+          <span class="index-sym-count">×${s.count}</span>
+          <span class="index-sym-page">第 ${s.firstPage} 页</span>
+        </div>`
+          )
+          .join('')}</div>`
+      : `<div class="empty-state"><p>没有匹配的符号。</p></div>`;
+  }
+
+  function switchTab(tab) {
+    const setActive = (btn, on) => {
+      if (btn) btn.classList.toggle('active', !!on);
+    };
+    const setView = (view, on) => {
+      if (view) view.classList.toggle('active', !!on);
+    };
+    setActive(dom.tabTransBtn, tab === 'trans');
+    setActive(dom.tabIndexBtn, tab === 'index');
+    setActive(dom.tabNotesBtn, tab === 'notes');
+    setView(dom.transView, tab === 'trans');
+    setView(dom.indexView, tab === 'index');
+    setView(dom.notesView, tab === 'notes');
+    if (tab === 'index') renderMathIndexPanel();
   }
 
   dom.tabTransBtn.addEventListener('click', () => switchTab('trans'));
   dom.tabNotesBtn.addEventListener('click', () => switchTab('notes'));
+  if (dom.tabIndexBtn) dom.tabIndexBtn.addEventListener('click', () => switchTab('index'));
+  if (dom.indexSearchInput) {
+    dom.indexSearchInput.addEventListener('input', e => {
+      indexQuery = e.target.value || '';
+      renderMathIndexPanel();
+    });
+  }
+  if (dom.indexFilterFormula) {
+    dom.indexFilterFormula.addEventListener('click', () => {
+      indexFilter = 'formula';
+      dom.indexFilterFormula.classList.add('active');
+      if (dom.indexFilterSymbol) dom.indexFilterSymbol.classList.remove('active');
+      renderMathIndexPanel();
+    });
+  }
+  if (dom.indexFilterSymbol) {
+    dom.indexFilterSymbol.addEventListener('click', () => {
+      indexFilter = 'symbol';
+      dom.indexFilterSymbol.classList.add('active');
+      if (dom.indexFilterFormula) dom.indexFilterFormula.classList.remove('active');
+      renderMathIndexPanel();
+    });
+  }
+  if (dom.indexListContainer) {
+    dom.indexListContainer.addEventListener('click', async e => {
+      const row = e.target.closest('.index-sym-row');
+      if (row) {
+        const pg = parseInt(row.getAttribute('data-page'), 10);
+        const pid = parseInt(row.getAttribute('data-para-id'), 10);
+        if (Number.isFinite(pg)) jumpToIndexEntry(pg, Number.isFinite(pid) ? pid : undefined);
+        return;
+      }
+      const entry = e.target.closest('.index-entry');
+      if (!entry) return;
+      const page = parseInt(entry.getAttribute('data-page'), 10);
+      const paraId = parseInt(entry.getAttribute('data-para-id'), 10);
+      if (e.target.closest('.btn-index-copy')) {
+        const tex = e.target.closest('.btn-index-copy').getAttribute('data-latex') || '';
+        if (tex) {
+          navigator.clipboard
+            .writeText(tex)
+            .then(() => showReaderToast('已复制 LaTeX 源码'))
+            .catch(() => showReaderToast('复制失败，请手动选中公式'));
+        }
+        return;
+      }
+      if (e.target.closest('.btn-index-ask')) {
+        const item = (mathIndexCache || buildMathIndex()).formulas.find(
+          f => Number(f.page) === page && Number(f.paraId) === paraId && (!e.target.closest('.index-entry') || true)
+        );
+        if (item) askAiFromIndex(item);
+        return;
+      }
+      // 点条目其它位置 = 定位（跳到对照翻译里的那张卡片 + 左侧高亮）
+      if (Number.isFinite(page)) jumpToIndexEntry(page, Number.isFinite(paraId) ? paraId : undefined);
+    });
+  }
 
   dom.prevPageBtn.addEventListener('click', () => {
     if (currentPage > 1) renderPage(currentPage - 1);
@@ -7357,9 +8036,41 @@ let aiPresetQuestion = '';
    * 渲染失败**绝不吞掉**原文：退回等宽样式显示原始写法（旧行为），
    * 因为"公式看不见"比"公式没排版"严重得多。
    */
+  /**
+   * 数学片段里把 HTML 实体还原回字符。
+   *
+   * 【为什么必须做】Markdown 渲染的顺序是**先 escapeHtml、再匹配 `$...$`**
+   * （顺序不能反：反过来 KaTeX 生成的 HTML 会被后面的转义/强调语法破坏）。
+   * 于是模型写的 `$N(N<M)$` 到了 KaTeX 手里就成了 `N(N&lt;M)`，直接报
+   * `Expected 'EOF', got '&'`——`throwOnError:false` 把它渲染成**一块红字**。
+   * 实测三处：`N(N<M)`、`N<M`、`y > t`（`>` 会变成 `&gt;`），用户反馈的
+   * "AI 输出的回答 latex 也渲染失败，看起来十分费劲"主要就是这个 + 行内 `\tag`。
+   * `&` 放最后还原：`\&`（KaTeX 里表示字面 & ）在转义后是 `\&amp;`，先还原 `&amp;` 也能对，
+   * 但它顺带会把 `&amp;lt;` 这种双重转义拆错，故最后处理。
+   */
+  function decodeMathEntities(tex) {
+    return String(tex == null ? '' : tex)
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#0?39;/g, "'")
+      .replace(/&amp;/g, '&');
+  }
+
   function renderMathSpan(tex, displayMode) {
-    const src = String(tex == null ? '' : tex).trim();
+    let src = decodeMathEntities(tex).trim();
     if (!src) return '';
+    /*
+     * 【行内公式里的 \tag】KaTeX 规定 `\tag` 只能用于 display 公式，否则直接报
+     * "\tag works only in display equations"；而 `throwOnError:false` 不抛异常，
+     * 它会渲染成**一块红色报错文本**——用户看到的就是"AI 回答里的公式渲染失败、看着费劲"。
+     * 实测 AI 回答里很常见：`$E = ID(Y,D) = YPD, \tag{3}$`（单美元 = 行内）。
+     * 这里把**行内**的 `\tag{X}` 改写成 `\quad\text{(X)}`：编号照旧显示在公式末尾，
+     * 又不必把夹在文字中间的一段撑成 display 块。display 模式（公式卡片 / `$$...$$`）保持原样。
+     */
+    if (!displayMode && /\\tag\b/.test(src)) {
+      src = src.replace(/\\tag\s*\{([^{}]*)\}/g, (m, n) => `\\quad\\text{(${String(n).trim()})}`);
+    }
     const katex = typeof window !== 'undefined' ? window.katex : undefined;
     if (katex && typeof katex.renderToString === 'function') {
       try {
@@ -7434,7 +8145,7 @@ let aiPresetQuestion = '';
     s = s.replace(
       /\$([^$\n]+?)\$(\s*\^\s*(?:\{[^}]{1,14}\}|[A-Za-z0-9]{1,3}))?/g,
       (m, tex, sup) => {
-        if (!looksLikeMath(tex)) return m;
+        if (!looksLikeInlineMath(tex)) return m;
         const bare = String(tex).trim();
         if (/^[A-Za-z]$/.test(bare) && !sup) return bare; // ① 单字母 → 普通文字
         if (sup) {
@@ -7469,6 +8180,16 @@ let aiPresetQuestion = '';
       )}</span>`
     );
 
+    /*
+     * 兜底的兜底：**没有基字母的孤儿组合符**。
+     * 帽子规则要求"组合符前面是一个字母"，但 PDF 文本层确实会抽出没有基字母的帽子：
+     * 实测 cycle 第 4 页的公式编号被抽成 "(̂)"（本该是 "(2)"）、第 5 页有 "| Ω | ̂" 这种
+     * 断在行尾的残渣。它们没有任何内容，留在界面上就是一个漂在字外的重音符——
+     * 用户看到的是"公式没渲染出来，剩个帽子"。直接去掉。
+     * 必须放在三条规则**之后**：否则 "Y ̂ t" 里那个帽子会先被这里吃掉、公式就丢了。
+     */
+    s = s.replace(/(^|[^A-Za-z\u0302\u0303])([\u0302\u0303]+)/g, '$1');
+
     return s.replace(/\u0000M(\d+)\u0000/g, (m, i) => maths[Number(i)]);
   }
 
@@ -7478,6 +8199,85 @@ let aiPresetQuestion = '';
     if (!t) return false;
     if (/[\\^_{}=]/.test(t)) return true;
     return /^[A-Za-z]{1,3}$/.test(t); // "$R$" / "$x$" 这种单字母变量
+  }
+
+  /**
+   * 行内 `$...$` 的取舍（比 looksLikeMath 多一层"别把散文吞进去"的保护）。
+   *
+   * 【为什么需要】Markdown 渲染是**先把一个段落的多行 join(' ') 再**匹配 `$...$` 的，
+   * 所以回答里只要有一个**落单的 `$`**，它就会和很远处的另一个 `$` 配成一对、把一大段散文
+   * 当成公式塞给 KaTeX——`throwOnError:false` 于是渲染出**一整块红字报错**。
+   * 实测被吞成公式的片段长这样：`"  （这是根据碎片中出现的符号顺序做的**合理还原**…"`、
+   * `"：第 "`、`" 本身当作可迭代更新的变量。 - **上标 "`。
+   *
+   * 同时**不能把真公式拒掉**：实测还有 `$t+1$`、`$l+1$`、`$N < M$` 这种短式子
+   * （looksLikeMath 认不出来，因为既没有 `\^_{}=` 也不是单个字母）。
+   * 所以判据是：① 有数学标点就放行；② 太长 / 含中文（且没有数学符号）/ 含 markdown 或表格记号 /
+   * 含 3 个以上连续字母（像单词）→ 判为散文，原样显示定界符。
+   */
+  function looksLikeInlineMath(tex) {
+    const t = String(tex == null ? '' : tex).trim();
+    if (!t) return false;
+    if (looksLikeMath(t)) return true;
+    if (t.length > 40) return false;
+    if (/[\u4e00-\u9fff]/.test(t)) return false; // 中文（有数学符号的话上面已放行）
+    if (/[*#|]|[。，、；：？！]/.test(t)) return false; // markdown 强调 / 标题 / 中文标点
+    return !/[A-Za-z]{3,}/.test(t);
+  }
+
+  /**
+   * 反引号片段"看起来是数学/符号"吗？
+   *
+   * 【实测】AI 回答里模型习惯用**反引号包变量/公式**：某篇论文的 4 条真实回答里
+   * `$...$` 是 **0 个**、反引号片段 33~129 个，其中 65~100 个是数学
+   * （`W_K`、`X^l W^l`、`Q ∈ R^{HW×C}`、`Y ∈ {0,1}^{THW×N}`、`V' = AttID(Q, K, V, Y | D)`…）。
+   * 照 Markdown 渲染就成了一片灰底代码块，用户读公式极其费劲。
+   *
+   * 【判据方向很关键】这些片段里绝大多数是数学，所以"默认是数学、像代码才排除"才对：
+   * 一开始我写成"必须命中数学特征才算数学"，结果 `X̂`、`Sθ`、`∂θ`、`V'`、`[0,1,0]`、
+   * `T, H, W, C` 这些明明是公式的都被留成了代码块。排除项只看**确定的代码/散文特征**，
+   * 能不能渲染再由 canRenderMath（真 KaTeX）兜底。
+   */
+  function looksLikeMathCodeSpan(raw) {
+    const t = String(raw == null ? '' : raw).trim();
+    if (!t || t.length > 90) return false; // 太长 → 多半是代码/引用
+    if (/[\n\r]/.test(t)) return false; // 多行 → 代码块残留
+    if (/\b(const|let|var|function|return|import|export|require|class|def|sudo|npm|npx|pip|conda|git|node|python|pwsh|powershell|bash|docker|curl|wget|json|yaml|http|https)\b/i.test(t)) {
+      return false; // 关键字 / 命令 / 语言名
+    }
+    if (/\.(js|ts|json|py|md|ps1|cmd|exe|cpp|h|vsix|css|html|yml|yaml)\b/i.test(t)) return false; // 文件名
+    if (/(^|\s)--?[a-z]/.test(t)) return false; // 命令行参数
+    if (/(^|\s)(\.\/|\/\/|~\/|[A-Za-z]:\\)/.test(t)) return false; // 路径
+    if (/[\u4e00-\u9fff]/.test(t)) return false; // 中文 → 是说明文字，不是公式
+    if (/^[a-z]+( [a-z]+){1,}$/.test(t)) return false; // 连续小写单词 → 散文/命令
+    return true;
+  }
+
+  /**
+   * 这段 tex 真能被 KaTeX 渲染出来吗？
+   *
+   * 用在"把反引号片段当公式渲染"这条兜底路上：反引号里也可能是 JSON / 命令行 / 别的代码，
+   * 形状判据挡不干净，所以**最后一定真渲染一次**确认——渲染不出来就仍按代码显示。
+   * 绝不能因为我们主动改了渲染方式，让用户看到报错红字（那是把体验改坏了）。
+   * KaTeX 没加载时一律返回 false：没有渲染器就别改样式。
+   */
+  function canRenderMath(tex) {
+    const src = decodeMathEntities(tex).trim();
+    if (!src) return false;
+    const katex = typeof window !== 'undefined' ? window.katex : undefined;
+    if (!katex || typeof katex.renderToString !== 'function') return false;
+    try {
+      katex.renderToString(src, {
+        displayMode: false,
+        throwOnError: true,
+        strict: false,
+        trust: false,
+        output: 'html'
+      });
+      return true;
+    } catch (e) {
+      return false;
+    }
   }
 
   /**
@@ -7495,6 +8295,25 @@ let aiPresetQuestion = '';
   }
 
   /**
+   * 视觉模型给的 LaTeX 的渲染入口。
+   *
+   * 【为什么不能直接丢给 KaTeX】实测 cycle 第 6 页的替换表里有这么一条：
+   *   `{"find":"learning rate 10","latex":"learning rate $10^{-5}$"}`
+   * —— 模型把**整句连同 `$` 定界符**一起写进了 latex。直接丢给 `renderMathSpan` 会
+   * `Can't use function '$' in math mode` 解析失败；而 `throwOnError:false` 并不抛异常，
+   * KaTeX 会渲染成一块**红色的报错文本**（class=katex-error），用户看到的就是"公式渲染失败"。
+   *
+   * 带定界符（`$` / `\(` / `\[`）就说明它本质是"文字夹公式"，交给 renderTextWithMath
+   * 按"转义文字 + 塞回公式"处理；只有纯公式才整条进数学模式。
+   */
+  function renderVisionMathHtml(tex, displayMode) {
+    const src = String(tex == null ? '' : tex).trim();
+    if (!src) return '';
+    if (/\$|\\\(|\\\[/.test(src)) return renderTextWithMath(src);
+    return renderMathSpan(src, displayMode);
+  }
+
+  /**
    * 英文原文里的行内公式渲染（**只影响显示**：charMap 坐标与送翻译的原文都不变，
    * 所以划线高亮、点中文跳英文、逐句对齐一律不受影响）。
    *
@@ -7505,6 +8324,26 @@ let aiPresetQuestion = '';
   function renderEnTextHtml(text, inline) {
     const src = String(text == null ? '' : text);
     if (!src) return '';
+
+    /*
+     * 源文本里**已经写成 `$...$` / `\(...\)` / `\[...\]`** 的区间要先圈出来：
+     * 那是模型自己转写好的 LaTeX（新式译文就是这样），替换表绝不能伸进去。
+     * 替换表的 find 是"文本层残渣写法"（`T HW × N`、`Y ∈ { 0, 1 }`），
+     * 而归一化 + 模糊匹配（Dice ≥ 0.72）很容易命中 `THW \times N` 这种已经正确的 LaTeX 里，
+     * 一旦命中就会把一条完整的公式**从中间劈开**、拼出 `$...$` 里套 LaTeX 的怪东西。
+     */
+    const mathSpans = [];
+    const collectMath = re => {
+      re.lastIndex = 0;
+      let m;
+      while ((m = re.exec(src))) mathSpans.push([m.index, m.index + m[0].length]);
+    };
+    collectMath(/\$\$[^$]+\$\$/g);
+    collectMath(/\$[^$\n]+\$/g);
+    collectMath(/\\\[[\s\S]+?\\\]/g);
+    collectMath(/\\\([\s\S]+?\\\)/g);
+    const insideMath = (s, e) => mathSpans.some(([a, b]) => s < b && e > a);
+
     const cands = [];
     (Array.isArray(inline) ? inline : []).forEach(item => {
       const find = item && item.find ? String(item.find) : '';
@@ -7516,38 +8355,50 @@ let aiPresetQuestion = '';
       // 真正要拦的是"一句散文被整句替换成一条公式"。
       const maxFind = Math.min(30, Math.max(8, src.length * 0.5));
       if (find.length > maxFind && !(find.length <= 120 && looksLikeMathResidue(find))) return;
-      const at = locateAnchorIndex(src, find, 0);
-      if (at < 0) return;
-      cands.push({ start: at, end: at + find.length, latex, len: find.length });
+      const hit = locateAnchorRange(src, find, 0);
+      if (!hit) return;
+      // 【区间必须用真实命中长度】不能用 find.length：归一化匹配会把空白吃掉，
+      // 中文译文里的命中片段往往比 find 短，多吃的字符就落在公式外/公式里，把文字切坏。
+      if (insideMath(hit.start, hit.end)) return;
+      cands.push({ start: hit.start, end: hit.end, latex, len: hit.end - hit.start });
     });
+
+    /*
+     * 替换区间后面**紧跟着裸上标**时（`Y ∈ {0,1}^{T HW × N}`、`$\hat{Y}_t$^N`），
+     * 那个上标属于同一个符号，必须一起处理：
+     *   · latex 里**已经有** `^`（`E \in \mathbb{R}^{THW \times C}`）→ 模型把上标一起转写了，
+     *     源文本里这个是同一个东西 → **把区间吃到上标末尾，latex 不动**；
+     *   · latex 里没有 `^`（`\hat{Y}_t` + `^N`）→ 那是同一个符号被拆成两半 → **并进 latex**。
+     * 只认带 `^` 的写法，裸的 " N" 不碰（那更像散文里的变量名）。
+     * 【为什么必须在去重之前做】吃掉上标会让区间变长，原本落在那个上标里面的短条目
+     * （例如 `T HW × N`）就变成重叠、必须丢掉；若先按 find 去重，短条目会留下来，
+     * 最后拼出"一条公式 + 一个悬空的 ^{...}"。
+     */
+    cands.forEach(c => {
+      const m = /^\s*\^\s*(\{[^}]{1,14}\}|[A-Za-z0-9]{1,3})/.exec(src.slice(c.end));
+      if (!m) return;
+      c.end += m[0].length;
+      c.sup = m[1].replace(/^\{|\}$/g, '');
+    });
+
     /*
      * 【最长匹配优先】同一个位置经常有长短两条替换表——例如 "Y ̂ t"（来自上一段）
      * 与 "Y ̂ t − 1"（本段，更精确）。若按列表顺序取，短的那条会先命中、把更精确的长条目
      * 挤掉：实测 Ŷ_{t−1} 只渲染成了 Ŷ_t，后面还吊着一个裸的 "− 1"。
      * 所以先按"长的优先"接受，再按位置组装。
      */
-    cands.sort((a, b) => b.len - a.len || a.start - b.start);
     const reps = [];
-    cands.forEach(c => {
-      if (reps.some(r => c.start < r.end && c.end > r.start)) return;
-      reps.push(c);
-    });
+    cands
+      .slice()
+      .sort((a, b) => b.end - b.start - (a.end - a.start) || a.start - b.start)
+      .forEach(c => {
+        if (reps.some(r => c.start < r.end && c.end > r.start)) return;
+        reps.push(c);
+      });
     reps.sort((a, b) => a.start - b.start);
-    /*
-     * 替换区间后面**紧跟着裸上标**时（`$\hat{Y}_t$^N` / 视觉表的 `Y ̂ t` + `^N`），
-     * 把它并进同一条公式——那是同一个符号被拆成了两半；
-     * 不并的话界面上就是"一个排版好的 Ŷ_t"外加一个吊在外面的 N（用户实测反馈）。
-     * 只认带 `^` 的写法，裸的 " N" 不碰（那更像散文里的变量名）。
-     */
-    reps.forEach((r, i) => {
-      const next = reps[i + 1];
-      const limit = next ? next.start : src.length;
-      const m = /^\s*\^\s*(\{[^}]{1,14}\}|[A-Za-z0-9]{1,3})/.exec(src.slice(r.end));
-      if (!m) return;
-      const end = r.end + m[0].length;
-      if (end > limit) return; // 越到下一个替换区间里去了 → 不动
-      r.end = end;
-      r.latex = `${String(r.latex).trim()}^{${m[1].replace(/^\{|\}$/g, '')}}`;
+    reps.forEach(r => {
+      // latex 里没有上标才需要并（有就说明模型已经写进去了，吃掉即可）
+      if (r.sup && !/\^/.test(String(r.latex))) r.latex = `${String(r.latex).trim()}^{${r.sup}}`;
     });
     if (reps.length === 0) return renderTextWithMath(src);
 
@@ -7555,7 +8406,7 @@ let aiPresetQuestion = '';
     let cursor = 0;
     reps.forEach(r => {
       out += renderTextWithMath(src.slice(cursor, r.start));
-      out += `<span class="vision-inline-math" title="行内公式（视觉模型从页面图像转写，仅影响显示）">${renderMathSpan(
+      out += `<span class="vision-inline-math" title="行内公式（视觉模型从页面图像转写，仅影响显示）">${renderVisionMathHtml(
         r.latex,
         false
       )}</span>`;
@@ -7568,25 +8419,46 @@ let aiPresetQuestion = '';
   function renderInlineMarkdown(text) {
     let s = escapeHtml(text || '');
 
+    // 数学占位必须**先声明**：下面处理"反引号里的公式"时就要用它。
+    // 本仓库被 const 暂时性死区坑过两次，声明顺序别省。
+    const maths = [];
+    const stashMath = (tex, displayMode) => {
+      maths.push(renderMathSpan(tex, displayMode));
+      return `\u0000M${maths.length - 1}\u0000`;
+    };
+
     // 行内代码先抽出占位，避免其中的 * _ 被当作强调语法
     const codes = [];
     s = s.replace(/`([^`]+)`/g, (m, c) => {
+      /*
+       * 【实测：模型爱用反引号包公式】见 looksLikeMathCodeSpan 的注释（真实回答里 `$...$` 是 0 个、
+       * 反引号片段 129 个且大多是数学）。这里把"看起来是数学"的反引号片段直接按行内公式渲染，
+       * 能不能渲染由 canRenderMath 兜底——渲染不出来就仍按代码显示，绝不出现报错红字。
+       * 模型偶尔还写成 `` `$W_K$` ``，先把定界符剥掉再渲染。
+       */
+      const tex = String(c).replace(/^\$+|\$+$/g, '').trim();
+      if (looksLikeMathCodeSpan(c) && canRenderMath(tex)) return stashMath(tex, false);
       codes.push(c);
       return `\u0000C${codes.length - 1}\u0000`;
     });
 
     // 数学公式也先抽成占位：① 避免 KaTeX 生成的 HTML 被后续转义/强调语法破坏
     // ② 顺序必须在 escapeHtml 之后（此时 $ 仍是原文的 $）
-    const maths = [];
-    const stashMath = (tex, displayMode) => {
-      maths.push(renderMathSpan(tex, displayMode));
-      return `\u0000M${maths.length - 1}\u0000`;
-    };
     s = s.replace(/\$\$([^$]+?)\$\$/g, (m, tex) => stashMath(tex, true));
     s = s.replace(/\\\[([\s\S]+?)\\\]/g, (m, tex) => stashMath(tex, true));
     s = s.replace(/\\\(([\s\S]+?)\\\)/g, (m, tex) => stashMath(tex, false));
-    // 单个 $ 必须成对且不跨行：避免把 "价格 $5 和 $6" 这种误当公式
-    s = s.replace(/\$([^$\n]+?)\$/g, (m, tex) => stashMath(tex, false));
+    /*
+     * 单个 $ 必须成对、不跨行，**且内容确实像公式**。
+     *
+     * 【为什么"像公式"这条不能省】renderMarkdownToHtml 是**先把一个段落的多行 join(' ') 再**
+     * 交给这里渲染的，所以模型回答里只要有一个**落单的 `$`**（少写一个、或写在代码/表格里），
+     * 它就会和很远处的另一个 `$` 配成一对，把**一大段散文**当成公式塞给 KaTeX：
+     * `throwOnError:false` 于是渲染出**一整块红字报错**。实测真实回答里出现过
+     * "| 身份库中身份向量总数（默认 10） | 标量 | ## 二、" 这种被吞掉的整段文字
+     * （用户反馈："AI 输出的回答 latex 也渲染失败，看起来十分费劲"）。
+     * 判据直接复用 renderTextWithMath 里的 looksLikeMath：有 `\ ^ _ { } =` 或就是个短变量名。
+     */
+    s = s.replace(/\$([^$\n]+?)\$/g, (m, tex) => (looksLikeInlineMath(tex) ? stashMath(tex, false) : m));
 
     s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     s = s.replace(/(^|[^*\w])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
@@ -7601,7 +8473,37 @@ let aiPresetQuestion = '';
     return s;
   }
 
-  /** 块级 Markdown 渲染（标题/列表/引用/代码块/分隔线/段落） */
+  /** 表格分隔行：GFM 要求表头下一行形如 `|---|:--:|`（只有 | - : 和空格，且每格都是横线） */
+  function isTableDelimiterRow(line) {
+    const t = String(line || '').trim();
+    if (!/^[|\s:-]+$/.test(t) || !/-/.test(t)) return false;
+    const cells = splitTableRow(t);
+    return cells.length > 0 && cells.every(c => /^:?-+:?$/.test(c.replace(/\s/g, '')));
+  }
+
+  /** 把 `| a | b |` 切成 ['a','b']（去掉首尾空单元；`\|` 视为字面竖线） */
+  function splitTableRow(line) {
+    const t = String(line == null ? '' : line).trim().replace(/^\|/, '').replace(/\|$/, '');
+    const cells = [];
+    let cur = '';
+    for (let k = 0; k < t.length; k++) {
+      if (t[k] === '\\' && t[k + 1] === '|') {
+        cur += '|';
+        k++;
+        continue;
+      }
+      if (t[k] === '|') {
+        cells.push(cur.trim());
+        cur = '';
+        continue;
+      }
+      cur += t[k];
+    }
+    cells.push(cur.trim());
+    return cells;
+  }
+
+  /** 块级 Markdown 渲染（标题/列表/引用/代码块/表格/分隔线/段落） */
   function renderMarkdownToHtml(md) {
     if (!md) return '';
     const lines = String(md).replace(/\r\n?/g, '\n').split('\n');
@@ -7662,6 +8564,41 @@ let aiPresetQuestion = '';
         flushAll();
         out.push('<hr class="md-hr">');
         i++;
+        continue;
+      }
+
+      /*
+       * GFM 表格（`| 符号 | 含义 |` + 分隔行）。
+       *
+       * 【为什么必须支持】解释公式时最有用、模型也最常用的格式就是"逐符号表"——
+       * 实测真实回答里就有 `| 符号 | 含义 |`（AOT #17 整段都是这种表）。
+       * 不支持的话它会退化成一堆竖线和横线，读者明明要"理解公式"却看到一片乱码
+       * （用户原话："我现在读人工智能的文章最重要的就是理解公式"）。
+       * 表头/表体单元都走 renderInlineMarkdown，所以单元里的 `$...$`、`` `W_K` ``、`**加粗**` 照常渲染。
+       */
+      if (/^\|/.test(trimmed) && isTableDelimiterRow(lines[i + 1])) {
+        flushAll();
+        const header = splitTableRow(trimmed);
+        i += 2; // 跳过分隔行
+        const rows = [];
+        while (i < lines.length && /^\|/.test(lines[i].trim())) {
+          rows.push(splitTableRow(lines[i].trim()));
+          i++;
+        }
+        const width = header.length;
+        const fit = cells => {
+          const c = cells.slice(0, width);
+          while (c.length < width) c.push('');
+          return c;
+        };
+        const cellHtml = (tag, txt) => `<${tag}>${renderInlineMarkdown(txt)}</${tag}>`;
+        out.push(
+          '<div class="md-table-wrap"><table class="md-table"><thead><tr>' +
+            header.map(h => cellHtml('th', h)).join('') +
+            '</tr></thead><tbody>' +
+            rows.map(r => `<tr>${fit(r).map(c => cellHtml('td', c)).join('')}</tr>`).join('') +
+            '</tbody></table></div>'
+        );
         continue;
       }
 
@@ -7800,17 +8737,56 @@ let aiPresetQuestion = '';
   let aiStreamingTurn = null;
   let aiCurrentRequestId = '';
 
+  /**
+   * 收集"聚焦对象里的规范公式"——视觉模型从**页面图像**转写出来的 LaTeX。
+   *
+   * 【为什么必须带上它】PDF 文本层抽出来的公式永远是残渣：`AttLT (X l, X l, Y) = AttID (X | W l, …)`
+   * （上标掉了、`^` 变成了 `|`）。读者点着这条残渣去问 AI，模型只能**猜**记号是什么，
+   * 于是答得含糊、符号对不上号——用户原话："问 AI 公式相关的东西，就要聚焦公式本身"。
+   * 而我们在渲染时**已经**从视觉模型拿到了这条公式的规范写法（`visionLatex` / `visionInline`），
+   * 之前却只用来画界面，从没喂给模型。这里把它收集起来，随提问一起送到宿主提示词。
+   */
+  function collectFocusMath(para, selectedText) {
+    if (!para) return '';
+    const out = [];
+    const push = l => {
+      const t = String(l == null ? '' : l).trim();
+      if (t && !out.includes(t)) out.push(t);
+    };
+    push(para.visionLatex);
+    const sel = String(selectedText || '').trim();
+    const wholePara = !sel || sel === String(para.cleanText || '').trim();
+    (para.visionInline || []).forEach(item => {
+      if (!item || !item.latex) return;
+      const find = String(item.find || '').trim();
+      // 只带"确实出现在聚焦文本里"的那几条，避免把整段的公式一股脑塞给模型
+      if (wholePara || !find || sel.includes(find)) push(item.latex);
+    });
+    return out.slice(0, 8).join('\n');
+  }
+
   function openAiAssistantModal(options = {}) {
     ensureAllToolbarsExist();
     const modal = dom.aiAssistantModal || document.getElementById('aiAssistantModal');
     if (!modal) return;
+
+    // 聚焦段落：优先用调用方给的，其次按 id 在当前页段落里找（这样"规范公式"才拿得到）
+    let focusPara = options.focusPara || null;
+    if (!focusPara && options.paraId !== undefined && Array.isArray(currentParagraphs)) {
+      focusPara = currentParagraphs.find(p => p && p.id === options.paraId) || null;
+    }
+    if (!focusPara && activeFocusPara && activeFocusPara.page === (options.page || currentPage)) {
+      focusPara = currentParagraphs.find(p => p && p.id === activeFocusPara.id) || activeFocusPara;
+    }
+    const focusMath = collectFocusMath(focusPara, options.selectedText);
 
     const prevKey = `${currentAiContext.page}|${currentAiContext.selectedText}`;
     currentAiContext = {
       selectedText: options.selectedText || '',
       contextText: options.contextText || options.selectedText || '',
       page: options.page || currentPage,
-      noteType: options.noteType || '疑难待查'
+      noteType: options.noteType || '疑难待查',
+      focusMath
     };
     const newKey = `${currentAiContext.page}|${currentAiContext.selectedText}`;
     const contextChanged = prevKey !== newKey;
@@ -7830,6 +8806,44 @@ let aiPresetQuestion = '';
         currentAiContext.selectedText ||
         currentAiContext.contextText ||
         '(未选定特定句子，将基于当前上下文解答)';
+    }
+
+    // 带上规范公式时给读者一个明确信号：这次提问会把"从页面图像转写的规范 LaTeX"一起交给模型，
+    // 否则用户不知道 AI 拿到的是残渣还是规范式（这条提示也让"聚焦公式"这件事可见）。
+    const mathBadge = dom.aiModalMathBadge || document.getElementById('aiModalMathBadge');
+    if (mathBadge) {
+      if (focusMath) {
+        mathBadge.style.display = '';
+        mathBadge.textContent = '已附上规范 LaTeX';
+        mathBadge.title = `本次提问会把下面这条规范写法一并交给模型：\n${focusMath}`;
+      } else {
+        mathBadge.style.display = 'none';
+        mathBadge.textContent = '';
+      }
+    }
+
+    /*
+     * 弹窗里直接把规范公式排版出来。
+     *
+     * 【为什么值得单独做】读者点开弹窗时看到的"聚焦原文"是 PDF 文本层的残渣
+     * （真实例子：`AttLT (X l, X l, Y) = AttID (X | W l, X | W l, X | W l, Y | D), (6)`——
+     * 上标全掉了、`^` 变成了 `|`）。他明明要"理解公式"，却只能盯着一串错乱的字符。
+     * 规范式我们手里就有（视觉模型转写），所以在这里把它**排版好**显示：
+     * 读者一眼确认"我要问的是这条式子"，模型拿到的也是同一条。
+     */
+    const mathPreview = dom.aiModalMathPreview || document.getElementById('aiModalMathPreview');
+    if (mathPreview) {
+      if (focusMath) {
+        const html = focusMath
+          .split('\n')
+          .map(tex => `<div class="ai-math-preview-line">${renderVisionMathHtml(tex, true)}</div>`)
+          .join('');
+        mathPreview.innerHTML = html;
+        mathPreview.style.display = '';
+      } else {
+        mathPreview.innerHTML = '';
+        mathPreview.style.display = 'none';
+      }
     }
 
     const input = dom.aiModalQuestionInput || document.getElementById('aiModalQuestionInput');
@@ -8044,6 +9058,8 @@ let aiPresetQuestion = '';
       noteType: opts.noteType || '疑难待查',
       answerStyle: aiStyle || '',
       fullText,
+      // 规范公式（视觉模型转写的 LaTeX）：模型据此讲符号，而不是照残渣猜（见 collectFocusMath）
+      focusMath: opts.focusMath || currentAiContext.focusMath || '',
       history: opts.history || []
     });
   }

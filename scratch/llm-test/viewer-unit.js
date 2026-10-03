@@ -25,6 +25,14 @@ const expose = `
     getParaSig,
     buildAiHistory,
     renderSentencePairsHtml,
+    collectFocusMath,
+    extractMathSymbols,
+    buildMathIndex,
+    invalidateMathIndex,
+    setVisionStructure: v => {
+      paperData.visionStructure = v || {};
+      invalidateMathIndex();
+    },
     aiConversationRef: () => aiConversation,
     setAiConversation: (v) => { aiConversation = v; }
   };
@@ -315,6 +323,29 @@ checkTrue('有序列表渲染为 <ol>', /<ol class="md-list">/.test(md6) && /<li
 
 const md7 = T.renderMarkdownToHtml('---');
 checkTrue('分隔线渲染为 hr', /<hr class="md-hr">/.test(md7), md7);
+
+// 逐符号表：解释公式时模型最常用的格式（真实回答 AOT #17 整段都是这种表）
+const mdTable = T.renderMarkdownToHtml(
+  '| 符号 | 含义 |\n|---|---|\n| `AttLT` | 长期注意力，跨多帧匹配 |\n| $X^l$ | 第 $l$ 层特征图 |\n'
+);
+checkTrue(
+  'GFM 表格渲染为 table（不再是一堆竖线）',
+  /<table class="md-table">/.test(mdTable) && /<thead>/.test(mdTable) && /<tbody>/.test(mdTable),
+  mdTable
+);
+checkTrue('表头两格 + 表体两行', (mdTable.match(/<th>/g) || []).length === 2 && (mdTable.match(/<tr>/g) || []).length === 3, mdTable);
+checkTrue('表体单元里的 $...$ 照常渲染', /md-math/.test(mdTable), mdTable);
+checkTrue('表体不再出现字面竖线', !/\|/.test(mdTable), mdTable);
+const mdTableShort = T.renderMarkdownToHtml('| a | b | c |\n|---|---|---|\n| 1 |\n');
+checkTrue(
+  '缺格子的表格行按表头列数补齐（布局不塌）',
+  (mdTableShort.match(/<td>/g) || []).length === 3 && /<td>1<\/td><td><\/td><td><\/td>/.test(mdTableShort),
+  mdTableShort
+);
+const mdPipe = T.renderMarkdownToHtml('| 这不是表格，因为没有分隔行\n');
+checkTrue('没有分隔行的竖线行不当表格', !/<table/.test(mdPipe), mdPipe);
+const mdEscape = T.renderMarkdownToHtml('| a | b |\n|---|---|\n| x \\| y | z |\n');
+checkTrue('单元里的 \\| 是字面竖线', /x \| y/.test(mdEscape) && !/<td>x <\/td>/.test(mdEscape), mdEscape);
 
 check('空输入返回空串', T.renderMarkdownToHtml(''), '');
 
@@ -912,7 +943,17 @@ console.log('\n===== T13 图注行聚合（真实数据） =====');
     return;
   }
   // eslint-disable-next-line no-new-func
-  const run = new Function('orderedLines', `${code.slice(start, end + 5)}\n return orderedLines;`);
+  // gutterX / isSingleColumnPage / GUTTER_CLEARANCE 在源码里定义在 reorderFigureBlocks **之前**，
+  // 抽片段时不会带进来 → 必须当参数传进去，否则函数里引用它们会直接 ReferenceError。
+  const run = new Function(
+    'orderedLines',
+    'gutterX',
+    'isSingleColumnPage',
+    'GUTTER_CLEARANCE',
+    `${code.slice(start, end + 5)}\n return orderedLines;`
+  );
+  const GUTTER = 297;
+  const runP2 = lines => run(lines, GUTTER, false, 15);
   const mk = (y, minX, maxX, text, section) => ({ y, minX, maxX, h: 9, spans: [{ textContent: text }], section });
 
   // 复刻 STM 第 3 页的行序（按"桶拼接"的旧顺序，图注被拆到两端）
@@ -936,7 +977,7 @@ console.log('\n===== T13 图注行聚合（真实数据） =====');
 
   // 旧顺序：col1（含图注尾行）→ col2 → 通栏图注前 3 行
   const input = [...col1, captionTail, ...col2, ...captionHead, ...figLabels];
-  const out = run(input);
+  const out = runP2(input);
   if (process.env.T13_DEBUG) {
     console.log('    [debug] input 行数', input.length, '→ out 行数', out && out.length);
     console.log('    [debug] out 顺序:', (out || []).map(l => `${l.section}@${l.y}`).join(' '));
@@ -978,7 +1019,7 @@ console.log('\n===== T13 图注行聚合（真实数据） =====');
   for (let i = 0; i < 15; i++) body.push(mk(200 - i * 12, 50, 286, 'body line of column one', 'col1'));
   for (let i = 0; i < 15; i++) body.push(mk(200 - i * 12, 309, 545, 'body line of column two', 'col2'));
 
-  const out2 = run([...body, ...t1, ...t3]);
+  const out2 = runP2([...body, ...t1, ...t3]);
   const idx1 = out2.map((l, i) => (l.spans[0].textContent.startsWith('Table 1') ? i : -1)).filter(i => i >= 0)[0];
   const idx3 = out2.map((l, i) => (l.spans[0].textContent.startsWith('Table 3') ? i : -1)).filter(i => i >= 0)[0];
   checkTrue('第 6 页场景：两张表的图注各成一块', idx1 !== undefined && idx3 !== undefined, `T1@${idx1} T3@${idx3}`);
@@ -991,6 +1032,177 @@ console.log('\n===== T13 图注行聚合（真实数据） =====');
     '第 6 页场景：Table 3 图注 4 行连续（不与 Table 1 交错）',
     idx3 !== undefined && out2.slice(idx3, idx3 + 4).every(l => l.spans[0].textContent.match(/Table 3|validation set|the use of|and F Mean/)),
     out2.slice(idx3, idx3 + 5).map(l => l.spans[0].textContent.slice(0, 18)).join(' | ')
+  );
+
+  // 场景三：**真实第 6 页整页 97 行**（由 scratch/order_probe.js 6 导出，含真实坐标与文本）。
+  // 这是用户反馈"有时候这个段的顺序是乱的"的那一页，也是旧实现的错法：
+  //   ① colTop 取"两栏里最高的一行"（这里是右栏 y=708），左栏正文顶边 y=139 完全够不着；
+  //   ② 拿块的底边比正文顶边 → 高的块（Table 2，y 460→247）反倒被判成"在正文之下"；
+  //   ③ 块不分栏 → 右栏 Table 3 被提到正文之前。
+  // 旧输出：表1行 → 表1注 → 表3注 → 标题 → 正文 → 表2行 → 表2注（表1/表3 的数据行还被并成一段）。
+  // 期望：表1 → 表2 → 左栏正文 → 表3 → 右栏正文。
+  const P6_RAW = `
+708.0|187|270|figure-label|Seen Unseen
+691.3|131|273|figure-label|Overall J F J F
+674.3|58|279|figure-label|OSMN [ 40 ] 51.2 60.0 60.1 40.6 44.0
+662.4|58|279|figure-label|MSK [ 26 ] 53.1 59.9 59.5 45.0 47.9
+650.4|58|272|figure-label|RGMP [ 24 ] 53.8 59.5 - 45.2 -
+638.5|58|279|figure-label|OnAVOS [ 34 ] 55.2 60.1 62.7 46.6 51.4
+626.5|58|279|figure-label|RVOS [ 32 ] 56.8 63.6 67.2 45.5 51.0
+614.6|58|279|figure-label|OSVOS [ 2 ] 58.8 59.8 60.5 54.2 60.7
+602.6|58|279|figure-label|S2S [ 38 ] 64.4 71.0 70.0 55.5 61.2
+590.6|58|272|figure-label|A-GAME [ 13 ] 66.1 67.8 - 60.8 -
+578.7|58|279|figure-label|PreMVOS [ 20 ] 66.9 71.4 75.9 56.5 63.7
+566.7|58|272|figure-label|BoLTVOS [ 35 ] 71.1 71.6 - 64.3 -
+549.8|58|279|figure-label|Ours 79.4 79.7 84.2 72.8 80.9
+525.3|50|286|caption|Table 1: The quantitative evaluation of multi-object video
+513.4|50|286|caption|object segmentation on Youtube-VOS [ 38 ] validation set.
+501.4|50|286|caption|Results for other methods are directly copied from [ 37 , 13 ,
+489.5|50|81|caption|32 , 35 ].
+459.8|142|280|figure-label|OL J Mean F Mean Time
+442.9|56|274|figure-label|S2S (+YV) [ 38 ] X 79.1 - 9 s
+430.9|56|276|figure-label|MSK [ 26 ] X 79.7 75.4 12 s
+419.0|56|274|figure-label|OSVOS [ 2 ] X 79.8 80.6 9 s
+407.0|56|271|figure-label|MaskRNN [ 11 ] X 80.7 80.9 -
+395.1|56|280|figure-label|VideoMatch [ 12 ] 81.0 - 0.32 s
+383.1|56|280|figure-label|FEELVOS (+YV) [ 33 ] 81.1 82.2 0.45 s
+371.1|56|280|figure-label|RGMP [ 24 ] 81.5 82.0 0.13 s
+359.2|56|280|figure-label|A-GAME (+YV) [ 13 ] 82.0 82.2 0.07 s
+347.2|56|278|figure-label|FAVOS [ 4 ] 82.4 79.5 1.8 s
+335.3|56|271|figure-label|LSE [ 6 ] X 82.9 80.3 -
+323.3|56|280|figure-label|CINN [ 1 ] X 83.4 85.0 > 30 s
+311.4|56|280|figure-label|PReMVOS [ 20 ] X 84.9 88.6 > 30 s
+303.0|88|93|figure-label|S
+299.4|56|278|figure-label|OSVOS [ 21 ] X 85.6 86.4 4.5 s
+287.4|56|276|figure-label|OnAVOS [ 34 ] X 86.1 84.9 13 s
+275.5|56|280|figure-label|DyeNet [ 18 ] X 86.2 - 2.32 s
+258.5|56|280|figure-label|Ours 84.8 88.1 0.16 s
+246.6|56|280|figure-label|Ours (+YV) 88.7 89.9 0.16 s
+222.2|50|286|caption|Table 2: The quantitative evaluation on DAVIS-2016 valida-
+210.2|50|286|caption|tion set. OL indicates online learning. (+YV) indicates the
+198.2|50|286|caption|use of Youtube-VOS for training. Methods with J Mean
+186.3|50|286|caption|below 79 are omitted due to the space limit and the com-
+174.3|50|262|caption|plete table is available in the supplementary material.
+138.7|50|101|col1|4.2. DAVIS
+116.9|50|286|col1|Single object (DAVIS-2016). DAVIS-2016 [ 27 ] is one of
+104.9|50|286|col1|the most popular benchmark datasets for video object seg-
+93.0|50|286|col1|mentation tasks. We use the validation set that contains 20
+81.0|50|286|col1|videos annotated with high-quality masks each for a single
+708.0|426|530|figure-label|OL J Mean F Mean
+691.1|324|522|figure-label|OSMN [ 40 ] 52.5 57.1
+679.1|324|522|figure-label|FAVOS [ 4 ] 54.6 61.8
+667.2|324|522|figure-label|VidMatch [ 12 ] 56.5 68.2
+655.2|324|522|figure-label|OSVOS [ 2 ] X 56.6 63.9
+643.3|324|515|figure-label|MaskRNN [ 11 ] X 60.5 -
+631.3|324|522|figure-label|OnAVOS [ 34 ] X 64.5 71.2
+623.0|356|361|figure-label|S
+619.3|324|522|figure-label|OSVOS [ 2 ] X 64.7 71.3
+607.4|324|522|figure-label|RGMP [ 24 ] 64.8 68.6
+595.4|324|522|figure-label|CINN [ 1 ] X 67.2 74.2
+583.5|324|522|figure-label|A-GAME (+YV) [ 13 ] 67.2 72.7
+571.5|324|522|figure-label|FEELVOS (+YV) [ 33 ] 69.1 74.0
+559.6|324|479|figure-label|DyeNet [ 18 ] X *74.1
+547.6|324|522|figure-label|PReMVOS [ 20 ] X 73.9 81.7
+530.7|324|522|figure-label|Ours 69.2 74.0
+518.7|324|522|figure-label|Ours (+YV) 79.2 84.3
+494.3|309|545|caption|Table 3: The quantitative evaluation on DAVIS-2017 val-
+482.3|309|545|caption|idation set. OL indicates online learning. (+YV) indicates
+470.4|309|545|caption|the use of Youtube-VOS for training. *: average of J Mean
+458.4|309|362|caption|and F Mean.
+421.8|309|545|col2|target object. We compare our method with state-of-the-art
+409.8|309|545|col2|methods in Table 2 . In the table, we indicate the use of
+397.8|309|545|col2|online learning and provide approximate runtimes of each
+385.9|309|545|col2|method. Most of the previous top-performing methods rely
+373.9|309|545|col2|on online learning that severely harms the running speed.
+362.0|309|545|col2|Our method achieves the best accuracy among all compet-
+350.0|309|545|col2|ing methods without online learning, and shows competitive
+338.1|309|545|col2|results with the top-performing online learning based meth-
+326.1|309|545|col2|ods while running in a fraction of time. Our method trained
+314.2|309|545|col2|with additional data from Youtube-VOS outperforms all the
+302.2|309|417|col2|methods by a large margin.
+285.8|309|545|col2|Multiple objects (DAVIS-2017). DAVIS-2017 [ 28 ] is a
+273.9|309|545|col2|multi-object extension of DAVIS-2016. The validation set
+261.9|309|545|col2|consists of 59 objects in 30 videos. In Table Table 3 , we
+250.0|309|545|col2|report the results of multi-object video segmentation on the
+238.0|309|545|col2|validation set. Again, our method shows the best perfor-
+226.0|309|545|mance among fast methods without online learning. With
+214.1|309|545|col2|additional Youtube-VOS data, our method largely outper-
+202.1|309|545|col2|forms all the previous state-of-the-art methods including the
+190.2|309|545|col2|2018 DAVIS challenge winner [ 20 ]. Our results on the test-
+178.2|309|510|col2|dev set is included in the supplementary materials.
+164.7|321|545|col2|The large performance leap by using additional training
+152.7|309|545|col2|data indicates that DAVIS is too small to train a general-
+140.8|309|545|col2|izable deep network due to over-fitting. It also explains
+128.8|309|545|col2|why top performing online learning methods on the DAVIS
+116.9|309|545|col2|benchmark do not show good performance on the large-
+104.9|309|545|col2|scale Youtube-VOS benchmark. Online learning methods
+93.0|309|545|col2|are hardly aided by large training data. Those methods usu-
+81.0|309|545|col2|ally require an extensive parameter search ( e.g . data syn-
+35.0|297|315|col2|9231`;
+  // 真实分栏线是 293.3（单元测试里显式传进去，避免依赖源码里的 detectColumnStructure）
+  const p6Lines = P6_RAW.trim()
+    .split('\n')
+    .map(row => {
+      const [y, minX, maxX, section, ...text] = row.split('|');
+      return mk(Number(y), Number(minX), Number(maxX), text.join('|'), section);
+    });
+  const out3 = run(p6Lines, 293.3, false, 15);
+  const exact = t => out3.findIndex(l => l.spans[0].textContent === t);
+  const [iT1row, iT1cap] = [exact('Seen Unseen'), exact('Table 1: The quantitative evaluation of multi-object video')];
+  const [iT2row, iT2cap] = [exact('OL J Mean F Mean Time'), exact('Table 2: The quantitative evaluation on DAVIS-2016 valida-')];
+  const [iT3row, iT3cap] = [exact('OL J Mean F Mean'), exact('Table 3: The quantitative evaluation on DAVIS-2017 val-')];
+  const iBody1 = exact('4.2. DAVIS');
+  const iBody2 = exact('target object. We compare our method with state-of-the-art');
+  checkTrue(
+    '第 6 页整页：阅读顺序为 表1 → 表2 → 左栏正文 → 表3 → 右栏正文',
+    iT1row >= 0 &&
+      iT1row < iT1cap &&
+      iT1cap < iT2row &&
+      iT2row < iT2cap &&
+      iT2cap < iBody1 &&
+      iBody1 < iT3row &&
+      iT3row < iT3cap &&
+      iT3cap < iBody2,
+    `表1行@${iT1row} 表1注@${iT1cap} 表2行@${iT2row} 表2注@${iT2cap} 左正文@${iBody1} 表3行@${iT3row} 表3注@${iT3cap} 右正文@${iBody2}`
+  );
+  checkTrue(
+    '第 6 页整页：表1 的 13 行数据紧接 4 行图注（中间不夹别的行）',
+    iT1cap - iT1row === 13 &&
+      out3.slice(iT1row, iT1cap).every(l => l.section === 'figure-label') &&
+      out3.slice(iT1cap, iT1cap + 4).every(l => l.section === 'caption'),
+    `${iT1row}..${iT1cap} = ${out3
+      .slice(iT1row, iT1cap + 4)
+      .map(l => l.section)
+      .join(',')}`
+  );
+  checkTrue(
+    '第 6 页整页：表2 的 19 行数据紧接 5 行图注',
+    iT2cap - iT2row === 19 &&
+      out3.slice(iT2row, iT2cap).every(l => l.section === 'figure-label') &&
+      out3.slice(iT2cap, iT2cap + 5).every(l => l.section === 'caption'),
+    `${iT2row}..${iT2cap}`
+  );
+  checkTrue(
+    '第 6 页整页：表3 的 17 行数据紧接 4 行图注，且排在左栏正文之后',
+    iT3cap - iT3row === 17 &&
+      out3.slice(iT3row, iT3cap).every(l => l.section === 'figure-label') &&
+      out3.slice(iT3cap, iT3cap + 4).every(l => l.section === 'caption') &&
+      iT3row > iBody1,
+    `${iT3row}..${iT3cap}（左栏正文在 ${iBody1}）`
+  );
+  checkTrue(
+    '第 6 页整页：左栏正文之后不会又冒出左栏行（栏序不倒挂）',
+    out3.slice(iBody1 + 5).every(l => l.section !== 'col1'),
+    out3
+      .slice(iBody1 + 5)
+      .map(l => l.section)
+      .filter((s, i, a) => s === 'col1' && a.indexOf(s) === i)
+      .join(',') || '（无）'
+  );
+  checkTrue(
+    '第 6 页整页：表1 与表3 的数据行没有被并成一段（一个在左栏、一个在右栏）',
+    iT3row - iT1cap > 1,
+    `表1注@${iT1cap} 表3行@${iT3row}`
   );
 })();
 
@@ -1073,6 +1285,38 @@ console.log('\n===== T14 跨栏续接（真实数据） =====');
   ];
   run(p4, false, 297, split);
   checkTrue('图注不参与跨栏合并', p4.length === 2, `剩 ${p4.length} 段`);
+
+  // 真实第 6 页：8.6 改成"图表块按栏内联"之后，Table 3 的数据行与图注会**插在**
+  // 左栏尾段（"…masks each for a single"）和右栏首段（"target object. We compare…"）之间。
+  // 旧实现只比较相邻两段 → 这条跨栏句被图表切断，两半各自翻译成读不懂的残句。
+  const p5 = [
+    mkPara(0, 'body', 'videos annotated with high-quality masks each for a single', 50, 286),
+    mkPara(1, 'figure-label', 'OL J Mean F Mean OSMN [ 40 ] 52.5 57.1', 324, 522),
+    mkPara(2, 'caption', 'Table 3: The quantitative evaluation on DAVIS-2017 validation set.', 309, 545),
+    mkPara(3, 'body', 'target object. We compare our method with state-of-the-art methods.', 309, 545)
+  ];
+  run(p5, false, 293, split);
+  // 合并会把右栏那一段并进左栏尾段（剩下 3 段：合并后的正文 + 被跳过的图表两段）
+  checkTrue('跨栏续句可以跳过中间的图表段落（右栏那段被并走）', p5.length === 3, `剩 ${p5.length} 段`);
+  checkTrue(
+    '跨栏续句合并后仍是完整句（…each for a single target object. We compare…）',
+    p5.length === 3 && /each for a single target object\. We compare our method/.test(p5[0].cleanText),
+    p5[0] ? p5[0].cleanText.slice(-80) : '(无)'
+  );
+  checkTrue(
+    '被跳过的图表段落仍在（顺序不乱、不丢内容）',
+    p5.length === 3 && p5[1].type === 'figure-label' && p5[2].type === 'caption',
+    p5.map(p => p.type).join(',')
+  );
+
+  // 反例 5：中间的段落是**正文**（不是图表）→ 绝不许跳过去粘两段正文
+  const p6 = [
+    mkPara(0, 'body', 'this paragraph stops in the middle of', 50, 286),
+    mkPara(1, 'body', 'a totally unrelated paragraph that happens to be here.', 50, 286),
+    mkPara(2, 'body', 'lowercase continuation of the first one', 309, 545)
+  ];
+  run(p6, false, 293, split);
+  checkTrue('中间隔着正文 → 不跨段合并', p6.length === 3, `剩 ${p6.length} 段`);
 })();
 
 // ---------- 15. AI 问答：打开弹窗不得自动发问；发送按钮只能有一个 ----------
@@ -1505,6 +1749,124 @@ console.log('\n===== T21 视觉手术（合并 / 拆分 / 图块 / 锚点定位�
     });
     checkTrue('锚点定位不到 → 不拆（段落数量不变）', list4.length === 1 && texts(list4)[0] === s.cleanText);
     checkTrue('并且如实记下"跳过了这一处"', stats4.anchorMissed === 1 && stats4.notes.length === 1, JSON.stringify(stats4.notes));
+
+    // 【真实 AOT 第 3 页】模型给的拆分点**跨到了下一段**：
+    // 第 7 段（正文）的 parts[1] 是公式片，锚点 "′ N t m m N t m m Y = A (F (I, I, Y 1)"
+    // 其实落在**第 8 段**（本地第 8 段本来就是那条公式，type=formula）。
+    // 旧实现只在本段里找锚点 → 找不到就整段放弃 → 模型给的公式 latex 被**静默丢掉**，
+    // 第 8 段没有任何 latex，公式整条不渲染（用户看到的"latex 渲染失败"）。
+    const body7 = mkPara(
+      0,
+      'body',
+      'In VOS, many common video scenarios have multiple targets or objects required for tracking and segmenting.'
+    );
+    const formula8 = mkPara(1, 'formula', '\u2032 N t m m N t m m Y = A (F (I, I, Y 1), ..., F (I, I, Y N)), (1)');
+    const list5 = [body7, formula8];
+    const stats5 = M.visionSurgery(list5, {
+      segments: [
+        {
+          index: 0,
+          type: 'body',
+          action: 'split',
+          parts: [
+            { type: 'body', at: 'In VOS, many common video scenarios' },
+            {
+              type: 'formula',
+              at: '\u2032 N t m m N t m m Y = A (F (I, I, Y 1)',
+              latex: "Y' = A\\left(\\mathcal{F}^{\\mathcal{N}}(I^t, I^m, Y_1^m), ...\\right)"
+            }
+          ]
+        }
+      ]
+    });
+    checkTrue('拆分点落在下一段 → 先把两段接起来再拆（正文 / 公式 两片）', list5.length === 2, texts(list5).map(t => t.slice(0, 24)).join(' | '));
+    checkTrue(
+      '公式片拿到了 latex（不再静默丢失 → 公式能渲染）',
+      list5.length === 2 && list5[1].type === 'formula' && /^Y' = A/.test(String(list5[1].visionLatex || '')),
+      JSON.stringify(String(list5[1] && list5[1].visionLatex))
+    );
+    checkTrue('正文片仍是正文（没有把正文也标成公式）', list5.length === 2 && list5[0].type === 'body');
+    checkTrue('跨段拆分后不变量仍成立（charMap 1:1、句子下标自洽）', consistent(list5));
+    checkTrue('并且如实记下"这一处拆分点跨段了"', stats5.split === 1 && stats5.notes.some(n => /跨到了下一段/.test(n)), JSON.stringify(stats5.notes));
+
+    // 【真实 AOT 第 4 页】第二种形态：模型连 index 都标错了。
+    // 它把拆分挂在第 7 段（"In this section, we introduce…"），可两个锚点分别在
+    // **第 10 段**（"To formulate, we define Q ∈ R"）和**第 11 段**（那条公式）里。
+    // 旧实现只在本段里找锚点 → 整段放弃 → 第 11 段（type=formula）没有 latex、公式整条不渲染。
+    const intro7 = mkPara(0, 'body', 'In this section, we introduce our identification mechanism proposed for efficient multi-object VOS.');
+    const body10 = mkPara(1, 'body', 'HW × C T HW × C T HW × C To formulate, we define Q \u2208 R, K \u2208 R, and V \u2208 R as the query embedding of the current frame.');
+    const formula11 = mkPara(2, 'formula', 'Att (Q, K, V) = Corr (Q, K) V = sof tmax (\u221a) V, (2) C');
+    const list6 = [intro7, body10, formula11];
+    const stats6 = M.visionSurgery(list6, {
+      segments: [
+        {
+          index: 0,
+          type: 'body',
+          action: 'split',
+          parts: [
+            { type: 'body', at: 'To formulate, we define Q \u2208 R' },
+            {
+              type: 'formula',
+              at: 'Att (Q, K, V) = Corr (Q, K) V',
+              latex: '\\operatorname{Att}(Q,K,V) = \\operatorname{Corr}(Q,K)V = \\operatorname{softmax}\\left(\\frac{QK^{tr}}{\\sqrt{C}}\\right)V'
+            }
+          ]
+        }
+      ]
+    });
+    checkTrue('拆分被标到别的段上 → 按锚点挪过去（本段仍是 3 段之一）', list6.length === 3, texts(list6).map(t => t.slice(0, 20)).join(' | '));
+    checkTrue('本段（第 0 段）没被卷进拆分，内容一字未改', list6[0].cleanText === intro7.cleanText && list6[0].type === 'body');
+    checkTrue(
+      '公式段拿到了 latex（不再静默丢失 → 公式能渲染）',
+      list6[2].type === 'formula' && /^\\operatorname\{Att\}/.test(String(list6[2].visionLatex || '')),
+      JSON.stringify(String(list6[2] && list6[2].visionLatex).slice(0, 60))
+    );
+    checkTrue('中间那段仍是正文（正文 / 公式 分得开）', list6[1].type === 'body');
+    checkTrue('按锚点挪位后不变量仍成立（charMap 1:1、句子下标自洽）', consistent(list6));
+    checkTrue('并且如实记下"挪到了正确的段"', stats6.split === 1 && stats6.notes.some(n => /挪到正确的段/.test(n)), JSON.stringify(stats6.notes));
+
+    // 【真实 AOT 第 5 页】第三种形态：parts[0] **没有锚点**（模型认为首片就从本段开始），
+    // 而 parts[1] 的锚点在第 9 段、parts[2] 的锚点在第 10 段——"本段开始"这个前提本身就是错的。
+    // 另外同一页第 6 段的拆分先吸收了第 9、10 段，第 7 段要再往第 12 段找锚点：
+    // 搜索已吸收的段必须**跳过**而不是停下，否则第二处拆分又会白丢。
+    const L = [
+      mkPara(0, 'body', 'V = AttID (Q, K, V, Y | D) = Att (Q, K, V + ID (Y, D)) = Att (Q, K, V + E), (4)'),
+      mkPara(1, 'body', '′ HW × C where V ∈ R aggregates all the multiple targets’ embeddings from the propagation.'),
+      mkPara(2, 'body', 'For Identification Decoding, i.e., predicting all the targets’ probabilities from the aggregated ′ feature V,'),
+      mkPara(3, 'formula', 'Y = sof tmax (P F (V)) = sof tmax (P L), (5)'),
+      mkPara(4, 'body', 'D HW × M where L ∈ R is all the M identities’ probability logits, P is the same as the selecting matrix.')
+    ];
+    const stats7 = M.visionSurgery(L, {
+      segments: [
+        {
+          index: 0,
+          type: 'body',
+          action: 'split',
+          why: '正文夹公式(5)',
+          parts: [
+            { type: 'body' },
+            {
+              type: 'formula',
+              at: 'Y = sof tmax (P F (V)) = sof tmax (P L), (5)',
+              latex: "Y' = \\mathit{softmax}(PF^{\\mathcal{D}}(V')) = \\mathit{softmax}(PL^{\\mathcal{M}})"
+            },
+            { type: 'body', at: 'D HW × M where L ∈ R is all the M' }
+          ]
+        }
+      ]
+    });
+    checkTrue(
+      'parts[0] 没有锚点时，用 parts[1] 的锚点定位起点（公式不再被丢掉）',
+      L.length === 5 && L[3].type === 'formula' && /^Y' = \\mathit\{softmax\}/.test(String(L[3].visionLatex || '')),
+      `${L.length} 段；第 4 段 type=${L[3] && L[3].type} latex=${JSON.stringify(String((L[3] && L[3].visionLatex) || '').slice(0, 40))}`
+    );
+    checkTrue(
+      '中间那两段（公式后正文 / 正文）一个字没改、也没被吞掉',
+      L[1].cleanText.startsWith('′ HW × C where V') && L[2].cleanText.startsWith('For Identification Decoding')
+    );
+    checkTrue('本段（第 0 段）没被卷进拆分', L[0].cleanText.startsWith('V = AttID (Q, K, V, Y | D)'));
+    checkTrue('挪位后不变量仍成立（charMap 1:1、句子下标自洽）', consistent(L));
+    checkTrue('并且如实记下这一处是挪过去的', stats7.split === 1 && stats7.notes.some(n => /挪到正确的段/.test(n)), JSON.stringify(stats7.notes));
   })();
 
   // ---- 合并：跨栏半句 ----
@@ -1743,6 +2105,347 @@ console.log('\n===== T21 视觉手术（合并 / 拆分 / 图块 / 锚点定位�
       /if \(byId && \(!text \|\| matches\(byId\)\)\) return byId;/.test(code) &&
       (code.match(/const matchedPara = findParaForAnnotation\(annot\);/g) || []).length === 2
   );
+})();
+
+// ---------- 22. 公式渲染：latex 里夹着 $ 定界符 / 孤儿组合符（真实存档数据） ----------
+console.log('\n===== T22 公式渲染（视觉 latex 的脏数据 + 残渣孤儿帽子） =====');
+(function formulaRenderTest() {
+  const start = code.indexOf('  const RESIDUE_HAT_RE');
+  const end = code.indexOf('\n  function renderInlineMarkdown(');
+  const locateStart = code.indexOf('  const VISION_CHAR_EQUIV = {');
+  const locateEnd = code.indexOf('\n  }', code.indexOf('  function locateAnchorIndex(text, anchor, from) {'));
+  checkTrue('能从真实源码里抽出渲染片段（含 residue 规则与 renderEnTextHtml）', start > 0 && end > start && locateStart > 0 && locateEnd > locateStart);
+  if (start < 0 || end <= start) return;
+  // 旧版没有 renderVisionMathHtml（latex 直接进 KaTeX）→ 明确失败，而不是让整个测试文件崩掉
+  checkTrue('源码里有 renderVisionMathHtml（视觉 latex 的统一渲染入口）', /function renderVisionMathHtml\(/.test(code));
+  if (!/function renderVisionMathHtml\(/.test(code)) return;
+
+  const esc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  // KaTeX 用桩：只看"哪段文字被送进了数学模式"，以及有没有残留的组合符
+  const katexStub = (tex, display) => `<KATEX${display ? '-D' : ''}>${tex}</KATEX>`;
+  // eslint-disable-next-line no-new-func
+  const locate = new Function(
+    `${code.slice(locateStart, locateEnd + 4)}
+     return {
+       locateAnchorIndex,
+       locateAnchorRange: typeof locateAnchorRange === 'function' ? locateAnchorRange : null
+     };`
+  )();
+  // 旧版没有 locateAnchorRange（替换区间用 find.length 取，命中长度一比就切坏）→ 明确失败
+  checkTrue(
+    '源码里有 locateAnchorRange（替换区间按真实命中长度取）',
+    typeof locate.locateAnchorRange === 'function'
+  );
+  // eslint-disable-next-line no-new-func
+  const R = new Function(
+    'escapeHtml',
+    'renderMathSpan',
+    'locateAnchorIndex',
+    'locateAnchorRange',
+    `${code.slice(start, end)}
+     return { renderEnTextHtml, renderTextWithMath, renderVisionMathHtml };`
+  )(esc, katexStub, locate.locateAnchorIndex, locate.locateAnchorRange || (() => null));
+
+  const HAT = '\u0302';
+
+  // ---- ① 视觉模型把"整句 + $ 定界符"塞进 latex（真实 cycle 第 6 页的替换表） ----
+  // 旧实现直接丢给 KaTeX → Can't use function '$' in math mode → 界面上是一块红色的报错。
+  const dirty = 'learning rate $10^{-5}$';
+  const dirtyHtml = R.renderVisionMathHtml(dirty, false);
+  checkTrue(
+    'latex 里夹着 $ 时不再整条进数学模式（否则 KaTeX 直接报错）',
+    !/<KATEX[^>]*>[^<]*learning rate/.test(dirtyHtml),
+    dirtyHtml
+  );
+  checkTrue('文字部分照原样显示，只有 $...$ 里的公式进渲染', /learning rate/.test(dirtyHtml) && /<KATEX[^>]*>10\^\{-5\}<\/KATEX>/.test(dirtyHtml), dirtyHtml);
+  checkTrue('纯公式仍整条走数学模式（不受这条规则影响）', R.renderVisionMathHtml('\\hat{Y}_t', false) === '<KATEX>\\hat{Y}_t</KATEX>');
+
+  // 同一个替换表经 renderEnTextHtml 落到正文里，效果相同
+  const src = 'We set M = 50 and learning rate 10.';
+  const table = [{ find: 'learning rate 10', latex: dirty }];
+  const html = R.renderEnTextHtml(src, table);
+  checkTrue(
+    '替换表里的脏 latex 经正文渲染也不会把散文丢进 KaTeX',
+    !/<KATEX[^>]*>[^<]*learning rate/.test(html) && /learning rate/.test(html),
+    html
+  );
+
+  // ---- ② 没有基字母的孤儿组合符（真实 cycle 第 4/5 页："(̂)" 与 "| Ω | ̂"） ----
+  const orphan = `(${HAT}) M cycle-ERF (Y l) = ReLU Y l (6)`;
+  const orphanHtml = R.renderTextWithMath(orphan);
+  checkTrue('孤儿帽子（前面不是字母）被清掉，不再漂在字外', !orphanHtml.includes(HAT), orphanHtml);
+  checkTrue('公式编号的括号还在（只去掉那个没意义的组合符）', /^\(\)/.test(orphanHtml.replace(/<[^>]+>/g, '')), orphanHtml);
+
+  const tailOrphan = `| \u03a9 | ${HAT}`;
+  checkTrue('行尾的孤儿帽子同样被清掉', !R.renderTextWithMath(tailOrphan).includes(HAT), R.renderTextWithMath(tailOrphan));
+
+  // 反例：有基字母的帽子仍必须转成公式（清理规则绝不能吃掉它）
+  const realHat = `Y ${HAT} t = S \u03b8 (X t)`;
+  const realHtml = R.renderTextWithMath(realHat);
+  checkTrue(
+    '有基字母的帽子照旧转成公式（清理规则没有误伤）',
+    /<KATEX[^>]*>\\hat\{Y\}_\{t\}<\/KATEX>/.test(realHtml),
+    realHtml
+  );
+  checkTrue('并且不会在输出里留下裸组合符', !realHtml.includes(HAT), realHtml);
+
+  // ---- ③ 旧式译文：替换区间必须按**真实命中长度**取，不能按 find 的长度 ----
+  // 真实 AOT 第 5 页：模型给的 find 是 "Y ∈ { 0, 1 }"（12 字、带空格），而中文译文里写的是
+  // "Y ∈ {0, 1}"（10 字）——旧实现用 find.length 当结尾，多吃的两个字正好是后面那个上标的
+  // `^{`，于是界面上变成"公式 + 悬空的 } + 一段重复的公式"（用户反馈"翻译乱套了"）。
+  const oldStyleZh =
+    '假设视频场景中有 N（N < M）个目标，将目标的独热掩码 Y ∈ {0, 1}^{T HW × N} 嵌入为身份嵌入 E ∈ R^{T HW × C} 的公式为，';
+  const table5 = [
+    { find: 'T HW × N', latex: 'THW \\times N' },
+    { find: 'T HW × C', latex: 'THW \\times C' },
+    { find: 'Y ∈ { 0, 1 }', latex: 'Y \\in \\{0,1\\}^{THW \\times N}' },
+    { find: 'E ∈ R', latex: 'E \\in \\mathbb{R}^{THW \\times C}' }
+  ];
+  const fixedZh = R.renderEnTextHtml(oldStyleZh, table5);
+  checkTrue(
+    '旧式译文：只出 2 条公式（不重复、不多吃字符）',
+    (fixedZh.match(/<KATEX>/g) || []).length === 2,
+    fixedZh
+  );
+  checkTrue(
+    '旧式译文：公式后面不再吊着悬空的 } / ^{...}',
+    !/<\/KATEX>\s*\}/.test(fixedZh) && !/<\/KATEX>\s*\^/.test(fixedZh),
+    fixedZh
+  );
+  checkTrue(
+    '旧式译文：上标被算进同一条公式（latex 自带 ^ 时是"吃掉"，不是再并一个）',
+    fixedZh.includes('<KATEX>Y \\in \\{0,1\\}^{THW \\times N}</KATEX>') &&
+      fixedZh.includes('<KATEX>E \\in \\mathbb{R}^{THW \\times C}</KATEX>') &&
+      !/\\hat\{Y\}_t\^/.test(fixedZh),
+    fixedZh
+  );
+
+  // ---- ④ 新式译文（模型自己写了 $...$）：替换表绝不能伸进数学区间里 ----
+  // 真实 AOT 第 5 页存在第二份译文缓存（模型自己转写了 LaTeX）。替换表的 find 是文本层残渣写法，
+  // 归一化+模糊匹配很容易命中已经正确的 LaTeX，一旦命中就把一条完整公式从中间劈开。
+  const newStyleZh =
+    '将目标的独热掩码 $Y \\in \\{0,1\\}^{T \\times H \\times W \\times N}$ 嵌入为身份嵌入 $E \\in \\mathbb{R}^{T \\times H \\times W \\times C}$ 的公式为';
+  const newHtml = R.renderEnTextHtml(newStyleZh, table5);
+  checkTrue(
+    '新式译文：$...$ 原样进数学模式（模型自己写的 LaTeX 不被替换表动）',
+    newHtml.includes('<KATEX>Y \\in \\{0,1\\}^{T \\times H \\times W \\times N}</KATEX>') &&
+      newHtml.includes('<KATEX>E \\in \\mathbb{R}^{T \\times H \\times W \\times C}</KATEX>'),
+    newHtml
+  );
+  checkTrue(
+    '新式译文：没有把残渣公式拼进去（不该出现 THW \\times N）',
+    !newHtml.includes('THW \\times N') && (newHtml.match(/<KATEX>/g) || []).length === 2,
+    newHtml
+  );
+
+  // ---- ⑤ 老行为不能丢：裸上标 + latex 里没有 ^ → 仍然并进同一条公式 ----
+  // 真实形态：替换表的 find 只覆盖到主体（`Y ̂ t`），源文本后面还跟着一个裸的 `^N`，
+  // 而 latex `\hat{Y}_t` 里**没有** `^`（\hat 不是上标）→ 必须并成 \hat{Y}_t^{N}。
+  const supCase = R.renderEnTextHtml(`经过 Y ${HAT} t^N 次迭代`, [{ find: `Y ${HAT} t`, latex: '\\hat{Y}_t' }]);
+  checkTrue('latex 没有上标时，裸上标照旧并进公式', supCase.includes('<KATEX>\\hat{Y}_t^{N}</KATEX>'), supCase);
+})();
+
+// ---------- 23. AI 回答里的公式：HTML 实体 / 行内 \tag / 落单的 $ ----------
+console.log('\n===== T23 AI 回答与译文里的公式渲染（真实数据） =====');
+(function aiMathRenderTest() {
+  const esc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const sliceFn = (sig, endAt) => {
+    const s = code.indexOf(sig);
+    const e = code.indexOf('\n  }', endAt ? code.indexOf(endAt, s) : s);
+    return s >= 0 && e > s ? code.slice(s, e + 4) : '';
+  };
+  checkTrue('源码里有 decodeMathEntities（数学片段还原 HTML 实体）', /function decodeMathEntities\(/.test(code));
+  if (!/function decodeMathEntities\(/.test(code)) return;
+  // 【关键】不能用桩替换 renderMathSpan：实体还原与行内 \tag 改写都在它里面。
+  // 用**真 KaTeX**包一层记录（renderMathSpan 读的是 window.katex）：
+  // 这样既能记下送进去的 tex，又能真的判定"渲染不出来就留成代码块"这条闸门。
+  const start = code.indexOf('  function renderInlineMarkdown(text) {');
+  const end = code.indexOf('\n  function renderMarkdownToHtml(md) {');
+  checkTrue('能从真实源码里抽出渲染片段', start > 0 && end > start);
+  if (start < 0 || end <= start) return;
+  let realKatex = null;
+  try {
+    realKatex = require(path.join(__dirname, '..', '..', 'media', 'katex', 'katex.min.js'));
+  } catch (e) {
+    checkTrue('能加载本地 KaTeX（公式渲染复核需要它）', false, String(e && e.message));
+    return;
+  }
+  const seen = [];
+  const prevWindow = global.window;
+  global.window = {
+    katex: {
+      renderToString: (tex, opts) => {
+        seen.push({ tex: String(tex), display: !!(opts && opts.displayMode) });
+        return realKatex.renderToString(tex, opts);
+      }
+    }
+  };
+  // eslint-disable-next-line no-new-func
+  const renderInline = new Function(
+    'escapeHtml',
+    'console',
+    `${sliceFn('  function looksLikeMath(tex) {', '  function looksLikeInlineMath(tex) {')}
+     ${sliceFn('  function looksLikeInlineMath(tex) {', '  function looksLikeMathResidue(s) {')}
+     ${sliceFn('  function decodeMathEntities(tex) {', '  function renderMathSpan(tex, displayMode) {')}
+     ${sliceFn('  function renderMathSpan(tex, displayMode) {')}
+     ${code.slice(start, end)}
+     return renderInlineMarkdown;`
+  )(esc, { log() {}, warn() {} });
+  const texOf = () => (seen.length ? seen[seen.length - 1].tex : '');
+  const isMathRendered = html => /class="md-math-rendered/.test(html);
+  const isCodePill = html => /<code class="md-code">/.test(html);
+
+  // ---- ① HTML 实体：`$N(N<M)$` 经 escapeHtml 后若把 &lt; 直接喂给 KaTeX 会报
+  //      "Expected 'EOF', got '&'"，界面上是一整块红字（真实回答里出现过 N(N<M)、N<M、y > t）
+  const esc1 = renderInline('条件是 $N(N<M)$ 时');
+  checkTrue(
+    '实体还原：< 以真字符送进 KaTeX（不是 &lt;）',
+    texOf().includes('N(N<M)') && !texOf().includes('&lt;'),
+    esc1
+  );
+  const esc2 = renderInline('只要 $y > t$ 就成立');
+  checkTrue('实体还原：> 同理（不是 &gt;）', texOf().includes('y > t') && !texOf().includes('&gt;'), esc2);
+
+  // ---- ② 行内 \tag：KaTeX 规定 \tag 只能用于 display，行内会报
+  //      "\tag works only in display equations" → 改写成 \quad\text{(N)}
+  const tagInline = renderInline('见 $E = ID(Y,D) = YPD, \\tag{3}$ 这一式');
+  checkTrue(
+    '行内 \\tag 改写成 \\quad\\text{(3)}（不再让 KaTeX 报错）',
+    texOf().includes('\\quad\\text{(3)}') && !texOf().includes('\\tag'),
+    tagInline
+  );
+  const tagDisplay = renderInline('$$E = YPD, \\tag{3}$$');
+  checkTrue('display 公式里的 \\tag 保持原样（那里合法）', texOf().includes('\\tag{3}'), tagDisplay);
+
+  // ---- ③ 落单的 $：join(' ') 之后会和远处的 $ 配成一对，把一大段散文塞进 KaTeX ——
+  //      实测被吞的片段长这样（含 #、|、**、中文标点）→ 必须拒绝、原样显示
+  const stray = renderInline('| 身份库中身份向量总数 | 标量 | ## 二、那个 tr 到底是什么');
+  checkTrue('落单 $ 配出的散文片段不被当成公式', !isMathRendered(stray), stray);
+
+  // ---- ④ 但不能误伤真公式：短式子（$t+1$、$l+1$、$N < M$）必须照常渲染
+  ['$t+1$', '$l+1$', '$N < M$', '$X_t$', '$\\hat{X}_t$'].forEach(expr => {
+    const html = renderInline(`这是 ${expr} 的说明`);
+    checkTrue(`短式子 ${expr} 照常渲染`, isMathRendered(html), html);
+  });
+
+  // ---- ⑤ 模型爱用反引号包变量/公式（真实回答里 $...$ 是 0 个、反引号片段 129 个）----
+  //      照 Markdown 渲染就是一片灰底代码块（实测 500 个），必须按行内公式渲染
+  ['`W_K`', '`X^l W^l`', '`Q ∈ R^{HW×C}`', '`Y ∈ {0,1}^{THW×N}`', '`V\' = AttID(Q, K, V, Y | D)`', '`X̂_t`', '`∂L_S/∂Ŷ`', '`$W_K$`'].forEach(
+    span => {
+      const html = renderInline(`这里的 ${span} 是什么`);
+      checkTrue(`反引号里的公式 ${span} 按行内公式渲染`, isMathRendered(html) && !isCodePill(html), html);
+    }
+  );
+  checkTrue('模型把公式写了两层定界符（\\`$W_K$\\`）时剥掉再渲染', !texOf().includes('$'), JSON.stringify(texOf()));
+
+  // ---- ⑥ 真正的代码/命令仍必须是代码块（不能为了公式把代码也渲染了）
+  ['`npm run vsix`', '`media/viewer.js`', '`const a = 1`', '`D:\\kx\\path`', '`hello world foo`'].forEach(span => {
+    const html = renderInline(`执行 ${span} 即可`);
+    checkTrue(`真代码 ${span} 仍按代码块显示`, isCodePill(html) && !isMathRendered(html), html);
+  });
+
+  // ---- ⑦ 硬闸门：形状像数学但 KaTeX 渲染不出来的，必须退回代码块（绝不出现红字）
+  const badTex = renderInline('写成 `\\frac{1}` 是错的');
+  checkTrue('KaTeX 渲染不出来的片段退回代码块（不会变成报错红字）', !/katex-error/.test(badTex), badTex);
+  global.window = prevWindow;
+})();
+
+// ---------- 24. 问 AI 时把规范公式交给模型（focusMath） ----------
+console.log('\n===== T24 公式聚焦：把规范 LaTeX 交给模型 =====');
+(function focusMathTest() {
+  checkTrue('源码里有 collectFocusMath（提问时收集规范公式）', /function collectFocusMath\(/.test(code));
+  if (!/function collectFocusMath\(/.test(code)) return;
+
+  // 场景一：公式段落（真实数据取自 AOT 第 5 页公式 (4)）
+  const formulaPara = {
+    id: 6,
+    type: 'formula',
+    cleanText: 'V = AttID (Q, K, V, Y | D) = Att (Q, K, V + ID (Y, D)) = Att (Q, K, V + E), (4)',
+    visionLatex: "V' = \\mathit{AttID}(Q, K, V, Y \\mid D) = \\mathit{Att}(Q, K, V + \\mathrm{ID}(Y, D))"
+  };
+  checkTrue('公式段落：带上规范 LaTeX', T.collectFocusMath(formulaPara, formulaPara.cleanText).includes('\\mathit{AttID}'));
+  checkTrue('文本层残渣不会被当成规范式送出去', !T.collectFocusMath(formulaPara, '').includes('Y | D'));
+
+  // 场景二：正文段落里的行内公式（真实数据取自 AOT 第 5 页第 3 段）
+  const bodyPara = {
+    id: 3,
+    type: 'body',
+    cleanText: 'First, an Identification Embedding mechanism is proposed to embed the masks of multiple different targets into V',
+    visionInline: [
+      { find: 'Y ∈ { 0, 1 }', latex: 'Y \\in \\{0,1\\}^{THW \\times N}' },
+      { find: 'E ∈ R', latex: 'E \\in \\mathbb{R}^{THW \\times C}' },
+      { find: 'D ∈ R', latex: 'D \\in \\mathbb{R}^{M \\times C}' }
+    ]
+  };
+  const oneSent = T.collectFocusMath(bodyPara, 'embed the masks Y ∈ { 0, 1 } into');
+  checkTrue('只带"聚焦文本里确实出现"的那条行内公式', oneSent.includes('THW \\times N') && !oneSent.includes('M \\times C'), oneSent);
+  const whole = T.collectFocusMath(bodyPara, bodyPara.cleanText);
+  checkTrue('聚焦整段时带上整段的公式', whole.includes('THW \\times N') && whole.includes('M \\times C'));
+  checkTrue('同一条公式不重复出现', (whole.match(/THW \\times N/g) || []).length === 1);
+
+  // 场景三：没有公式 / 没有段落时不能硬造
+  checkTrue('普通段落不产生 focusMath', T.collectFocusMath({ id: 1, type: 'body', cleanText: 'plain text' }, 'plain') === '');
+  checkTrue('没有聚焦段落时返回空串', T.collectFocusMath(null, 'x') === '');
+
+  // 场景四：上限（避免把整段十几条公式全塞进提示词）
+  const many = { id: 9, type: 'body', cleanText: 'x', visionInline: [] };
+  for (let k = 0; k < 20; k++) many.visionInline.push({ find: 'x', latex: `L_{${k}}` });
+  const capped = T.collectFocusMath(many, 'x').split('\n');
+  checkTrue('公式条数有上限（最多 8 条）', capped.length === 8, String(capped.length));
+})();
+
+// ---------- 25. 全文公式与符号索引 ----------
+console.log('\n===== T25 公式与符号索引（真实 AOT 回包） =====');
+(function mathIndexTest() {
+  checkTrue('源码里有 extractMathSymbols（从 LaTeX 抽符号）', /function extractMathSymbols\(/.test(code));
+  if (!/function extractMathSymbols\(/.test(code)) return;
+
+  // ① 符号抽取：真实 AOT 第 5 页式 (4)
+  const syms4 = T.extractMathSymbols("V' = \\mathit{AttID}(Q, K, V, Y \\mid D) = \\mathit{Att}(Q, K, V + \\mathrm{ID}(Y, D))");
+  ['AttID', 'Att', 'ID', 'Q', 'K', 'V', 'Y', 'D'].forEach(s =>
+    checkTrue(`抽出符号 ${s}`, syms4.includes(s), JSON.stringify(syms4))
+  );
+  checkTrue('关系/排版命令不进符号表', !syms4.some(s => /^\\/.test(s)), JSON.stringify(syms4.filter(s => /^\\/.test(s))));
+
+  // 上下标要跟着符号走（读者查的就是 W^l 这种）
+  const syms6 = T.extractMathSymbols('\\mathrm{AttLT}(X^l, X^l, Y) = \\mathit{AttID}(X^l W^l, X^l W^l, X^l W^l, Y \\mid D)');
+  checkTrue('上下标并进符号名（X^l / W^l）', syms6.includes('X^l') && syms6.includes('W^l'), JSON.stringify(syms6));
+  checkTrue('希腊字母保留（那是要查的符号）', T.extractMathSymbols('\\alpha \\cdot x^2').includes('\\alpha'));
+  checkTrue('运算号丢掉（\\cdot 不是符号）', !T.extractMathSymbols('\\alpha \\cdot x^2').some(s => s === '\\cdot'));
+  checkTrue('空输入返回空数组', Array.isArray(T.extractMathSymbols('')) && T.extractMathSymbols('').length === 0);
+
+  // ② 索引汇总：用真实回包结构（含 split 的 parts、块级 latex、行内表）
+  T.setVisionStructure({
+    '5': {
+      version: 2,
+      fixes: '拆出公式(3)(4)(5)',
+      segments: [
+        { index: 4, type: 'formula', latex: 'E = \\mathit{ID}(Y, D) = YPD', inline: [{ find: 'D ∈ R', latex: 'D \\in \\mathbb{R}^{M \\times C}' }] },
+        {
+          index: 6,
+          type: 'split',
+          parts: [
+            { type: 'body' },
+            { type: 'formula', at: 'V = AttID', latex: "V' = \\mathit{AttID}(Q, K, V, Y \\mid D)" }
+          ]
+        }
+      ]
+    },
+    '6': { version: 2, segments: [{ index: 2, type: 'formula', latex: 'Y = \\mathrm{softmax}(PL_D)' }] }
+  });
+  const idx = T.buildMathIndex();
+  checkTrue('索引收集到全部公式（含 parts 里的公式片）', idx.formulas.length === 4, `${idx.formulas.length} 条`);
+  checkTrue('每条公式都带页码', idx.formulas.every(f => Number.isFinite(f.page)));
+  checkTrue('同一条 latex 不重复收录', new Set(idx.formulas.map(f => f.tex)).size === idx.formulas.length);
+  const ySym = idx.symbols.find(s => s.name === 'Y');
+  checkTrue('符号统计出现次数与首次出现页', !!ySym && ySym.count >= 2 && ySym.firstPage === 5, ySym ? `Y ×${ySym.count} 首现 p${ySym.firstPage}` : '缺 Y');
+  checkTrue('符号表按出现次数降序（常用的排前面）', idx.symbols.length > 1 && idx.symbols[0].count >= idx.symbols[idx.symbols.length - 1].count);
+  checkTrue('垮页公式都能索引到（第 6 页那条也在）', idx.formulas.some(f => f.page === 6));
+  // 缓存与失效
+  checkTrue('重复调用走缓存（同一份数据）', T.buildMathIndex() === idx);
+  T.setVisionStructure({});
+  checkTrue('换了回包后索引会失效重算', T.buildMathIndex().formulas.length === 0);
+  T.setVisionStructure({});
 })();
 
 console.log(`\n===== 结果: ${pass} 通过 / ${fail} 失败 =====`);
