@@ -1390,6 +1390,18 @@ console.log('\n===== T17 标题判定不吞正文（真实数据） =====');
     'isSingleColumnPage',
     'gutterX',
     'console',
+    /*
+     * commitParagraph 现在依赖数学层（每个 span 要知道自己是不是公式）。
+     * 这里按真实语义注入桩：textContent.items 为空 → 没有 pdf.js item → 全部按正文处理，
+     * 于是这段测试测的仍是"标题判定"本身，不会因为数学层而失真。
+     * （stub 必须返回**空数组**而不是 undefined：真实 findMathRegions 对无公式文本就返回 []。
+     *  早前测试桩一律返回真值的教训见 docs/design-notes.md。）
+     */
+    'textContent',
+    'mathInfoByIdx',
+    'findMathRegions',
+    'paraSpanGap',
+    'segmentGap',
     `let paras = [];
      let curParaLines = [];
      let curParaType = 'body';
@@ -1434,7 +1446,7 @@ console.log('\n===== T17 标题判定不吞正文（真实数据） =====');
     mk(190, 309, 545, '2018 DAVIS challenge winner [ 20 ]. Our results on the test-', 'col2'),
     mk(178, 309, 510, 'dev set is included in the supplementary materials.', 'col2')
   ];
-  const paras = run(lines, labelRe, 6, split, false, 293, { log() {} });
+  const paras = run(lines, labelRe, 6, split, false, 293, { log() {} }, { items: [] }, {}, () => [], () => 0, () => null);
 
   const headingCount = paras.filter(p => p.type === 'heading').length;
   checkTrue('行首出现 method/methods/results/数字大写 时**不产生标题**', headingCount === 0, `产生了 ${headingCount} 个标题`);
@@ -1461,7 +1473,7 @@ console.log('\n===== T17 标题判定不吞正文（真实数据） =====');
     mk(117, 50, 286, 'Single object (DAVIS-2016). DAVIS-2016 [ 27 ] is one of', 'col1'),
     mk(105, 50, 286, 'the most popular benchmark datasets for video object seg-', 'col1')
   ];
-  const paras2 = run(real, labelRe, 6, split, false, 293, { log() {} });
+  const paras2 = run(real, labelRe, 6, split, false, 293, { log() {} }, { items: [] }, {}, () => [], () => 0, () => null);
   checkTrue(
     '真标题仍被识别为 heading',
     paras2.length >= 2 && paras2[0].type === 'heading',
@@ -2097,7 +2109,12 @@ console.log('\n===== T21 视觉手术（合并 / 拆分 / 图块 / 锚点定位�
   checkTrue('手术抛异常时回退到"只改类型"的老路径', /视觉手术失败，回退到只改类型/.test(code));
   checkTrue('设置项可关闭手术（关掉 = 只改类型/顺序/丢弃）', /visionSurgeryAllowed \? applyVisionStructure\(page, result\) : applyVisionSegments\(page, result\)/.test(code));
   checkTrue('行内公式只在显示层替换（原文/坐标不动）', /function renderEnTextHtml\(text, inline\)/.test(code));
-  checkTrue('卡片里的英文原文走行内公式渲染', /div class="sent-en">\$\{renderEnTextHtml\(sent\.text, para\.visionInline\)\}/.test(code));
+  // 1.4.0：卡片原文侧统一走 renderParaEnHtml（**本地数学层优先**，视觉替换表只作兜底）
+  checkTrue(
+    '卡片里的英文原文走行内公式渲染（本地公式优先）',
+    /div class="sent-en">\$\{renderParaEnHtml\(sent\.text, para\)\}/.test(code) &&
+      /function renderParaEnHtml\(text, para\)/.test(code)
+  );
   // 视觉手术会重新编号 → 批注不能只按编号找段落（否则"点批注跳到别的段"）
   checkTrue(
     '批注定位改成"引文文字优先、编号兜底"',

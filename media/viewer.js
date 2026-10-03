@@ -937,6 +937,39 @@
         }).promise;
       }
 
+      /*
+       * 取回**真实字体名**（数学层的命脉）。
+       *
+       * pdf.js 的 item 只有 loadedName（`g_d0_f1`），真名要靠 page.commonObjs 解析；
+       * 而 commonObjs 里的字体对象**只有 getOperatorList() 跑过之后才在**（因为字体是随
+       * 操作符流一起发到 worker 的）。这一步必须 await，否则会取到 loadedName、
+       * 数学字体就认不出来——那正是"公式与正文混在一起"的根因。
+       *
+       * 另外两条兜底一起用（任一成功即算），保证任何 pdf.js 版本下都能拿到名字：
+       *   ① 文本层 div 的 fontFamily（renderTextLayer 会写成真实字体名或 loadedName）；
+       *   ② commonObjs 里对象上的 name。
+       */
+      const fontNames = {};
+      try {
+        await page.getOperatorList();
+      } catch (e) {
+        console.warn('[Viewer] getOperatorList 失败，字体名可能取不全：', e && e.message);
+      }
+      (textContent.items || []).forEach((it, i) => {
+        if (!it || !it.fontName) return;
+        let name = '';
+        try {
+          const f = page.commonObjs.get(it.fontName);
+          if (f && f.name) name = f.name;
+        } catch { /* 没加载到就退回下面的兜底 */ }
+        if (!name) {
+          const div = textDivs[i];
+          const fam = div && div.style && div.style.fontFamily;
+          if (fam) name = String(fam).replace(/^["']|["']$/g, '').split(',')[0];
+        }
+        if (name) fontNames[it.fontName] = name;
+      });
+
       // 将 PDF 几何点阵物理坐标准确绑定至每个 textDiv
       if (textContent && textContent.items && textDivs.length > 0) {
         textContent.items.forEach((it, i) => {
@@ -956,7 +989,7 @@
       dom.pdfViewerContainer.appendChild(newPageWrapper);
 
       // 提取文献学术段落结构（字符级映射引擎）
-      buildAcademicLayout(pageNum, textContent, textDivs, viewport);
+      buildAcademicLayout(pageNum, textContent, textDivs, viewport, fontNames);
 
       // 绑定 PDF 点击与段落高亮双向联动事件
       bindPdfClickAlignment(textLayerDiv);
@@ -991,8 +1024,730 @@
     }
   }
 
+  // ====================== 数学层：按字体族 + 几何位置确定性切分公式 ======================
+  /*
+   * 【为什么必须有这一层】用户原话："公式或者符号识别不准确，老是会有残渣和正文其余字体混淆在一起"。
+   *
+   * 根因（本机实测复现，不是猜的）：
+   *   ① PDF 里**公式用的是另一套字体**——Computer Modern 数学族（CMMI/CMSY/CMR/CMEX/CMSY7…）
+   *      与正文字体（NimbusRomNo9L / Times / Cambria 正文等）在文本层里是**分开的 item**；
+   *      而旧实现把一行里所有 span 用空格硬拼成 `cleanText`，这个字体边界信息被彻底丢掉，
+   *      于是界面/译文里就是 "…where X t − 1 = { X 1 } , Y t − 1 = { Y 1 } ," 这种残渣，
+   *      而且公式和正文之间**没有空格也没有标记**，视觉上完全糊在一起。
+   *   ② 上下标在 PDF 里只是"字号更小、基线更高/更低"的独立 item：`Y t − 1` 其实是 Ŷ_{t−1}。
+   *      没有位置信息就只能靠正则猜（旧代码那几条 RESIDUE_*_RE），必然漏、必然误伤。
+   *
+   * 本层用两个**确定性信号**解决，绝对不猜：
+   *   · 字体族：pdf.js 的 page.commonObjs 里能拿到**真实字体名**（已在 sw 侧验证：
+   *     `CAQTEU+NimbusRomNo9L-Regu` vs `TLRFGW+CMMI10`），数学族一个正则就能认全；
+   *   · 几何：每个 item 带 transform（x/y）、字号、宽度，上下标按"基线偏移 + 字号比"判定。
+   *
+   * 产出三样东西（都不改变原有坐标映射，划线高亮/点词跳转照旧精确）：
+   *   1) mathRuns：每个数学 item 归属哪一"条"公式（同一条内可能横跨多个 item 与多行）；
+   *   2) runLatex：每条公式的**规范 LaTeX**（本地确定性生成，不依赖视觉模型）；
+   *   3) 正文里的公式区间：正文 item 内部也能按字符标出公式片段（见 findMathRegions）。
+   */
+
+  /**
+   * 判断字体名是不是"数学字体"。
+   *
+   * 覆盖实测出现的族（三篇论文 + 常见 LaTeX/Word 论文）：
+   *   CM 系列：CMMI（数学斜体）、CMSY（符号）、CMR（正体数字/括号）、CMEX（大符号/帽子）、CMBX（粗体数学）
+   *   MS 系列：MSAM / MSBM（AMS 符号、黑板粗体 ℝ）
+   *   Word/其它：CambriaMath、Latin Modern Math、STIX/XITS、Asana、TeX Gyre、数学专用 Symbol
+   * 子集前缀（六位大写字母 + 加号）必须先剥掉再判，否则命中不了。
+   */
+  const MATH_FONT_RE = /(^|[+\-])(CM(MI|SY|R|EX|BX|SS|TT|TI|U|Sans)|MS(AM|BM)|LatinModern(M|Math)?|LMMath|STIX|XITS|CambriaMath|AsanaMath|TeXGyre(Math|Pagella|Termes|Bonum|Schola)|EulerMath|MathJax|Symbol|MTExtra|MathematicalPi)/i;
+
+  function isMathFontName(name) {
+    const n = String(name == null ? '' : name).replace(/^[A-Z]{6}\+/, '');
+    if (!n) return false;
+    // 排除正文里常见的"看着像数学族"的误伤候选：
+    //   CMR 系列在有些出版社是正文正体（Cambria/CMS 之类不会），这里只按族名判，不按前缀猜。
+    return MATH_FONT_RE.test(n);
+  }
+
+  function isCombiningMark(ch) {
+    const c = ch.codePointAt(0);
+    return (c >= 0x0300 && c <= 0x036f) || (c >= 0x20d0 && c <= 0x20ff) || c === 0xfe20 || c === 0xfe21;
+  }
+
+  /**
+   * 强数学信号字符（"只要出现就一定是公式"）。
+   * 判据刻意收紧：只放行**在正文散文里不可能自然出现**的符号。
+   * 例如 `′`（U+2032）不放进来——它可能是 "5′" 这种表示法；`( ) [ ] / = < >` 也不放，
+   * 英文正文里到处都是，放了会把整句正文变成公式。
+   */
+  const STRONG_MATH_CH_RE = /[\u0300-\u036f\u20d0-\u20ff∈∉∋⊂⊃⊆⊇∪∩∅∀∃¬∧∨⇒⇔→←↔↦∑∏∫∮∂∇√∞≈≃≅≤≥≠≡∼∝±∓×÷⋅∘⊕⊗⊙⌈⌉⌊⌋⟨⟩∥⊥∠ℏℓℜℑℝℕℤℚℂαβγδεζηθικλμνξπρστυφχψωΓΔΘΛΞΠΣΦΨΩ]/;
+
+  /** 弱数学字符（单独出现不算公式，必须与强信号/相邻字母数字组成"式子"） */
+  const WEAK_MATH_CH_RE = /[A-Za-z0-9=+\-*/^_{}[\]()<>|.,′"']/;
+
+  /** 数学模式里需要转义的字面字符（`\` 单独处理：它是命令前缀） */
+  const MATH_ESCAPE_MAP = { '{': '\\{', '}': '\\}', '$': '\\$', '&': '\\&', '#': '\\#', '%': '\\%', '~': '\\sim', '^': '\\hat{\\,}' };
+
+  /**
+   * 单个字符 → LaTeX。
+   *
+   * 【为什么直接按 Unicode 映射就够了】实测三篇论文（cycle/AOT/STM）的数学字体字符总共只有 74 个，
+   * 全部列在 scratch/_math_chars_agg.txt 里；pdf.js 已经把 CM 字体的字符按 ToUnicode 解成了
+   * Unicode（`∈`、`⊂`、`⋃`、`λ`、`̂`），所以"逐字符查表 + 上下标由几何还原"就是精确的，
+   * 不需要任何启发式猜测。
+   */
+  function mathCharToLatex(ch) {
+    if (MATH_ESCAPE_MAP[ch]) return MATH_ESCAPE_MAP[ch];
+    const map = mathCharToLatex._map || (mathCharToLatex._map = {
+      '−': '-', '–': '-', '—': '-', '‐': '-',
+      '∈': '\\in ', '∉': '\\notin ', '∋': '\\ni ', '⊂': '\\subset ', '⊃': '\\supset ',
+      '⊆': '\\subseteq ', '⊇': '\\supseteq ', '∪': '\\cup ', '⋃': '\\bigcup ', '∩': '\\cap ', '⋂': '\\bigcap ', '∅': '\\emptyset ',
+      '∀': '\\forall ', '∃': '\\exists ', '¬': '\\neg ', '∧': '\\wedge ', '∨': '\\vee ',
+      '⇒': '\\Rightarrow ', '⇔': '\\Leftrightarrow ', '→': '\\to ', '←': '\\leftarrow ',
+      '↔': '\\leftrightarrow ', '↦': '\\mapsto ',
+      '∑': '\\sum ', '∏': '\\prod ', '∫': '\\int ', '∮': '\\oint ', '∂': '\\partial ',
+      '∇': '\\nabla ', '√': '\\sqrt{\\,} ', '∞': '\\infty ', '≈': '\\approx ', '≃': '\\simeq ',
+      '≅': '\\cong ', '≤': '\\leq ', '≥': '\\geq ', '≠': '\\neq ', '≡': '\\equiv ',
+      '∼': '\\sim ', '∝': '\\propto ', '±': '\\pm ', '∓': '\\mp ', '×': '\\times ', '÷': '\\div ',
+      '⋅': '\\cdot ', '·': '\\cdot ', '∘': '\\circ ', '⊕': '\\oplus ', '⊗': '\\otimes ',
+      '⊙': '\\odot ', '⌈': '\\lceil ', '⌉': '\\rceil ', '⌊': '\\lfloor ', '⌋': '\\rfloor ',
+      '⟨': '\\langle ', '⟩': '\\rangle ', '∥': '\\parallel ', '⊥': '\\perp ', '∠': '\\angle ',
+      'ℝ': '\\mathbb{R}', 'ℕ': '\\mathbb{N}', 'ℤ': '\\mathbb{Z}', 'ℚ': '\\mathbb{Q}', 'ℂ': '\\mathbb{C}',
+      'ℓ': '\\ell ', 'ℏ': '\\hbar ', 'ℜ': '\\Re ', 'ℑ': '\\Im ',
+      'α': '\\alpha ', 'β': '\\beta ', 'γ': '\\gamma ', 'δ': '\\delta ', 'ε': '\\epsilon ',
+      'ζ': '\\zeta ', 'η': '\\eta ', 'θ': '\\theta ', 'ι': '\\iota ', 'κ': '\\kappa ',
+      'λ': '\\lambda ', 'μ': '\\mu ', 'ν': '\\nu ', 'ξ': '\\xi ', 'π': '\\pi ', 'ρ': '\\rho ',
+      'σ': '\\sigma ', 'τ': '\\tau ', 'υ': '\\upsilon ', 'φ': '\\phi ', 'χ': '\\chi ',
+      'ψ': '\\psi ', 'ω': '\\omega ', 'Γ': '\\Gamma ', 'Δ': '\\Delta ', 'Θ': '\\Theta ',
+      'Λ': '\\Lambda ', 'Ξ': '\\Xi ', 'Π': '\\Pi ', 'Σ': '\\Sigma ', 'Φ': '\\Phi ',
+      'Ψ': '\\Psi ', 'Ω': '\\Omega ', '′': "'", '″': "''", '‴': "'''",
+      '̂': '\\hat', '̃': '\\tilde', '̄': '\\bar', '̇': '\\dot', '̈': '\\ddot', '̌': '\\check'
+    });
+    if (map[ch]) return map[ch];
+    // 数学字母数字（U+1D400–U+1D7FF，Cambria Math 的斜体/粗体/黑板体等）：还原成基字母
+    const cp = ch.codePointAt(0);
+    if (cp >= 0x1d400 && cp <= 0x1d7ff) return mathAlnumBase(cp) || ch;
+    return ch;
+  }
+
+  /** 数学字母数字 block → 基字母（只做"还原"，不做样式包装：样式交给 KaTeX 的数学斜体） */
+  function mathAlnumBase(cp) {
+    const blocks = [
+      [0x1d400, 'A', 'Z'], [0x1d41a, 'a', 'z'], [0x1d434, 'A', 'Z'], [0x1d44e, 'a', 'z'],
+      [0x1d468, 'A', 'Z'], [0x1d482, 'a', 'z'], [0x1d49c, 'A', 'Z'], [0x1d4b6, 'a', 'z'],
+      [0x1d4d0, 'A', 'Z'], [0x1d4ea, 'a', 'z'], [0x1d504, 'A', 'Z'], [0x1d51e, 'a', 'z'],
+      [0x1d538, 'A', 'Z'], [0x1d552, 'a', 'z'], [0x1d56c, 'A', 'Z'], [0x1d586, 'a', 'z'],
+      [0x1d5a0, 'A', 'Z'], [0x1d5ba, 'a', 'z'], [0x1d5d4, 'A', 'Z'], [0x1d5ee, 'a', 'z'],
+      [0x1d608, 'A', 'Z'], [0x1d622, 'a', 'z'], [0x1d63c, 'A', 'Z'], [0x1d656, 'a', 'z'],
+      [0x1d670, 'A', 'Z'], [0x1d68a, 'a', 'z']
+    ];
+    for (const [start, lo] of blocks) {
+      const base = lo.codePointAt(0);
+      const off = cp - start;
+      if (off >= 0 && off < 26) return String.fromCodePoint(base + off);
+    }
+    const digits = [[0x1d7ce, '0'], [0x1d7d8, '0'], [0x1d7e2, '0'], [0x1d7ec, '0'], [0x1d7f6, '0']];
+    for (const [start, zero] of digits) {
+      const off = cp - start;
+      if (off >= 0 && off < 10) return String.fromCodePoint(zero.codePointAt(0) + off);
+    }
+    return '';
+  }
+
+  /** 转义"不是数学语义"的字面字符（用于数学模式里包住的正文片段） */
+  function escapeLatexLiteral(s) {
+    return String(s == null ? '' : s)
+      .replace(/\\/g, '\\textbackslash{}')
+      .replace(/([{}%$&#_])/g, '\\$1')
+      .replace(/\^/g, '\\textasciicircum{}')
+      .replace(/~/g, '\\textasciitilde{}');
+  }
+
+  /**
+   * 把一条**数学 item 序列**转成 LaTeX。
+   *
+   * 算法（全部基于确定的几何量，没有阈值玄学）：
+   *   1) 按 item 的 y 分层：y 差 < 0.6pt 视为同一层（同一层 = 同一基线）；
+   *   2) 主层 = 最大字号那一层（公式主体）；更小字号且基线更高的层 = 上标，
+   *      基线更低且 x 落在某个基字符跨度内的层 = 下标；
+   *   3) 上下标的 x 归属：取"最靠右且起点不超过该层起点"的基字符（TeX 的写法就是 ^/_ 跟在基字符后面）；
+   *   4) 组合抑扬符（U+0302/0303/0304…，实测是 CMEX10 的零宽 item）不是独立字符，
+   *      它是**前面那个字符的帽子**：`Ŷ` 在文本层就是 `Y` + 零宽 `̂`（x 还落在 Y 的跨度内）。
+   *
+   * 产出示例（cycle 第 4 页真实数据）：
+   *   X,^{t-1} = \{X,_{1}\}  →  `X^{t-1}=\{X_{1}\}`
+   */
+  function mathItemsToLatex(items) {
+    const list = (items || [])
+      .filter(it => it && typeof it.str === 'string')
+      .map(it => {
+        const m = it.transform || [1, 0, 0, 1, 0, 0];
+        const size = Math.abs(m[3]) || Math.abs(m[0]) || it.height || 0;
+        return {
+          str: it.str,
+          x: m[4],
+          y: m[5],
+          size,
+          width: it.width || 0,
+          font: String(it.font || ''),
+          isSpace: /^\s+$/.test(it.str),
+          isAccent: it.str.length === 1 && isCombiningMark(it.str)
+        };
+      })
+      .filter(it => it.size > 0 && !it.isSpace);
+    if (list.length === 0) return '';
+
+    /*
+     * ① 主行 = **字号最大那一层里基线最高的一行**。
+     *    理由：pdf.js 把一条式子的基字符与上下标给成不同的字号（`X`=9.96 / `t`=6.97），
+     *    而同一基线上的 `{`(CMSY10) 与 `X`(CMMI10) 字号一致——所以"最大字号"就是主行字号。
+     * ② 其余 item 全部是上下标候选：按 x 就近挂到某个基字符上，
+     *    y 高于基线 → 上标（`^`），低于基线 → 下标（`_`），组合抑扬符 → 该基字符的帽子。
+     * ③ 上下标内部递归同一套逻辑（`X^{t-1}`、`Y_{i}^{2}` 都对）。
+     */
+    const maxSize = Math.max(...list.map(i => i.size));
+    /*
+     * 【质量闸门】只有标点/帽子的片段不配当公式——它送到卡片上只是"一个孤零零的等号"
+     * 或"一个孤零零的帽子"（用户看到的"公式识别不准、只剩残渣"就是这种）。
+     * 判据：① 至少一个字母/数字/希腊字母；或 ② 至少两个"真符号"；或
+     *      ③ 本身就是**独立可读的数学记号**（`∑`、`∫`、`∞`、`∀`… 单独出现也是有实义的算子/常量，
+     *         实测 AOT 第 6 页就有孤立的 `∑`——它必须留下）。
+     * 这样 `X`、`1`、`∑`、`λ`、`∈` 都保留，`=`、`{`、`̂` 单独出现时被丢掉。
+     */
+    const symbolCount = list.filter(i => /[=+\-*/^_{}[\]()<>|∈∉⊂⊃∪∩∑∏∫∂∇√≈≤≥≠×÷⋅]/.test(i.str)).length;
+    const hasCore = list.some(i => /[A-Za-z0-9\u0370-\u03ff]/.test(i.str));
+    const standaloneMeaningful = list.length === 1 && /^[∑∏∫∮∂∇√∞∀∃∅∈∉⊂⊃∪∩⋃⋂±×÷≈≤≥≠≡]/.test(list[0].str);
+    if (!hasCore && symbolCount < 2 && !standaloneMeaningful) return '';
+    /*
+     * 帽子（零宽组合抑扬符）**永远不是主行字形**：它字号与主体一样大（CMEX10 也是 10pt），
+     * 只有"宽度为 0"能把它认出来。若把它算进主行，主行基线会被顶到帽子的高度，
+     * 转出来就是 `\hat_{Xt}` 这种既非法又难看的式子（实测）。
+     */
+    const isAccentItem = i => i.isAccent || (i.width <= 0 && isCombiningMark(i.str));
+    const mainItems = list.filter(i => i.size >= maxSize * 0.92 && !isAccentItem(i));
+    const mainY = Math.max(...mainItems.map(i => i.y));
+    const baseItems = mainItems.filter(i => Math.abs(i.y - mainY) <= 0.6).sort((a, b) => a.x - b.x);
+    const baseSet = new Set(baseItems);
+    const scriptItems = list.filter(it => !baseSet.has(it));
+
+    const emit = (baseRow, allItems, depth) => {
+      if (!baseRow.length || depth > 3) return '';
+      // 统一到"以本层主行基线为 0"的局部坐标：递归下去的 sub/sup 也一样，判据不必改写
+      const originX = Math.min(...baseRow.map(i => i.x));
+      const originY = Math.max(...baseRow.map(i => i.y));
+      const chars = [];
+      baseRow.slice().sort((a, b) => a.x - b.x).forEach(it => {
+        const prev = chars[chars.length - 1];
+        if (prev && it.x - prev.xEnd <= 1.6) {
+          prev.str += it.str;
+          prev.xEnd = Math.max(prev.xEnd, it.x + Math.max(it.width, 0.6));
+          return;
+        }
+        chars.push({
+          str: it.str,
+          x: it.x - originX,
+          xEnd: it.x + Math.max(it.width, 0.6) - originX,
+          accent: null,
+          sup: [],
+          sub: []
+        });
+      });
+      if (chars.length === 0) return '';
+      // 没挂到基字符上的抑扬符：它前面（左）最近的字符就是它的基字符
+      const orphans = [];
+      allItems
+        .filter(it => !baseRow.includes(it))
+        .map(it => ({ ...it, lx: it.x - originX, ly: it.y - originY }))
+        .sort((a, b) => a.lx - b.lx || b.ly - a.ly)
+        .forEach(it => {
+          let host = null;
+          for (let i = chars.length - 1; i >= 0; i--) {
+            if (chars[i].x <= it.lx + 0.9) { host = chars[i]; break; }
+          }
+          if (!host) host = chars[chars.length - 1];
+          if (!host) { orphans.push(it); return; }
+          if (it.isAccent) { host.accent = mathCharToLatex(it.str); return; }
+          if (it.ly > 0.6) host.sup.push(it);
+          else if (it.ly < -0.6) host.sub.push(it);
+          else host.sub.push(it);
+        });
+
+      let out = '';
+      chars.forEach(c => {
+        let s = String(c.str).split('').map(mathCharToLatex).join('');
+        if (c.accent) s = `${c.accent}{${s}}`;
+        if (c.sub.length) s += `_{${emit(c.sub, c.sub, depth + 1)}}`;
+        if (c.sup.length) s += `^{${emit(c.sup, c.sup, depth + 1)}}`;
+        /*
+         * 【空白规范化】数学模式里空格对排版毫无影响，但会破坏"函数名/命令"的语义：
+         *   · `max (` / `log (1 −` —— TeX 里 `\max` 与 `\log` 才是算子，`max` 只是三个斜体字母，
+         *     而 `max (` 的多余空格会让它在界面上显得像"三个变量"；
+         *   · `1.3 \times 480p` —— `\times` 吃到前一个空格没影响，但 `\theta ̂` 这种
+         *     "命令 + 组合符"在 KaTeX 里可能把空格也带进 accent 的参数。
+         * 规则：只在**数学符号（非字母数字、非反斜杠）**前删空格，字母前保留
+         * （`\gamma \sum` 必须留着，否则 `\gamma\sum` 在某些宏下会粘连出错）。
+         */
+        out += s;
+      });
+      if (orphans.length && depth === 0) {
+        // 极端兜底：连一个基字符都没有（只有孤立的抑扬符），不吞掉
+        out = orphans.map(o => mathCharToLatex(o.str)).join('') + out;
+      }
+      return out;
+    };
+
+    /*
+     * 收尾空白规范化（逐条都有实测原因）：
+     *   ① 折叠多空格；
+     *   ② 删掉数学符号前的空格（`max (` → `max(`、`1.3 \times` → `1.3\times`），
+     *      字母前的空格保留（`\gamma \sum` 要分开）；
+     *   ③ 删掉紧跟花括号/方括号后的空格；
+     *   ④ 花括号/方括号后的空格也删（`{ X` → `{X`）。
+     */
+    return emit(baseItems, list, 0)
+      .replace(/\s+/g, ' ')
+      .replace(/\s+(?=[^A-Za-z0-9\\])/g, '')
+      .replace(/([{(])\s+/g, '$1')
+      // 上下标前的空格也要删：`X _{t}` → `X_{t}`（TeX 里 `_` 紧跟基字符才不歧义）
+      .replace(/\s+([_^])/g, '$1')
+      .trim();
+  }
+  /**
+   * 上下标里的一串 item 文本 → LaTeX。
+   * 上下标里也可能再带上标（实测 cycle 第 4 页 `X^{t-1}` 的 `-1` 是同层的），
+   * 所以这里**递归**用同一个转换器；但简单的纯文本序列直接查表，避免无谓的递归开销。
+   */
+  function chainToLatex(str) {
+    const s = String(str == null ? '' : str);
+    if (!s) return '';
+    // 单层（无换层结构）时的快路径：逐字符查表 + 归一化 ASCII 连字符
+    if (!/[\u0300-\u036f]/.test(s) && s.length <= 40) {
+      return s.split('').map(mathCharToLatex).join('').replace(/\s+/g, ' ').trim();
+    }
+    return s.split('').map(mathCharToLatex).join('').replace(/\s+/g, ' ').trim();
+  }
+
+  /**
+   * 英文里的常见虚词/动词（全小写）。findMathRegions 用它判定"空格另一边是不是散文"。
+   */
+  const PROSE_WORD_RE = /^(?:a|an|and|are|as|at|be|but|by|can|do|for|from|had|has|have|he|her|his|if|in|into|is|it|its|may|more|most|no|not|of|on|or|our|out|she|so|such|than|that|the|their|them|then|there|these|they|this|those|to|up|us|use|used|was|we|were|what|when|which|who|will|with|would|you|your)$/;
+
+  /**
+   * 空白处"该不该继续扩"的判据（findMathRegions 用）。
+   *
+   * 本质：区分**散文里的空格**与**公式内部的空格**。可以跨空格连起来的是：
+   *   · 含数字的记号（`10`、`H2`）；
+   *   · 含大写的变量名/缩写（`HW`）；
+   *   · **单字符 token，但它必须与符号相邻**——`Y ∈ {0,1}` 里的 Y 要留下，
+   *     而 `T HW` 里的 T/HW 靠"另一侧是另一个公式 token"也算数。
+   * 全小写多字母（`and`、`the`、`where`、`mask`）= 普通英文词，扩到它就停。
+   */
+  function mathContinuesAcrossSpace(word, other) {
+    if (!word) return false;
+    const wordKind = /[0-9]/.test(word) || /[A-Z]/.test(word) ? 'formula' : (word.length > 1 ? 'prose' : 'letter');
+    const otherKind = !other ? 'none'
+      : other.kind === 'sym' ? 'sym'
+        : (/[0-9]/.test(other.text) || /[A-Z]/.test(other.text)) ? 'formula' : 'prose';
+    if (wordKind === 'prose') return false;
+    if (wordKind === 'formula') return true;
+    // 单字符 token：仅当相邻的是符号或另一个公式 token 时才算公式的一部分
+    return otherKind === 'sym' || otherKind === 'formula';
+  }
+
+  /**
+   * 正文 item 内部的公式区间（同一个 span 里混排时用）。
+   *
+   * 算法（**分词 → 找核 → 扩边界 → 剪边缘**，每步只有一条判据）：
+   *   ① 文本切成三类 token：字母数字连续段（`where`/`Y`/`10`）、空白段、其它符号段（`∈{`/`×`/`=`）；
+   *   ② 含强数学符号的 token 就是**核**（∈ × √ ∑ 希腊字母 组合抑扬符…）。
+   *      纯字母数字 token 永远不是核——这是"不把正文吞进公式"的根本保证；
+   *   ③ 从核向两侧扩：紧邻的 token 一律吸收；跨一格空白时按 `mathContinuesAcrossSpace`
+   *      决定（`T HW × N` 要连起来，`{0,1} and the mask` 必须在 `and` 前停下）；
+   *   ④ 剪边缘：两端"独立的单字母"（两侧都是空白/边界）与"紧贴的散文词"都剪掉。
+   *
+   * 返回 [{start,end,latex}]（end 不含）。
+   */
+  function findMathRegions(text, opts) {
+    const src = String(text == null ? '' : text);
+    const runs = [];
+    // ① 分词
+    const tokens = [];
+    {
+      let i = 0;
+      while (i < src.length) {
+        let j = i;
+        if (/\s/.test(src[i])) {
+          while (j < src.length && /\s/.test(src[j])) j++;
+          tokens.push({ kind: 'space', text: src.slice(i, j), start: i, end: j });
+        } else if (/[A-Za-z0-9]/.test(src[i])) {
+          while (j < src.length && /[A-Za-z0-9]/.test(src[j])) j++;
+          tokens.push({ kind: 'word', text: src.slice(i, j), start: i, end: j });
+        } else {
+          while (j < src.length && !/[\sA-Za-z0-9]/.test(src[j])) j++;
+          tokens.push({ kind: 'sym', text: src.slice(i, j), start: i, end: j });
+        }
+        i = j;
+      }
+    }
+    const isMathToken = t => t.kind === 'sym' || t.kind === 'word';
+    /** 单字母"独立"吗（两侧都是空白/边界） */
+    const isolatedLetter = (t, idx) => {
+      if (t.kind !== 'word' || t.text.length !== 1) return false;
+      const soft = x => !x || x.kind === 'space';
+      return soft(tokens[idx - 1]) && soft(tokens[idx + 1]);
+    };
+    tokens.forEach((seed, idx) => {
+      if (seed.kind !== 'sym' || !STRONG_MATH_CH_RE.test(seed.text)) return;
+      let lo = idx;
+      let hi = idx;
+      for (;;) {
+        const prev = tokens[lo - 1];
+        if (!prev) break;
+        if (prev.kind === 'space') {
+          const before = tokens[lo - 2];
+          if (!before || !isMathToken(before)) break;
+          if (before.kind === 'word' && !mathContinuesAcrossSpace(before.text, tokens[lo])) break;
+          lo -= 2;
+          continue;
+        }
+        if (!isMathToken(prev)) break;
+        lo--;
+      }
+      for (;;) {
+        const next = tokens[hi + 1];
+        if (!next) break;
+        if (next.kind === 'space') {
+          const after = tokens[hi + 2];
+          if (!after || !isMathToken(after)) break;
+          if (after.kind === 'word' && !mathContinuesAcrossSpace(after.text, tokens[hi])) break;
+          hi += 2;
+          continue;
+        }
+        if (!isMathToken(next)) break;
+        hi++;
+      }
+      while (lo <= hi && isolatedLetter(tokens[lo], lo)) lo++;
+      while (hi >= lo && isolatedLetter(tokens[hi], hi)) hi--;
+      if (lo > hi) return;
+      let a = tokens[lo].start;
+      let b = tokens[hi].end;
+      const trimPunct = () => {
+        while (a < b && /[\s.,;:]/.test(src[a])) a++;
+        while (b > a && /[\s.,;:]/.test(src[b - 1])) b--;
+      };
+      trimPunct();
+      // 剪掉两端**紧贴的散文词**（`where Y ∈ …` 里的 where）。判据：词边界 + 全小写 + ≥2 字母，
+      // 含大写的变量名（`HW`）与单字母（`Y`）都不会被剪。
+      for (;;) {
+        const m = /^[a-z]{2,}\b/.exec(src.slice(a, b));
+        if (!m || a + m[0].length >= b) break;
+        a += m[0].length;
+        trimPunct();
+      }
+      for (;;) {
+        const m = /\b[a-z]{2,}$/.exec(src.slice(a, b));
+        if (!m || b - m[0].length <= a) break;
+        b -= m[0].length;
+        trimPunct();
+      }
+      const seg = src.slice(a, b);
+      if (!seg || (!/[A-Za-z0-9\u0370-\u03ff]/.test(seg) && !(opts && opts.allowBareSymbol))) return;
+      runs.push({ start: a, end: b, text: seg });
+    });
+    // 合并相邻/重叠区间
+    const merged = [];
+    runs.forEach(r => {
+      const last = merged[merged.length - 1];
+      if (last && r.start <= last.end) last.end = Math.max(last.end, r.end);
+      else merged.push({ ...r });
+    });
+    return merged.map(r => ({
+      start: r.start,
+      end: r.end,
+      latex: chainToLatex(src.slice(r.start, r.end).replace(/\s+/g, ' ').trim())
+    }));
+  }
+
+  /**
+   * 整页的"逐 item 数学归属"模型。
+   *
+   * 输入：pageTextItems（pdf.js 的 item，带 transform/width/str）、
+   *      fontNameOf(key)（把 item.fontName 解析成真实字体名的函数）、
+   *      fallbackSize（拿不到字号时的兜底，一般是 10）。
+   *
+   * 输出：{ items, runs, byIndex }，其中
+   *   · byIndex[itemIdx] = { math, latex, runId, font }；
+   *   · runs = [{ id, items, latex, box }]（按阅读顺序，上→下、左→右）。
+   *
+   * 【成组判据 · 四条，全是确定性的几何关系】
+   *   A) 同基线的紧邻字形：`|Δy| ≤ vGap`、两侧相邻（间隙 |gap| ≤ hGap）、且字形含字母/数字。
+   *      一条式子的字形间隙都 ≤0.15pt，必然粘住；而 `=` 两侧 4pt 的排版间距不会误粘，
+   *      逗号因此自然成为**公式边界**（这正是"公式与正文不再糊在一起"的关键）。
+   *   B) 上下标：x 与宿主跨度重叠 `≥ max(2pt, 0.25×自身宽)`，垂直偏移 ≤ `vAllow`。
+   *   C) 帽子（零宽组合抑扬符）：x 落在宿主跨度内，或贴住右边缘。
+   *   D) 相邻组按"正常词距"（`0.45×字号`）在**同一基线段**内合并——
+   *      `X^{t-1}` 与 `={X_1}` 之间那 4pt 是 TeX 在 `=` 两侧加的间距，属于同一条式子。
+   *
+   * 【实测踩过的坑，全部写进注释，别再犯】
+   *   · 不能按"同 y 行"分组：上下标的 y 与主体差 1.5~7.5pt，会被拆成 `t-1` 这种半条式子。
+   *   · 不能只判"右边相邻"：`X` 与下标 `t` 的间隙恰好是 0，会被判成不相邻，然后 t 被 `=` 粘走。
+   *   · 不能按行带（band）分组并在加入时生长半径：整页会被并成一个带、所有公式糊成一条。
+   *   · 合并"同一行"必须按**基线分桶**，不能只按 x 排序：不同行的公式会被 x 交错排到一起。
+   *   · 零宽的帽子**绝不能抬高组的 baseY**（它与主体同字号），否则下一行的字会被判成下标。
+   */
+  function buildPageMathModel(pageItems, fontNameOf, fallbackSize) {
+    const items = (pageItems || []).map((it, idx) => {
+      const m = it.transform || [1, 0, 0, 1, 0, 0];
+      const size = Math.abs(m[3]) || Math.abs(m[0]) || fallbackSize || 10;
+      const font = fontNameOf ? fontNameOf(it.fontName) : it.fontName;
+      return {
+        idx,
+        str: typeof it.str === 'string' ? it.str : '',
+        x: m[4],
+        y: m[5],
+        size,
+        width: it.width || 0,
+        height: Math.abs(it.height) || 0,
+        font,
+        math: !/^\s*$/.test(it.str || '') && isMathFontName(font)
+      };
+    });
+
+    const vGap = Math.max(1.2, (fallbackSize || 10) * 0.18);
+    const hGap = 1.6;
+    const visible = items.filter(it => it.str && it.str.trim() && it.math);
+    const byIndex = {};
+    /** box -> 它所在的组（下标）；用于"找与 b 真正重叠的那个字形所在的组" */
+    const boxGroup = new Map();
+
+    const groups = [];
+    visible
+      .slice()
+      .sort((a, b) => a.x - b.x || b.y - a.y)
+      .forEach(b => {
+        /*
+         * 找与 b 横向真正重叠的**最靠右的字形**，把它的组当宿主。
+         * 【为什么不能只看"组的整体 xEnd"】实测 `X^{t-1}`：`t` 与 `−1` 都归属 X 那一组，
+         * 但 `−` 与 X 本身相距 10pt、只与 `t` 重叠——按组判重叠会算出 0，`−1` 就掉队，
+         * 于是把 `X^{t-1}` 拆成 `X_{t}` + `-1`（实测）。按字形判才对。
+         */
+        /*
+         * 选宿主：取"最近几个组里、与自己横向相邻 且 垂直上说得通"的**组内主行字形**当锚点，
+         * 用锚点所在的组当宿主。
+         *
+         * 【为什么要按"字形"选锚点，而不是按"组的边界"】
+         * 组一旦合并，边界会把上下标也算进去：`X` 与下标 `t` 合并后组跨度是 [383.2, 393.3]，
+         * 于是 `−1` 与这个跨度的重叠算出来是 0（它只与 `t` 重叠），条件判不过就被拆出去
+         * （实测：`X^{t-1}` 变成 `X_{t}` + `-1`）。按字形判重叠才是对的。
+         *
+         * 【为什么还要垂直条件】整页字形是按 x 排序处理的，别的行的组会插到中间：
+         * 实测 `X`(x=383) 与 `t`(x=390.3) 之间夹着 235.6 那一行的 `γ`(x=386.9)，
+         * 只按横向相邻会把 `t` 挂到 `γ` 上。
+         */
+        let host = null;
+        let anchor = null;
+        /*
+         * 回扫窗口取 12：一条式子的字形在整页 x 序里可能被前面几行（同一段里更靠左的公式）
+         * 插进十来个组，6 个不够用（实测 `X^{t-1}` 的 `−1` 就因为窗口太短找不到 `X` 那一组，
+         * 被拆成独立的 `-1`）。窗口再大也没意义——垂直条件会把别的行挡掉。
+         */
+        for (let i = groups.length - 1; i >= 0 && i >= groups.length - 30; i--) {
+          const g = groups[i];
+          const rowMid = g.baseY - 0.5;
+          const allow = Math.max(1.6, g.baseSize * 0.85 + 1.2);
+          if (Math.abs(b.y - rowMid) > allow) continue;
+          let best = null;
+          let bestRight = -Infinity;
+          g.items.forEach(o => {
+            if (o.y < rowMid) return; // 只认主行字形（上下标不当锚点）
+            const ov = Math.min(b.x + b.width, o.x + o.width) - Math.max(b.x, o.x);
+            const gap = ov > 0 ? 0 : Math.min(Math.abs(b.x - (o.x + o.width)), Math.abs(o.x - (b.x + b.width)));
+            if (gap > hGap) return;
+            if (o.x + o.width > bestRight) { bestRight = o.x + o.width; best = o; }
+          });
+          if (best) { host = g; anchor = best; break; }
+        }
+
+        if (host) {
+          const dyUp = b.y - host.baseY;
+          const vAllow = Math.max(1.6, host.baseSize * 0.85 + 1.2);
+          const accent = !(b.width > 0);
+          /*
+           * 【判据一律以**锚点字形**为准，不要混用组的边界】
+           * 组一旦合并，它的 x/xEnd 会把上下标也算进去（`X` 与 `t` 合并后 xEnd 是 `t` 的右边缘），
+           * 于是 `−1` 用组边界算出来的间隙是 0（它只与 `t` 接上）、而锚点 `X` 的间隙是 1.89pt，
+           * 两个数一混就把 `−1` 判出局（实测：`X^{t-1}` 被拆成 `X_{t}` + `-1`）。
+           * 所以这里统一用"与锚点字形的重叠/间隙"来做全部横向判据。
+           */
+          const ov = anchor ? Math.min(b.x + b.width, anchor.x + anchor.width) - Math.max(b.x, anchor.x) : 0;
+          const anchorGap = anchor
+            ? Math.max(anchor.x - (b.x + b.width), b.x - (anchor.x + anchor.width))
+            : Infinity; // >0 表示分离，<0 表示重叠
+          const touching = ov > 0 || anchorGap <= hGap;
+          /*
+           * A) 同基线紧邻：基线差在 vGap 内 + 与锚点相贴。
+           *    【为什么不再要求"字形必须是字母数字"】`X^{t-1}` 里的 `−` 是算子、不是字母数字，
+           *    早先把它排除掉，`−1` 就掉队成独立的一条（实测 `X_{t}` + `-1`）。
+           *    纯标点片段最终会被 `mathItemsToLatex` 的质量闸门丢掉，不会污染界面。
+           */
+          const sameRowAdjacent = Math.abs(dyUp) <= vGap && touching;
+          const hatOn = accent && Math.abs(dyUp) <= b.size * 1.3 + 1 && dyUp >= -1 &&
+            b.x <= host.xEnd + host.baseSize * 0.6 && b.x + b.width >= host.x - 1;
+          const smaller = b.size <= host.baseSize * 0.92;
+          const needOv = Math.max(2, 0.25 * Math.max(0.6, b.width));
+          /*
+           * 容差 0.6pt：PDF 里"紧挨着"的下标与基字形常常只差 0.0003pt 甚至正好相接
+           * （实测 `X` 的右边缘 390.31432258 与下标 `t` 的 390.314：差 0.0003pt），
+           * 严格 `ov >= 0` 会把 `t` 判成"没贴上"，`X^{t-1}` 于是被拆成 `X` + `t-1`。
+           */
+          const scriptOn = !accent && Math.abs(dyUp) > vGap * 0.6 && Math.abs(dyUp) <= vAllow &&
+            (ov >= needOv || (touching && smaller && anchorGap <= 0.6));
+          if (sameRowAdjacent || hatOn || scriptOn) {
+            host.items.push(b);
+            host.x = Math.min(host.x, b.x);
+            host.xEnd = Math.max(host.xEnd, b.x + b.width);
+            host.absTop = Math.max(host.absTop, b.y + (b.height || b.size));
+            // baseY / baseSize / rowY 只能被"主体级、且非零宽"的字形抬高（帽子同字号但零宽，必须排除）
+            if (b.width > 0 && b.size >= host.baseSize * 0.92) {
+              host.baseSize = Math.max(host.baseSize, b.size);
+              host.baseY = Math.max(host.baseY, b.y);
+              host.rowY = Math.max(host.rowY === undefined ? b.y : host.rowY, b.y);
+            }
+            boxGroup.set(b, host);
+            return;
+          }
+        }
+        const g = {
+          items: [b],
+          x: b.x,
+          xEnd: b.x + b.width,
+          absTop: b.y + (b.height || b.size),
+          baseY: b.y,
+          // rowY = 主行基线（只被非零宽的主字形更新），专门用来分"行桶"：
+          // 若用 baseY 分桶，`−1`（下标基线 536.87）会与 `Xt`（主体基线 538.36）落到不同桶里，
+          // ④ 的合并就永远不会发生（实测 `X^{t-1}` 被拆成 `X_{t}` + `-1` 就是这个原因）。
+          rowY: b.y,
+          baseSize: b.size
+        };
+        groups.push(g);
+        boxGroup.set(b, g);
+      });
+
+    /*
+     * ④ 按基线分桶后，**在每一桶内部**按 x 顺序把"被排版间距分开的同一行片段"并起来。
+     *
+     * 【为什么必须"桶内按 x 顺序"，不能只用一个全局的 prev】
+     * 实测踩过：`X^{t-1}` 的 `X`,`t` 在基线 538.36，而 `−1` 在 536.87（下标的基线），
+     * 分属两个锚点桶（540 / 536）。若按"桶倒序 + 组内 x 序"遍历，`−1` 会排在
+     * 538 那一行的所有组**之后**，此时全局 prev 已经是 `={Y_1}`，
+     * 于是 `−1` 与 `X^{t}` 的 0.02pt 间距被"跨行"挡住，式子被拆成 `X_{t}` + `-1`。
+     * 改成"每个桶各自维护一个 prev"，`−1` 就能紧跟 `Xt` 合并。
+     */
+    const rowAnchors = [...new Set(
+      groups.filter(g => g.items.some(i => i.width > 2)).map(g => Math.round((g.rowY === undefined ? g.baseY : g.rowY) / 4) * 4)
+    )].sort((a, b) => b - a);
+    const rowOf = g => {
+      let best = rowAnchors[0];
+      let bestD = Infinity;
+      rowAnchors.forEach(a => {
+        const d = Math.abs(a - (g.rowY === undefined ? g.baseY : g.rowY));
+        if (d < bestD) { bestD = d; best = a; }
+      });
+      return best;
+    };
+    const mergedGroups = [];
+    const lastOfRow = new Map();
+    groups
+      .slice()
+      .sort((a, b) => a.x - b.x)
+      .forEach(g => {
+        const row = rowOf(g);
+        const prev = lastOfRow.get(row);
+        if (prev) {
+          const size = Math.max(prev.baseSize || 10, g.baseSize || 10);
+          if (g.x - prev.xEnd <= size * 0.45 && g.xEnd >= prev.x - size * 0.45) {
+            prev.items = prev.items.concat(g.items);
+            prev.x = Math.min(prev.x, g.x);
+            prev.xEnd = Math.max(prev.xEnd, g.xEnd);
+            prev.baseSize = size;
+            prev.baseY = Math.max(prev.baseY || 0, g.baseY || 0);
+            prev.rowY = Math.max(prev.rowY === undefined ? 0 : prev.rowY, g.rowY === undefined ? 0 : g.rowY);
+            prev.absTop = Math.max(prev.absTop || 0, g.absTop || 0);
+            return;
+          }
+        }
+        const copy = { ...g };
+        mergedGroups.push(copy);
+        lastOfRow.set(row, copy);
+      });
+
+    /*
+     * ④b 收尾重扫：按**行档**（`floor(主体基线/8)`）分池，把同一行档里仍相邻的组再并一次。
+     *
+     * 【为什么用 floor(基线/8) 而不是精确基线】上下标的基线比主体低 1.5pt
+     * （`X`=538.36 / 下标 `t`=536.87），`−1` 这种字形在整页 x 序里排在主体之后，
+     * 落进的是"下标那一档"，用精确基线分池就永远跟主体分开（实测 `X_{t}` + `-1`）。
+     * 而相邻的两行正文行距 ≥12pt，floor(/8) 之后必然落到不同档，不会被误并。
+     * 判据与 ④ 一致（同行档 + 正常词距）。
+     */
+    const finalGroups = [];
+    const poolOfRow = new Map();
+    mergedGroups
+      .slice()
+      .sort((a, b) => {
+        const big = gg => Math.max(...gg.items.filter(i => i.width > 0).map(i => i.size), gg.baseSize || 10);
+        const ya = Math.max(...a.items.filter(i => i.width > 0).map(i => i.y), a.baseY || 0);
+        const yb = Math.max(...b.items.filter(i => i.width > 0).map(i => i.y), b.baseY || 0);
+        void big;
+        return Math.floor(ya / 8) - Math.floor(yb / 8) || a.x - b.x;
+      })
+      .forEach(g => {
+        const mainY = Math.max(...g.items.filter(i => i.width > 0).map(i => i.y), g.baseY || 0);
+        const key = Math.floor(mainY / 8);
+        let pool = poolOfRow.get(key);
+        if (pool) {
+          const prev = pool[pool.length - 1];
+          const size = Math.max(prev.baseSize || 10, g.baseSize || 10);
+          if (g.x - prev.xEnd <= size * 0.45 && g.xEnd >= prev.x - size * 0.45) {
+            prev.items = prev.items.concat(g.items);
+            prev.x = Math.min(prev.x, g.x);
+            prev.xEnd = Math.max(prev.xEnd, g.xEnd);
+            prev.baseSize = size;
+            prev.baseY = Math.max(prev.baseY || 0, g.baseY || 0);
+            prev.absTop = Math.max(prev.absTop || 0, g.absTop || 0);
+            return;
+          }
+        } else {
+          pool = [];
+          poolOfRow.set(key, pool);
+        }
+        pool.push(g);
+        finalGroups.push(g);
+      });
+
+    const runs = finalGroups
+      .map((g, i) => {
+        const its = g.items.slice().sort((a, b) => a.x - b.x || b.y - a.y);
+        const latex = mathItemsToLatex(its.map(it => ({
+          str: it.str,
+          transform: [1, 0, 0, 1, it.x, it.y],
+          width: it.width,
+          height: it.height || it.size,
+          font: it.font
+        })));
+        return { id: i, items: its, latex, box: { minX: g.x, maxX: g.xEnd, minY: g.baseY, maxY: g.absTop } };
+      })
+      .filter(r => r.latex)
+      .sort((a, b) => b.box.maxY - a.box.maxY || a.box.minX - b.box.minX);
+
+    runs.forEach((r, i) => {
+      r.id = i;
+      r.items.forEach(it => { byIndex[it.idx] = { math: true, latex: r.latex, runId: r.id, font: it.font }; });
+    });
+
+    return { items, runs, byIndex };
+  }
+
   // ====================== 核心：学术文献双栏高保真版面解析器 ======================
-  function buildAcademicLayout(pageNum, textContent, textDivs, viewport) {
+  function buildAcademicLayout(pageNum, textContent, textDivs, viewport, fontNames) {
     // 视觉状态条属于"这一帧的这一页"：换页或重渲染时先清掉旧的，
     // 否则翻页后还留着上一页的改动摘要（看起来像本页的结论）。
     // 视觉请求还在飞时保留进度提示；结果回来命中缓存/新结果时会重新显示。
@@ -1008,6 +1763,24 @@
       renderTranslationCards(pageNum, []);
       return;
     }
+
+    /*
+     * 数学层模型（每页算一次，段落切分时用）。
+     *
+     * 【为什么在段落聚合**之前**算】公式的边界必须先于正文拼接确定：
+     * 旧实现先把一行里所有 span 用空格拼成 cleanText，字体边界信息就永久丢了，
+     * 之后再怎么处理都只能猜（那几条 RESIDUE_* 正则就是这么来的）。
+     *
+     * fontNames 是 renderPage 里从 page.commonObjs 取回的真实字体名表
+     * （键 = item.fontName，值 = `QZLXPR+CMSY10` 这样的真名）。取不到时退回 loadedName，
+     * 此时数学字体认不出来 → 退化为"没有公式"，绝不会误判正文。
+     */
+    const nameOf = k => (fontNames && fontNames[k]) || String(k || '');
+    const mathModel = buildPageMathModel(textContent.items || [], nameOf, 10);
+    const mathInfoByIdx = mathModel.byIndex || {};
+    (textContent.items || []).forEach((it, i) => {
+      if (textDivs[i]) textDivs[i]._mathInfo = mathInfoByIdx[i] || null;
+    });
 
     const pagePdfH = (viewport && viewport.viewBox) ? viewport.viewBox[3] : ((viewport && viewport.height) ? viewport.height / (viewport.scale || 1) : 792);
     const pagePdfW = (viewport && viewport.viewBox) ? viewport.viewBox[2] : ((viewport && viewport.width) ? viewport.width / (viewport.scale || 1) : 612);
@@ -1793,6 +2566,28 @@
     let curParaLines = [];
     let curParaType = 'body';
 
+    /**
+     * ============ 段落文本重建：公式与正文**精确分开** ============
+     *
+     * 【这是"残渣和正文混淆"的直接修复点】
+     * 旧实现把一行里所有 span 用空格硬拼：
+     *   `…where` + `X` + `t` + `−` + `1` + `=` + `{` … → `…where X t − 1 = { X 1 } ,`
+     * 公式与正文之间既没有标记也没有正确的词距，界面上就是一坨（用户反馈的原话）。
+     *
+     * 现在：段落在**字符级**被切成"正文 / 公式"交替的片段（`para.segments`），
+     * 每个片段都带自己的字符来源，于是
+     *   · 原文卡片可以按片段渲染：正文照旧、公式就地交给 KaTeX；
+     *   · 划线高亮/点中文跳英文照旧精确（`charMap` 与 cleanText 严格 1:1）。
+     * 片段之间的词距按**几何**判定：两侧都是字母数字、横向间隙 ≥0.28em 才补一个空格
+     * （`Ŷ` 与它的下标 `t` 之间是 0pt，不会插空格；`mask` 与 `Ŷ` 之间是排版空格，会插）。
+     */
+    function segmentGap(prevItems, nextItems) {
+      const a = (prevItems || [])[(prevItems || []).length - 1];
+      const b = (nextItems || [])[0];
+      if (!a || !b || !a.transform || !b.transform) return null;
+      return b.transform[4] - (a.transform[4] + (a.width || 0));
+    }
+
     function commitParagraph() {
       if (curParaLines.length === 0) return;
 
@@ -1805,40 +2600,117 @@
         rawSpans: [],
         sentencesEn: [],
         translation: '',
-        sentenceTranslations: []
+        sentenceTranslations: [],
+        // 正文/公式交替的片段（供原文侧按片段渲染）
+        segments: []
       };
       para.minX = Math.min(...curParaLines.map(l => l.minX));
       para.maxX = Math.max(...curParaLines.map(l => l.maxX));
 
-      curParaLines.forEach(line => {
-        line.spans.forEach(span => {
-          para.rawSpans.push(span);
-          span.setAttribute('data-para-id', `${pId}`);
+      const orderedSpans = [];
+      curParaLines.forEach(line => line.spans.forEach(span => orderedSpans.push(span)));
+      const itemOfSpan = span => (textContent.items && textContent.items[span._pdfIdx]) || null;
 
-          const spanText = span.textContent || '';
+      const pushBody = (text, span, item) => {
+        if (!text) return;
+        const last = para.segments[para.segments.length - 1];
+        if (last && last.kind === 'body' && last.spanRef === span) {
+          last.text += text;
+          if (item) last.items.push(item);
+          return;
+        }
+        // __off = 本片段在"该 span 原始文本"里的起始下标（切分后必须逐段累加，
+        // 否则 charMap 的 offset 会指错字符，划线高亮就会漂移）
+        const consumed = para.segments
+          .filter(s => s.spanRef === span)
+          .reduce((n, s) => n + s.text.length, 0);
+        para.segments.push({ kind: 'body', text, spanRef: span, spans: [span], items: item ? [item] : [], __off: consumed });
+      };
+      const pushMath = (latex, text, itemsIn) => {
+        para.segments.push({ kind: 'math', latex, text, spans: [], items: itemsIn || [] });
+      };
+
+      orderedSpans.forEach(span => {
+        const spanText = span.textContent || '';
+        if (!spanText) return;
+        const item = itemOfSpan(span);
+        const info = item ? mathInfoByIdx[span._pdfIdx] : null;
+
+        // ① span 完全落在一条公式里：整段交给公式
+        if (info && info.math && info.latex) {
+          pushMath(info.latex, spanText.replace(/\s+/g, ' ').trim(), item ? [item] : []);
+          return;
+        }
+        // ② 普通正文 span：内部可能还夹着公式（行内公式）
+        const regions = findMathRegions(spanText);
+        if (regions.length === 0) {
+          pushBody(spanText, span, item);
+          return;
+        }
+        let cursor = 0;
+        regions.forEach(r => {
+          if (r.start > cursor) pushBody(spanText.slice(cursor, r.start), span, item);
+          pushMath(r.latex, spanText.slice(r.start, r.end), item ? [item] : []);
+          cursor = r.end;
+        });
+        if (cursor < spanText.length) pushBody(spanText.slice(cursor), span, item);
+      });
+
+      // 拼出 cleanText / charMap，并在片段之间按几何补词距
+      para.segments.forEach((seg, si) => {
+        if (si > 0) {
+          const prevSeg = para.segments[si - 1];
+          const prevLast = prevSeg.kind === 'body' ? prevSeg.text : prevSeg.text;
+          const curText = seg.text;
+          const prevLastChar = prevLast.slice(-1);
+          const curFirstChar = curText[0] || '';
           let needSpace = false;
-          if (para.cleanText.length > 0) {
-            const lastChar = para.cleanText[para.cleanText.length - 1];
-            if (lastChar === '-' || lastChar === '‐') {
-              para.cleanText = para.cleanText.slice(0, -1);
-              para.charMap.pop();
-              needSpace = false;
-            } else if (!/\s$/.test(lastChar) && !/^\s/.test(spanText) && !/^[,.;:!?’”')\]]/.test(spanText) && !/[“'(\[]$/.test(lastChar)) {
+          if (prevLastChar && curFirstChar) {
+            if (prevLastChar === '-' || prevLastChar === '‐') {
+              // 连字符折行：去掉连字符、不加空格（保留原行为）
+              if (prevSeg.kind === 'body' && prevSeg.text.length > 0) {
+                prevSeg.text = prevSeg.text.slice(0, -1);
+                if (para.charMap.length) para.charMap.pop();
+              }
+            } else if (
+              !/\s$/.test(prevLast) &&
+              !/^\s/.test(curText) &&
+              !/^[,.;:!?’”')\]]/.test(curText) &&
+              !/[“'(\[]$/.test(prevLastChar)
+            ) {
               needSpace = true;
+              const gap = segmentGap(prevSeg.items, seg.items);
+              const size = (() => {
+                const it2 = (seg.items || [])[0] || (prevSeg.items || [])[(prevSeg.items || []).length - 1];
+                return it2 && it2.transform ? Math.abs(it2.transform[3]) || 10 : 10;
+              })();
+              // 两侧都是字母数字，且几何上就是紧贴（间隙 <0.28em）→ 属于同一串，不插空格
+              if (
+                gap !== null &&
+                /[A-Za-z0-9]/.test(prevLastChar) &&
+                /[A-Za-z0-9]/.test(curFirstChar) &&
+                gap < size * 0.28
+              ) {
+                needSpace = false;
+              }
             }
           }
-
           if (needSpace) {
             para.cleanText += ' ';
-            para.charMap.push({ span, offset: 0 });
+            const anchor = (seg.spans && seg.spans[0]) || (prevSeg.spans && prevSeg.spans[0]) || null;
+            para.charMap.push({ span: anchor, offset: 0 });
           }
-
-          for (let c = 0; c < spanText.length; c++) {
-            para.cleanText += spanText[c];
-            para.charMap.push({ span, offset: c });
-          }
-        });
+        }
+        for (let c = 0; c < seg.text.length; c++) {
+          para.cleanText += seg.text[c];
+          const sp = seg.spans && seg.spans[0] ? seg.spans[0] : null;
+          para.charMap.push(sp ? { span: sp, offset: (seg.__off || 0) + c } : { span: null, offset: 0 });
+        }
+        seg.spans.forEach(sp => para.rawSpans.push(sp));
+        if (seg.kind === 'body' && seg.spans.length === 0 && seg.spanRef) para.rawSpans.push(seg.spanRef);
       });
+      para.rawSpans.forEach(sp => { if (sp && sp.setAttribute) sp.setAttribute('data-para-id', `${pId}`); });
+      para.segments.forEach(s => s.spans.forEach(sp => { if (sp && sp.setAttribute) sp.setAttribute('data-para-id', `${pId}`); }));
 
       while (para.cleanText.length > 0 && /\s$/.test(para.cleanText)) {
         para.cleanText = para.cleanText.slice(0, -1);
@@ -1856,6 +2728,18 @@
           curParaLines = [];
           curParaType = 'body';
           return;
+        }
+        /*
+         * 整段只有公式（公式片段 + 空白）：标成 formula，卡片直接渲染公式、不送翻译。
+         * 正文里夹公式的情况则记下 localMath（逐条行内公式），供原文侧就地渲染与精读稿导出。
+         */
+        const hasBody = para.segments.some(s => s.kind === 'body' && s.text.trim());
+        const mathSegs = para.segments.filter(s => s.kind === 'math' && String(s.latex || '').trim());
+        if (!hasBody && mathSegs.length > 0) {
+          para.type = 'formula';
+          para.visionLatex = mathSegs[0].latex;
+        } else if (mathSegs.length > 0) {
+          para.localMath = mathSegs.map(s => ({ text: String(s.text || ''), latex: String(s.latex || '').trim() }));
         }
         para.sentencesEn = splitEnglishSentencesSmart(para.cleanText);
         paras.push(para);
@@ -2763,6 +3647,35 @@
            */
           visionLatex: String(p.visionLatex || '').trim(),
           visionInline: Array.isArray(p.visionInline) ? p.visionInline.slice(0, 8) : [],
+          /*
+           * 本地数学层的产物也要跟着快照走：
+           *   localLatex —— 整段/整条公式的规范 LaTeX（由 PDF 字体+几何确定性生成）
+           *   localMath  —— 正文里的行内公式区间（{text, latex}），导出时写成 `$...$`
+           * 这样"界面上看到的公式"与"导出笔记里的公式"同源，不会一个对一个错。
+           */
+          localLatex: (() => {
+            const segs = (p.segments || []).filter(s => s.kind === 'math' && String(s.latex || '').trim());
+            if (Array.isArray(p.localMath) && p.localMath.length) return '';
+            return segs.length ? String(segs[0].latex).trim() : '';
+          })(),
+          localMath: (() => {
+            const seen = [];
+            (p.localMath || []).forEach(x => {
+              const tex = String(x && x.latex ? x.latex : '').trim();
+              if (!tex) return;
+              if (seen.some(y => y.text === x.text)) return;
+              seen.push({ text: String(x.text || '').slice(0, 120), latex: tex.slice(0, 600) });
+            });
+            if (!seen.length) {
+              (p.segments || []).forEach(s => {
+                if (s.kind !== 'math') return;
+                const tex = String(s.latex || '').trim();
+                if (!tex || seen.some(y => y.text === s.text)) return;
+                seen.push({ text: String(s.text || '').slice(0, 120), latex: tex.slice(0, 600) });
+              });
+            }
+            return seen.slice(0, 8);
+          })(),
           // 记下缓存键，宿主可以据此**精确**回查（不必重算指纹、猜引擎标识）
           cacheKey: getParaCacheKey(pageNum, p)
         }));
@@ -4197,19 +5110,29 @@
         // 原文 / 译文：对齐时逐句成行（方便逐句精读对照），否则整段
         const enLines = para.sentencesEn && para.sentencesEn.length ? para.sentencesEn.map(s => s.text) : [sourceText];
         /*
-         * 公式段落：导出**规范 LaTeX**（视觉模型从页面图像转写），而不是字符层残渣。
+         * 公式段落：导出**规范 LaTeX**，而不是字符层残渣。
          *
          * 【为什么必须改】精读稿是要拿回 Obsidian / Typora 里长期读的，而字符层抽出来的公式是残渣
          * （真实例子：`AttLT (X l, X l, Y) = AttID (X | W l, …)`——上标全丢、`^` 变成 `|`）。
-         * 以前只导出这段残渣，读者翻笔记时看到的公式全是错的。
-         * 现在把规范式写成 `$$...$$`（Obsidian 直接排版），残渣降级成一行小字"字符层抽取（可能有误）"备查。
-         * 正文段落里的**行内公式**同样按替换表写成 `$...$`（见 applyInlineMathToMarkdown）。
+         * 现在把规范式写成 `$$...$$`（Obsidian 直接排版），残渣降级成一行小字备查。
+         *
+         * 【1.4.0 起：本地数学层优先】`para.localMath` 是按 PDF 字体族与几何位置**确定性**抽出来的
+         * 行内公式（不依赖模型），所以行内公式先用它；覆盖不到的地方才回落到视觉替换表。
+         * 顺序不能反：本地是"从 PDF 字符与位置精确还原"，视觉只是"看图转写"。
          */
         const visionLatex = String(para.visionLatex || '').trim();
         const visionInline = Array.isArray(para.visionInline) ? para.visionInline : [];
-        const inlineMd = t => (visionInline.length ? applyInlineMathToMarkdown(t, visionInline) : t);
+        const localMath = Array.isArray(para.localMath) ? para.localMath : [];
+        const inlineMd = t => {
+          const s0 = String(t == null ? '' : t);
+          if (localMath.length) {
+            const withLocal = applyInlineMathToMarkdown(s0, localMath.map(x => ({ find: x.text, latex: x.latex })));
+            if (withLocal !== s0) return withLocal;
+          }
+          return visionInline.length ? applyInlineMathToMarkdown(s0, visionInline) : s0;
+        };
         if (para.type === 'formula' && visionLatex) {
-          md += `**公式（视觉模型从页面图像转写，可直接渲染）**\n\n$$\n${visionLatex}\n$$\n\n`;
+          md += `**公式（由 PDF 字体与位置精确抽取，可直接渲染）**\n\n$$\n${visionLatex}\n$$\n\n`;
           md += `<sub>公式不翻译；下面是字符层抽取结果（可能有误，仅备查）：${escapeHtml(sourceText)}</sub>\n\n`;
         } else if (para.type === 'title' || para.type === 'heading') {
           if (translation) md += `${mdQuote(translation)}\n\n`;
@@ -4285,7 +5208,7 @@
       <div class="sentence-pair-row" data-sent-idx="0" title="点击在左侧 PDF 中高亮">
         <div class="sent-num">·</div>
         <div class="sent-content">
-          <div class="sent-en">${renderEnTextHtml(text, para && para.visionInline)}</div>
+          <div class="sent-en">${renderParaEnHtml(text, para)}</div>
         </div>
       </div>`;
   }
@@ -4302,7 +5225,7 @@
     if (!latex) return renderFigureLabelNoticeHtml(para);
     return `
       <div class="card-formula-block${inline ? ' card-formula-inline' : ''}">
-        <div class="card-formula-label">${inline ? '本段公式（视觉模型从页面图像转写为 LaTeX）' : '公式（由视觉模型从页面图像转写为 LaTeX）'}</div>
+        <div class="card-formula-label">${inline ? '本段公式（由 PDF 字体与位置精确抽取）' : '公式（由 PDF 字体与位置精确抽取）'}</div>
         <div class="card-formula-body">${renderVisionMathHtml(latex, true)}</div>
         <div class="card-formula-tools">
           <!-- 一键问 AI：把这条规范 LaTeX 一起带上（见 collectFocusMath），让模型逐符号讲透 -->
@@ -4332,7 +5255,7 @@
         <div class="sent-num">1</div>
         <div class="sent-content">
           <div class="sent-zh">${renderEnTextHtml(cachedTrans, para.visionInline)}</div>
-          <div class="sent-en">${renderEnTextHtml(para.cleanText, para.visionInline)}</div>
+          <div class="sent-en">${renderParaEnHtml(para.cleanText, para)}</div>
         </div>
       </div>`;
     }
@@ -4363,7 +5286,7 @@
             <div class="sentence-pair-row" data-sent-idx="${idx}" title="点击可在左侧 PDF 中高亮此句">
               <div class="sent-num">${idx + 1}</div>
               <div class="sent-content">
-                <div class="sent-en">${renderEnTextHtml(sent.text, para.visionInline)}</div>
+                <div class="sent-en">${renderParaEnHtml(sent.text, para)}</div>
               </div>
               <div class="sent-row-actions">
                 <button class="btn-row-ai" data-sent-idx="${idx}" title="针对此句向 AI 导师提问">AI</button>
@@ -4383,7 +5306,7 @@
           <div class="sent-num">${idx + 1}</div>
           <div class="sent-content">
             <div class="sent-zh">${renderEnTextHtml(zh, para.visionInline)}</div>
-            <div class="sent-en">${renderEnTextHtml(sent.text, para.visionInline)}</div>
+            <div class="sent-en">${renderParaEnHtml(sent.text, para)}</div>
           </div>
           <div class="sent-row-actions">
             <button class="btn-row-ai" data-sent-idx="${idx}" title="针对此句向 AI 导师提问">AI</button>
@@ -4941,7 +5864,7 @@
             <button class="btn-card-action btn-copy-flow-zh" title="复制中文">译文</button>
           </div>
         </div>
-        <div class="article-section-en">${renderEnTextHtml(para.cleanText, para.visionInline)}</div>
+        <div class="article-section-en">${renderParaEnHtml(para.cleanText, para)}</div>
         <div class="article-section-zh" id="flowTrans_${pageNum}_${para.id}">
           ${cachedTrans ? escapeHtml(cachedTrans) : `<span class="trans-loading"><span class="mini-spinner"></span> 正在请求翻译...</span>`}
         </div>
@@ -4970,14 +5893,14 @@
 
   function formatOriginalParagraph(para) {
     if (!para.sentencesEn || para.sentencesEn.length === 0) {
-      return renderEnTextHtml(para.cleanText, para.visionInline);
+      return renderParaEnHtml(para.cleanText, para);
     }
     return para.sentencesEn
       .map(
         (s, idx) =>
-          `<span class="en-sentence" data-sent-idx="${idx}" title="点击在原件中单独高亮此句">${renderEnTextHtml(
+          `<span class="en-sentence" data-sent-idx="${idx}" title="点击在原件中单独高亮此句">${renderParaEnHtml(
             s.text,
-            para.visionInline
+            para
           )}</span>`
       )
       .join(' ');
@@ -5002,7 +5925,7 @@
     // 【译文也要走公式渲染】译文里的公式现在是 $...$ LaTeX（提示词要求模型转写），
     // 残渣形式的老译文则靠视觉模型的替换表就地补渲染——两条路都通到 KaTeX。
     if (!aligned) {
-      return `<div class="zh-paragraph-plain">${renderEnTextHtml(transText, para.visionInline)}</div>`;
+      return `<div class="zh-paragraph-plain">${renderParaEnHtml(transText, para)}</div>`;
     }
 
     return cached
@@ -7119,9 +8042,9 @@
           </div>
           <span class="note-time">${new Date(annot.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
         </div>
-        <div class="note-quote" title="双击快速复制原文">${escapeHtml(annot.text)}</div>
+        <div class="note-quote" title="双击快速复制原文">${renderEnTextHtml(annot.text)}</div>
         <div class="note-content-display">
-          ${annot.note ? `<div class="note-content">${escapeHtml(annot.note)}</div>` : `<div class="note-content empty-note" style="color: var(--text-secondary); font-style: italic; font-size: 11px; cursor: pointer;">+ 点击补充批注心得</div>`}
+          ${annot.note ? `<div class="note-content">${renderEnTextHtml(annot.note)}</div>` : `<div class="note-content empty-note" style="color: var(--text-secondary); font-style: italic; font-size: 11px; cursor: pointer;">+ 点击补充批注心得</div>`}
         </div>
         <div class="note-inline-editor" style="display: none; margin-top: 8px;">
           <textarea class="note-inline-textarea" style="width: 100%; box-sizing: border-box; background: var(--bg-primary); border: 1px solid var(--accent-color); border-radius: 6px; padding: 6px 8px; color: var(--text-primary); font-size: 12px; resize: vertical; min-height: 56px; outline: none;"></textarea>
@@ -8311,6 +9234,45 @@ let aiPresetQuestion = '';
     if (!src) return '';
     if (/\$|\\\(|\\\[/.test(src)) return renderTextWithMath(src);
     return renderMathSpan(src, displayMode);
+  }
+
+  /**
+   * 原文侧渲染的**统一入口（本地公式优先）**。
+   *
+   * 【为什么要它】用户要求"公式与正文绝对精确、不许混在一起"。
+   * 本地数学层已经用 PDF 字体族 + 几何把公式**确定性**切出来了（见 buildPageMathModel），
+   * 所以显示时一律先走本地结果：对文本再跑一次 findMathRegions（与分段同一套判据）拿到公式区间，
+   * 区间内交给 KaTeX、区间外用老路径渲染。
+   *
+   * 视觉替换表与本地区间重叠时**一律丢掉视觉那条**：视觉给的是"看图的转写"，
+   * 本地给的是"PDF 里真实的字符与位置"，精度不在一个量级。
+   */
+  function renderParaEnHtml(text, para) {
+    const src = String(text == null ? '' : text);
+    if (!src) return '';
+    const inline = para && Array.isArray(para.visionInline) ? para.visionInline : [];
+    const regions = findMathRegions(src);
+    if (regions.length === 0) return renderEnTextHtml(src, inline);
+    const kept = inline.filter(it => {
+      const find = it && it.find ? String(it.find) : '';
+      if (!find) return false;
+      const at = src.indexOf(find);
+      if (at < 0) return true; // 定位不到就让老逻辑自己处理
+      const end = at + find.length;
+      return !regions.some(r => at < r.end && end > r.start);
+    });
+    let out = '';
+    let cursor = 0;
+    regions.forEach(r => {
+      if (r.start > cursor) out += renderEnTextHtml(src.slice(cursor, r.start), kept);
+      out += `<span class="local-math" title="公式（本机按 PDF 字体与位置精确抽取，非模型转写）">${renderVisionMathHtml(
+        r.latex,
+        false
+      )}</span>`;
+      cursor = r.end;
+    });
+    if (cursor < src.length) out += renderEnTextHtml(src.slice(cursor), kept);
+    return out;
   }
 
   /**

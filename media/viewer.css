@@ -1878,6 +1878,38 @@ body.theme-paper-dark .fluid-badge-zh {
   white-space: pre-wrap;
 }
 
+/*
+ * 批注/笔记里的 LaTeX 渲染（用户要求"批注笔记中也要有 latex 渲染"）。
+ *
+ * 两个必须覆盖点：
+ *   ① `.note-content` 是 `white-space: pre-wrap`——KaTeX 生成的 HTML 里带换行，
+ *      不覆盖就会把公式撑成好几行；
+ *   ② display 公式（`$$...$$`）要能横向滚动，否则超宽公式会把卡片撑破。
+ */
+.note-content .md-math-rendered,
+.note-quote .md-math-rendered,
+.note-content .local-math,
+.note-quote .local-math {
+  white-space: normal;
+  font-size: 1em;
+}
+.note-content .md-math-display,
+.note-quote .md-math-display {
+  display: block;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 0;
+}
+.note-content .md-math-fallback,
+.note-quote .md-math-fallback {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.note-content .katex,
+.note-quote .katex {
+  font-size: 1.06em;
+}
+
 .note-card-bottom {
   display: flex;
   align-items: center;

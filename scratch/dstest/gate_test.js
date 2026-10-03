@@ -186,8 +186,11 @@ check('规则本身明确要求 $...$ 包起来', /\$\.\.\.\$/.test(translatorSr
 check('旧的"公式原样保留"要求已全部删除（那等于命令模型抄残渣）', !/公式、数学符号、变量名、缩写、文献引用编号原样保留/.test(translatorSrc));
 check('闸门会先剥 LaTeX 再判语言与相似度', /stripLatexForCounting/.test(translatorSrc) && /similarity\(source, oPlain\)/.test(translatorSrc));
 check(
-  '译文行走公式渲染（逐句两处 + 连贯段落一处）',
-  (viewerSrc.match(/sent-zh">\$\{renderEnTextHtml\(/g) || []).length === 2 && /zh-paragraph-plain">\$\{renderEnTextHtml\(/.test(viewerSrc)
+  '译文行走公式渲染（逐句两处 + 连贯段落一处；1.4.0 起原文侧改走本地数学层）',
+  (viewerSrc.match(/sent-zh">\$\{renderEnTextHtml\(/g) || []).length === 2 &&
+    /zh-paragraph-plain">\$\{renderParaEnHtml\(transText/.test(viewerSrc) &&
+    // 原文侧：允许换行（renderParaEnHtml 有多处带换行的调用写法）
+    /sent-en">\$\{renderParaEnHtml\([\s\S]{0,40}?sent\.text/.test(viewerSrc)
 );
 
 console.log('\n[9] 专家模式：整篇上下文 + 不限篇幅');

@@ -691,7 +691,17 @@ console.log('\n[视觉手术：按模型判断合并续句、拆开"正文+公�
   };
   S.applyVisionStructure(1, visionResult);
   const cardHtml = document.getElementById('transListContainer').innerHTML;
-  check('卡片里行内公式交给 KaTeX 渲染', /vision-inline-math/.test(cardHtml) && /class="katex"/.test(cardHtml));
+  /*
+   * 1.4.0 起原文侧走 `renderParaEnHtml`（本地数学层优先）：
+   * 段落文本里含 `∈ ⊂ ∑` 这类强数学符号时，公式由**本地区间**渲染成 `local-math`；
+   * 只有本地区间覆盖不到的地方才回落到视觉替换表（`vision-inline-math`）。
+   * 两者都必须真的交给 KaTeX（class="katex"），所以这里两种容器类名都接受。
+   */
+  check(
+    '卡片里行内公式交给 KaTeX 渲染',
+    /(local-math|vision-inline-math)/.test(cardHtml) && /class="katex"/.test(cardHtml),
+    cardHtml.slice(0, 200)
+  );
   check('公式段卡片渲染块级公式', katexCalls.some(c => /mathcal\{L\}_\{cycle,t\}/.test(c.tex) && c.displayMode === true));
   delete window.katex;
 
