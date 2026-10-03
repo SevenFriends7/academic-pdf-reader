@@ -226,8 +226,10 @@ function wrapText(text: string, font: PDFFont, size: number, maxWidth: number): 
 
 /** 一行行往页面上写，写不下就翻页 */
 class FlowWriter {
-  private page: PDFPage;
+  private page: PDFPage | null = null;
   public y = 0;
+  /** 已经用掉几个版面页（用于统计） */
+  public sheets = 0;
 
   constructor(
     private doc: PDFDocument,
@@ -235,22 +237,27 @@ class FlowWriter {
     private width: number,
     private height: number,
     private margin: number
-  ) {
-    this.page = doc.addPage([width, height]);
-    this.y = height - margin;
+  ) {}
+
+  /** 开一张新的译文页（原文页后面紧跟的那种） */
+  startSheet(): void {
+    this.page = this.doc.addPage([this.width, this.height]);
+    this.y = this.height - this.margin;
+    this.sheets++;
   }
 
   get currentPage(): PDFPage {
-    return this.page;
+    if (!this.page) this.startSheet();
+    return this.page as PDFPage;
   }
 
   newPage(): void {
-    this.page = this.doc.addPage([this.width, this.height]);
-    this.y = this.height - this.margin;
+    this.startSheet();
   }
 
   ensure(space: number): void {
-    if (this.y - space < this.margin) this.newPage();
+    if (!this.page) this.startSheet();
+    if (this.y - space < this.margin) this.startSheet();
   }
 
   /**
@@ -282,7 +289,7 @@ class FlowWriter {
       this.ensure(lineHeight);
       this.y -= lineHeight;
       if (l) {
-        this.page.drawText(l, {
+        this.currentPage.drawText(l, {
           x: this.margin + indent + (opts.bar ? 8 : 0),
           y: this.y,
           size,
@@ -293,7 +300,7 @@ class FlowWriter {
     });
 
     if (opts.bar) {
-      this.page.drawRectangle({
+      this.currentPage.drawRectangle({
         x: this.margin + indent,
         y: this.y - 2,
         width: 3,
@@ -308,7 +315,7 @@ class FlowWriter {
   divider(): void {
     this.ensure(10);
     this.y -= 6;
-    this.page.drawLine({
+    this.currentPage.drawLine({
       start: { x: this.margin, y: this.y },
       end: { x: this.width - this.margin, y: this.y },
       thickness: 0.5,
@@ -390,58 +397,14 @@ export async function buildAnnotatedPdf(opts: PdfExportOptions): Promise<PdfExpo
 
   const annotations = Array.isArray(paperData.annotations) ? paperData.annotations : [];
   const annotatedPages = new Set(annotations.map(a => a.page));
+
   const indices = src
     .getPageIndices()
     .filter(i => includeAllPages || annotatedPages.has(i + 1));
+  const sourcePageCount = src.getPageCount();
 
-  const copied = await out.copyPages(src, indices);
-  copied.forEach(p => out.addPage(p));
-
-  // ---- 把高亮画回原页 ----
-  let drawnAnnotations = 0;
-  const rotatedPagesSkipped: number[] = [];
-  annotations.forEach(annot => {
-    const idx = indices.indexOf(annot.page - 1);
-    if (idx < 0) return;
-    const page = out.getPage(idx);
-    const rects = Array.isArray(annot.rects) ? annot.rects : [];
-    if (rects.length === 0) return;
-
-    // 页面带旋转时，webview 记下的画布坐标与页面坐标系不再一一对应：
-    // 宁可如实少画，也不要画到错误的位置上骗人。
-    const angle = ((page.getRotation().angle % 360) + 360) % 360;
-    if (angle !== 0) {
-      if (!rotatedPagesSkipped.includes(annot.page)) rotatedPagesSkipped.push(annot.page);
-      return;
-    }
-
-    const [r, g, b] = HIGHLIGHT_RGB[annot.color] || HIGHLIGHT_RGB.yellow;
-    const pageHeight = page.getHeight();
-    rects.forEach(rect => {
-      const x = Number(rect.left) || 0;
-      const w = Number(rect.width) || 0;
-      const h = Number(rect.height) || 0;
-      const yTop = Number(rect.top) || 0;
-      if (w <= 0 || h <= 0) return;
-      try {
-        page.drawRectangle({
-          x,
-          y: pageHeight - yTop - h,
-          width: w,
-          height: h,
-          color: rgb(r, g, b),
-          opacity: HIGHLIGHT_OPACITY,
-          blendMode: BlendMode.Multiply,
-          borderWidth: 0
-        });
-        drawnAnnotations++;
-      } catch {
-        /* 单条画失败不影响整份导出 */
-      }
-    });
-  });
-
-  // ---- 附录：对照译文与笔记 ----
+  // ---- 中文字体先就位 ----
+  // 它不只是排版译文页要用：原文页上给每条高光画的编号标记也要用它。
   const fontPath = findCjkFontPath(opts.fontPathOverride);
   let font: PDFFont | undefined;
   if (fontPath) {
@@ -462,153 +425,112 @@ export async function buildAnnotatedPdf(opts: PdfExportOptions): Promise<PdfExpo
     );
   }
 
-  const { pages: appendixSource } = buildAppendix(paperData, opts.engineTag);
-  // 原文总页数：用来如实说明"译文覆盖了几页"，以及列出还没译文的页
-  const sourcePageCount = src.getPageCount();
-  const translatedPageNumbers = appendixSource
-    .filter(pg => pg.entries.some(e => e.translation))
-    .map(pg => pg.page);
-  const pagesWithoutTranslation: number[] = [];
-  for (let n = 1; n <= sourcePageCount; n++) {
-    if (!translatedPageNumbers.includes(n)) pagesWithoutTranslation.push(n);
-  }
-  let appendixPages = 0;
+  // ---- 每页的"高光 → 译文"内容（按高光组织，而不是按段落）----
+  const { pages: pagesWithContent } = buildAppendix(paperData, opts.engineTag);
+  const contentByPage = new Map(pagesWithContent.map(p => [p.page, p]));
 
-  if (font) {
-    const PAGE_W = 595.28;
-    const PAGE_H = 841.89;
-    const MARGIN = 52;
-    const writer = new FlowWriter(out, font, PAGE_W, PAGE_H, MARGIN);
-    const firstAppendixPageIndex = out.getPageCount() - 1;
+  const PAGE_W = 595.28;
+  const PAGE_H = 841.89;
+  const MARGIN = 52;
+  const writer = font ? new FlowWriter(out, font, PAGE_W, PAGE_H, MARGIN) : null;
 
-    writer.paragraph(`${paperName} · 对照译文与笔记`, {
-      size: 17,
-      color: [0.08, 0.1, 0.14],
-      spaceAfter: 2
-    });
-    // 覆盖范围必须写清楚：读者翻到附录只有两页时，得知道"是还没翻过/没翻译"，
-    // 而不是以为导出坏了（这个误会真实发生过）。
-    const stat =
-      `批注 ${annotations.length} 条 · AI 答疑 ${paperData.aiQa?.length || 0} 条 · ` +
-      `译文覆盖 ${translatedPageNumbers.length}/${sourcePageCount} 页 · 生成于 ${new Date().toLocaleString()}`;
-    writer.paragraph(stat, { size: 9, color: [0.45, 0.47, 0.5], spaceAfter: 2 });
-    writer.paragraph(
-      '前一部分是未经改动的原文页（你的高亮已按原位置画回）；这里按页给出该页各段的原文与译文，' +
-        '高亮过的段落左侧有同色标记条，其下是你的批注与 AI 答疑。',
-      { size: 9, color: [0.45, 0.47, 0.5], spaceAfter: 6, lineGap: 3.6 }
+  let drawnAnnotations = 0;
+  const rotatedPagesSkipped: number[] = [];
+  const translatedPageNumbers: number[] = [];
+  const highlightedPageNumbers: number[] = [];
+
+  // 逐页：原文页 → （若有高光）紧跟一页编号译文
+  for (const srcIdx of indices) {
+    const pageNum = srcIdx + 1;
+    const [copiedPage] = await out.copyPages(src, [srcIdx]);
+    const page = out.addPage(copiedPage);
+    const angle = ((page.getRotation().angle % 360) + 360) % 360;
+    const pageHeight = page.getHeight();
+
+    // 保持 annotations 的原始顺序：编号在原文页与译文页上必须一致
+    const pageAnnots = annotations.filter(
+      a => a.page === pageNum && Array.isArray(a.rects) && a.rects.length > 0
     );
-    writer.divider();
+    if (pageAnnots.length > 0) highlightedPageNumbers.push(pageNum);
 
-    if (appendixSource.length === 0) {
-      writer.paragraph('这一篇暂时没有可排版的译文：请先在阅读器里翻几页让插件解析并翻译，再回来导出。', {
-        size: 10.5,
-        color: [0.5, 0.2, 0.2]
-      });
-    }
-
-    appendixSource.forEach(pg => {
-      writer.paragraph(`第 ${pg.page} 页`, { size: 14, color: [0.06, 0.09, 0.16], spaceAfter: 2 });
-      let ordinal = 0;
-      pg.entries.forEach(entry => {
-        const para = entry.para;
-        const hasContent = entry.translation || entry.annotations.length || entry.qa.length;
-        if (!hasContent) return;
-        ordinal++;
-        const typeLabel =
-          para.type === 'heading' || para.type === 'title'
-            ? '标题'
-            : para.type === 'caption'
-            ? '题注'
-            : para.type === 'abstract'
-            ? '摘要'
-            : `¶${ordinal}`;
-        const barColor = entry.colors.length ? HIGHLIGHT_RGB[entry.colors[0]] : undefined;
-
-        writer.paragraph(`${typeLabel}${entry.colors.length ? ' · ' + entry.colors.map(c => COLOR_NAME[c] || c).join('、') : ''}`, {
-          size: 9.5,
-          color: [0.35, 0.38, 0.45],
-          spaceAfter: 1
-        });
-        writer.paragraph(para.cleanText || '', {
-          size: 10.5,
-          color: [0.15, 0.17, 0.2],
-          bar: barColor,
-          spaceAfter: 2
-        });
-        if (entry.translation) {
-          // 句级对齐时逐句成行，读起来才能和原文一一对上
-          const zh =
-            entry.sentences && para.sentencesEn && entry.sentences.length === para.sentencesEn.length
-              ? entry.sentences.join('\n')
-              : entry.translation;
-          writer.paragraph(zh, {
-            size: 10.5,
-            color: [0.07, 0.28, 0.5],
-            bar: barColor,
-            spaceAfter: 3
+    let tagNo = 0;
+    pageAnnots.forEach(annot => {
+      const rects = annot.rects as Array<{ left: number; top: number; width: number; height: number }>;
+      // 页面带旋转时，webview 记下的画布坐标与页面坐标系不再一一对应：
+      // 宁可如实少画，也不要画到错误的位置上骗人。
+      if (angle !== 0) {
+        if (!rotatedPagesSkipped.includes(pageNum)) rotatedPagesSkipped.push(pageNum);
+        return;
+      }
+      const [r, g, b] = HIGHLIGHT_RGB[annot.color] || HIGHLIGHT_RGB.yellow;
+      rects.forEach(rect => {
+        const x = Number(rect.left) || 0;
+        const w = Number(rect.width) || 0;
+        const h = Number(rect.height) || 0;
+        const yTop = Number(rect.top) || 0;
+        if (w <= 0 || h <= 0) return;
+        try {
+          page.drawRectangle({
+            x,
+            y: pageHeight - yTop - h,
+            width: w,
+            height: h,
+            color: rgb(r, g, b),
+            opacity: HIGHLIGHT_OPACITY,
+            blendMode: BlendMode.Multiply,
+            borderWidth: 0
           });
-        } else {
-          writer.paragraph('（本段尚未翻译）', { size: 9.5, color: [0.6, 0.6, 0.65], spaceAfter: 3 });
+          drawnAnnotations++;
+        } catch {
+          /* 单条画失败不影响整份导出 */
         }
-        entry.annotations.forEach(a => {
-          if (a.note && a.note.trim()) {
-            writer.paragraph(`📌 我的批注：${a.note.trim()}`, {
-              size: 10,
-              indent: 14,
-              color: [0.32, 0.25, 0.05],
-              spaceAfter: 2
-            });
-          }
-        });
-        entry.qa.forEach(q => {
-          writer.paragraph(`🤖 AI 答疑（${q.model || '模型未记录'}）`, {
-            size: 9.5,
-            indent: 14,
-            color: [0.3, 0.3, 0.55],
-            spaceAfter: 1
-          });
-          writer.paragraph(`问：${q.question}`, { size: 10, indent: 14, color: [0.2, 0.2, 0.35], spaceAfter: 1 });
-          writer.paragraph(`答：${q.answer}`, { size: 10, indent: 14, color: [0.15, 0.15, 0.2], spaceAfter: 3 });
-        });
-        writer.divider();
       });
 
-      if (pg.orphanAnnotations.length || pg.orphanQa.length) {
-        writer.paragraph('本页其它记录', { size: 10.5, color: [0.35, 0.38, 0.45], spaceAfter: 1 });
-        pg.orphanAnnotations.forEach(a => {
-          const colorName = COLOR_NAME[a.color] || a.color;
-          writer.paragraph(`📌 ${colorName}：${a.text}`, { size: 10, indent: 10, color: [0.2, 0.2, 0.2], spaceAfter: 1 });
-          if (a.note && a.note.trim()) {
-            writer.paragraph(a.note.trim(), { size: 10, indent: 18, color: [0.32, 0.25, 0.05], spaceAfter: 3 });
-          }
-        });
-        pg.orphanQa.forEach(q => {
-          writer.paragraph(`🤖 问：${q.question}`, { size: 10, indent: 10, color: [0.2, 0.2, 0.35], spaceAfter: 1 });
-          writer.paragraph(`答：${q.answer}`, { size: 10, indent: 18, color: [0.15, 0.15, 0.2], spaceAfter: 3 });
-        });
-        writer.divider();
+      // 编号标记画在**左页边距**（学术论文那里基本是空白），
+      // 与紧随其后的译文页条目一一对应。
+      if (font) {
+        tagNo++;
+        const first = rects[0];
+        const cx = 12;
+        const cy = pageHeight - (Number(first.top) || 0) - (Number(first.height) || 0) / 2;
+        try {
+          page.drawCircle({ x: cx, y: cy, size: 6.5, color: rgb(1, 1, 1), borderColor: rgb(r, g, b), borderWidth: 0.8 });
+          const label = String(tagNo);
+          const tw = font.widthOfTextAtSize(label, 8);
+          page.drawText(label, { x: cx - tw / 2, y: cy - 2.9, size: 8, font, color: rgb(0.15, 0.15, 0.2) });
+        } catch {
+          /* 标记失败不影响导出 */
+        }
       }
     });
 
-    appendixPages = out.getPageCount() - firstAppendixPageIndex;
-
-    // 如实列出"没译文的页"，并告诉读者怎么补齐
-    if (pagesWithoutTranslation.length > 0) {
-      writer.divider();
-      writer.paragraph('未收录译文的页', { size: 11, color: [0.45, 0.25, 0.15], spaceAfter: 2 });
-      writer.paragraph(`第 ${formatPageRanges(pagesWithoutTranslation)} 页。`, {
-        size: 10,
-        color: [0.35, 0.3, 0.3],
-        spaceAfter: 2
-      });
-      writer.paragraph(
-        '这些页还没有被解析/翻译过，所以附录里只有它们的批注与答疑（如果有）。' +
-          '在阅读器里翻到这些页、或用「整页翻译」把它们译出来，再重新导出即可补齐——' +
-          '译文与批注都是本地持久化的，不会丢。',
-        { size: 9.5, color: [0.5, 0.5, 0.55], spaceAfter: 2, lineGap: 3.6 }
-      );
-      appendixPages = out.getPageCount() - firstAppendixPageIndex;
+    // 有高光（或该页有已解析内容）就紧跟一页编号译文
+    const content = contentByPage.get(pageNum);
+    if (font && writer && (pageAnnots.length > 0 || content)) {
+      const translatedCount = writeHighlightSheet(writer, pageNum, pageAnnots, content);
+      if (pageAnnots.length > 0 && translatedCount > 0) translatedPageNumbers.push(pageNum);
     }
+  }
+
+  // ---- 末尾：覆盖范围说明 + 还缺译文的页 ----
+  // "有高光但没译文"才是用户能行动的信息，单独列出来。
+  const pagesWithoutTranslation = highlightedPageNumbers.filter(n => !translatedPageNumbers.includes(n));
+  // 相册里没有任何高光的页不算"缺译文"，它们本来就没有要对照的东西
+  const pageNumbersWithNoSheet = indices
+    .map(i => i + 1)
+    .filter(n => !highlightedPageNumbers.includes(n) && !contentByPage.has(n));
+
+  if (font && writer) {
+    writeSummarySheet(writer, {
+      paperName,
+      sourcePages: sourcePageCount,
+      annotationCount: annotations.length,
+      aiQaCount: paperData.aiQa?.length || 0,
+      highlightedPages: highlightedPageNumbers,
+      translatedPages: translatedPageNumbers,
+      pagesWithoutTranslation,
+      pagesWithNoSheet: pageNumbersWithNoSheet
+    });
   }
 
   if (rotatedPagesSkipped.length > 0) {
@@ -621,13 +543,191 @@ export async function buildAnnotatedPdf(opts: PdfExportOptions): Promise<PdfExpo
   return {
     bytes,
     sourcePages: indices.length,
-    appendixPages,
+    appendixPages: writer ? writer.sheets : 0,
     drawnAnnotations,
     rotatedPagesSkipped,
     fontPath: font ? fontPath || '' : '',
-    // 没字体就没有附录，也就没有任何译文被收录 —— 如实返回，别让上层以为"都覆盖了"
+    // 没字体就没有译文页，也就没有任何译文被收录 —— 如实返回，别让上层以为"都覆盖了"
     translatedPages: font ? translatedPageNumbers : [],
     pagesWithoutTranslation,
     warnings
   };
+}
+
+/** 从段落里挑出与这条高光最贴切的中文：优先"这一句"的译文，其次整段译文 */
+function pickTranslationForAnnotation(annot: AnnotationItem, entry: AppendixEntry | undefined): string {
+  if (!entry) return '';
+  const text = String(annot.text || '').replace(/\s+/g, ' ').trim();
+  const sentencesEn = entry.para.sentencesEn || [];
+  if (text && entry.sentences && entry.sentences.length === sentencesEn.length && sentencesEn.length > 0) {
+    const idx = sentencesEn.findIndex(s => {
+      const en = String(s.text || '').replace(/\s+/g, ' ').trim();
+      if (!en) return false;
+      return text.includes(en) || en.includes(text.slice(0, 40));
+    });
+    if (idx >= 0 && entry.sentences[idx]) return entry.sentences[idx];
+  }
+  return entry.translation || '';
+}
+
+/**
+ * 写一页「第 N 页 · 高光译文」：编号与原文页上的圆点标记一一对应。
+ *
+ * 返回这一页里**真正拿到了译文**的高光条数（用来判断该页算不算"已覆盖"）。
+ */
+function writeHighlightSheet(
+  writer: FlowWriter,
+  pageNum: number,
+  pageAnnots: AnnotationItem[],
+  content: { entries: AppendixEntry[]; orphanAnnotations: AnnotationItem[]; orphanQa: Array<{ question: string; answer: string; model?: string; at: number; selectedText?: string }> } | undefined
+): number {
+  const entryByPara = new Map<number, AppendixEntry>();
+  (content?.entries || []).forEach(e => entryByPara.set(e.para.id, e));
+
+  writer.startSheet();
+  writer.paragraph(`第 ${pageNum} 页 · 高光译文`, { size: 15, color: [0.06, 0.09, 0.16], spaceAfter: 2 });
+
+  let translated = 0;
+  if (pageAnnots.length === 0) {
+    writer.paragraph('（本页没有高光，下面是本页其它已翻译的段落。）', {
+      size: 9.5,
+      color: [0.5, 0.5, 0.55],
+      spaceAfter: 4
+    });
+  }
+
+  pageAnnots.forEach((annot, idx) => {
+    const entry =
+      annot.paraIndex !== undefined ? entryByPara.get(annot.paraIndex) : undefined;
+    const zh = pickTranslationForAnnotation(annot, entry);
+    const colorName = COLOR_NAME[annot.color] || annot.color;
+    const [r, g, b] = HIGHLIGHT_RGB[annot.color] || HIGHLIGHT_RGB.yellow;
+
+    writer.paragraph(`${idx + 1}. ${colorName}`, {
+      size: 11,
+      color: [r * 0.6, g * 0.6, b * 0.6],
+      spaceAfter: 1
+    });
+    if (zh) translated++;
+    writer.paragraph(`原文摘录：${annot.text || ''}`, {
+      size: 10,
+      indent: 10,
+      color: [0.2, 0.22, 0.26],
+      bar: [r, g, b],
+      spaceAfter: 2
+    });
+    if (zh) {
+      writer.paragraph(`译文：${zh}`, { size: 10.5, indent: 10, color: [0.07, 0.28, 0.5], spaceAfter: 2 });
+    } else {
+      writer.paragraph(
+        `译文：（这一条还没有译文——在阅读器里翻到第 ${pageNum} 页并按「整页翻译」译出后重新导出即可补齐）`,
+        { size: 9.5, indent: 10, color: [0.6, 0.35, 0.3], spaceAfter: 2, lineGap: 3.6 }
+      );
+    }
+    if (annot.note && annot.note.trim()) {
+      writer.paragraph(`我的批注：${annot.note.trim()}`, { size: 10, indent: 10, color: [0.32, 0.25, 0.05], spaceAfter: 2 });
+    }
+    // 挂在这段上的 AI 答疑
+    (entry?.qa || []).forEach(q => {
+      writer.paragraph(`AI 答疑（${q.model || '模型未记录'}）`, {
+        size: 9.5,
+        indent: 10,
+        color: [0.3, 0.3, 0.55],
+        spaceAfter: 1
+      });
+      writer.paragraph(`问：${q.question}`, { size: 10, indent: 16, color: [0.2, 0.2, 0.35], spaceAfter: 1 });
+      writer.paragraph(`答：${q.answer}`, { size: 10, indent: 16, color: [0.15, 0.15, 0.2], spaceAfter: 2 });
+    });
+    writer.divider();
+  });
+
+  // 挂不上段落的高光 / 答疑（段落切分变过、或整页心得）
+  const orphans = content?.orphanAnnotations || [];
+  if (orphans.length > 0) {
+    writer.paragraph('本页其它批注', { size: 10.5, color: [0.35, 0.38, 0.45], spaceAfter: 1 });
+    orphans.forEach(a => {
+      writer.paragraph(`${a.text || ''}`, { size: 10, indent: 10, color: [0.2, 0.2, 0.2], spaceAfter: 1 });
+      if (a.note && a.note.trim()) {
+        writer.paragraph(a.note.trim(), { size: 10, indent: 16, color: [0.32, 0.25, 0.05], spaceAfter: 2 });
+      }
+    });
+  }
+  (content?.orphanQa || []).forEach(q => {
+    writer.paragraph(`AI 答疑（${q.model || '模型未记录'}）`, { size: 9.5, indent: 10, color: [0.3, 0.3, 0.55], spaceAfter: 1 });
+    writer.paragraph(`问：${q.question}`, { size: 10, indent: 16, color: [0.2, 0.2, 0.35], spaceAfter: 1 });
+    writer.paragraph(`答：${q.answer}`, { size: 10, indent: 16, color: [0.15, 0.15, 0.2], spaceAfter: 2 });
+  });
+
+  // 该页未高光、但已经有译文的段落（保留原附录的价值，压缩排版）
+  const highlightParaIds = new Set(pageAnnots.map(a => a.paraIndex).filter(v => v !== undefined));
+  const others = (content?.entries || []).filter(e => e.translation && !highlightParaIds.has(e.para.id));
+  if (others.length > 0) {
+    writer.divider();
+    writer.paragraph(`本页其余已翻译段落（未高光，${others.length} 段）`, {
+      size: 10,
+      color: [0.4, 0.42, 0.48],
+      spaceAfter: 2
+    });
+    others.forEach(e => {
+      writer.paragraph(e.para.cleanText || '', { size: 9.5, color: [0.35, 0.36, 0.4], spaceAfter: 1, lineGap: 3.4 });
+      writer.paragraph(e.translation, { size: 9.5, color: [0.2, 0.35, 0.5], spaceAfter: 3, lineGap: 3.4 });
+    });
+  }
+
+  return translated;
+}
+
+/** 末尾的说明页：这次导出了什么、还有哪些高光缺译文、怎么补 */
+function writeSummarySheet(
+  writer: FlowWriter,
+  info: {
+    paperName: string;
+    sourcePages: number;
+    annotationCount: number;
+    aiQaCount: number;
+    highlightedPages: number[];
+    translatedPages: number[];
+    pagesWithoutTranslation: number[];
+    pagesWithNoSheet: number[];
+  }
+): void {
+  writer.startSheet();
+  writer.paragraph(`${info.paperName} · 导出说明`, { size: 15, color: [0.06, 0.09, 0.16], spaceAfter: 3 });
+  writer.paragraph(
+    '原文页原样保留，你的高亮按原位置画回，并在左页边距用带色圆点标了序号；' +
+      '每条高光的编号后面紧跟一页「第 N 页 · 高光译文」，按同一序号给出原文摘录、译文、我的批注与 AI 答疑。',
+    { size: 10, color: [0.35, 0.37, 0.42], spaceAfter: 4, lineGap: 3.6 }
+  );
+  writer.divider();
+  writer.paragraph('统计', { size: 11, color: [0.2, 0.22, 0.26], spaceAfter: 2 });
+  writer.paragraph(`原文 ${info.sourcePages} 页 · 高光 ${info.annotationCount} 条 · AI 答疑 ${info.aiQaCount} 条`, {
+    size: 10,
+    color: [0.25, 0.27, 0.3],
+    spaceAfter: 1
+  });
+  writer.paragraph(
+    `有高光的页：${formatPageRanges(info.highlightedPages)}；其中已带译文的页：${formatPageRanges(info.translatedPages)}`,
+    { size: 10, color: [0.25, 0.27, 0.3], spaceAfter: 3 }
+  );
+
+  if (info.pagesWithoutTranslation.length > 0) {
+    writer.divider();
+    writer.paragraph('这些页的高光还没有译文', { size: 11, color: [0.45, 0.25, 0.15], spaceAfter: 2 });
+    writer.paragraph(`第 ${formatPageRanges(info.pagesWithoutTranslation)} 页。`, {
+      size: 10,
+      color: [0.35, 0.3, 0.3],
+      spaceAfter: 2
+    });
+    writer.paragraph(
+      '这些页还没被解析翻译过（插件是按页工作、翻译结果本地缓存的）。' +
+        '在阅读器里翻到这些页、或用「整页翻译」，再重新导出即可补齐——批注与已翻译的内容都不会丢。',
+      { size: 9.5, color: [0.5, 0.5, 0.55], spaceAfter: 3, lineGap: 3.6 }
+    );
+  }
+  if (info.pagesWithNoSheet.length > 0) {
+    writer.paragraph(
+      `另外，第 ${formatPageRanges(info.pagesWithNoSheet)} 页既没有高光也没有已翻译内容，因此没有译文页（原文页仍在）。`,
+      { size: 9.5, color: [0.5, 0.5, 0.55], spaceAfter: 2, lineGap: 3.6 }
+    );
+  }
 }

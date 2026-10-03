@@ -88,6 +88,8 @@ const EN1 = 'In this paper, we address several inadequacies of current video obj
 const ZH1 = '在本文中，我们解决了当前视频目标分割流程的若干不足。';
 const EN3 = 'Next, we introduce a simple gradient correction module, which extends the offline pipeline to an online method.';
 const ZH3 = '接下来，我们引入一个简单的梯度校正模块，它把离线流程扩展为在线方法。';
+const EN1B = 'By relying on the accurate reference mask in the starting frame, we show that the error propagation problem can be mitigated.';
+const ZH1B = '通过依赖起始帧中的准确参考掩码，我们证明可以缓解误差传播问题。';
 
 function makePaperData() {
   const now = Date.now();
@@ -109,12 +111,23 @@ function makePaperData() {
       {
         id: 'a2',
         page: 1,
-        text: 'second highlight on the same page',
+        text: EN1B,
         color: 'blue',
         note: '',
-        paraIndex: 1,
+        paraIndex: 2,
         timestamp: now,
         rects: [{ left: 72, top: 300, width: 180, height: 11 }]
+      },
+      {
+        // 这一页根本没被解析过（没有段落快照）→ 译文页上必须如实写"这一条还没有译文"
+        id: 'a4',
+        page: 2,
+        text: 'a highlight on page 2 that has no translation yet',
+        color: 'green',
+        note: '',
+        paraIndex: undefined,
+        timestamp: now,
+        rects: [{ left: 60, top: 200, width: 220, height: 12 }]
       },
       {
         id: 'a3',
@@ -157,6 +170,14 @@ function makePaperData() {
           sentencesEn: [{ text: 'IoU mIoU J&F' }],
           translation: '',
           sentenceTranslations: []
+        },
+        {
+          id: 2,
+          type: 'body',
+          cleanText: EN1B,
+          sentencesEn: [{ text: EN1B }],
+          translation: ZH1B,
+          sentenceTranslations: [ZH1B]
         }
       ],
       '3': [
@@ -188,7 +209,7 @@ function makePaperData() {
   console.log('\n[1] 结构');
   check('导出了全部原文页（用户要求"所有页"）', result.sourcePages === 3, `实际 ${result.sourcePages} 页`);
   check('生成了附录页（译文与笔记）', result.appendixPages >= 1, `附录 ${result.appendixPages} 页`);
-  check('三条高亮（共 3 个矩形）都画上去了', result.drawnAnnotations === 3, `实际 ${result.drawnAnnotations}`);
+  check('四条高亮（共 4 个矩形）都画上去了', result.drawnAnnotations === 4, `实际 ${result.drawnAnnotations}`);
   check('输出是合法 PDF', result.bytes.length > 2000 && String.fromCharCode(...result.bytes.slice(0, 5)) === '%PDF-');
 
   if (process.env.DUMP_PDF) {
@@ -214,6 +235,7 @@ function makePaperData() {
   const ops1 = await (await doc.getPage(1)).getOperatorList();
   const translates = [];
   const rects = [];
+  const curves = [];
   const fills = [];
   const gstates = [];
   for (let i = 0; i < ops1.fnArray.length; i++) {
@@ -222,10 +244,17 @@ function makePaperData() {
     if (fn === pdfjs.OPS.transform && Array.isArray(args) && args.length === 6 && args[0] === 1 && args[3] === 1) {
       translates.push([args[4], args[5]]);
     } else if (fn === pdfjs.OPS.constructPath) {
+      const pathOps = Array.isArray(args && args[0]) ? args[0] : [];
       const coords = Array.isArray(args && args[1]) ? args[1] : [];
-      const xs = coords.filter((_, k) => k % 2 === 0);
-      const ys = coords.filter((_, k) => k % 2 === 1);
-      if (xs.length) rects.push([Math.max(...xs), Math.max(...ys)]);
+      if (pathOps.includes(pdfjs.OPS.curveTo)) {
+        // 曲线路径 = 编号标记的圆圈
+        curves.push(pathOps.length);
+      } else if (coords.length === 8) {
+        // 矩形路径固定是 4 个点（8 个坐标）
+        const xs = coords.filter((_, k) => k % 2 === 0);
+        const ys = coords.filter((_, k) => k % 2 === 1);
+        rects.push([Math.max(...xs), Math.max(...ys)]);
+      }
     } else if (fn === pdfjs.OPS.setFillRGBColor) {
       fills.push([args[0], args[1], args[2]]);
     } else if (fn === pdfjs.OPS.setGState) {
@@ -253,32 +282,65 @@ function makePaperData() {
     gstates.some(g => g.includes('0.6')) && gstates.some(g => g.includes('multiply')),
     gstates.join(' ')
   );
+  // 高光旁的编号标记（圆圈 + 数字）：译文页靠这个序号一一对应
+  if (result.fontPath) {
+    check('原文页上每条高光都画了编号圆圈（2 条 → 2 个圆）', curves.length === 2, `实际 ${curves.length} 个`);
+  }
 
-  console.log('\n[3] 附录中文（字体嵌入 + 可提取）');
+  console.log('\n[3] 高光译文页（字体嵌入 + 可提取）');
+  const squeeze = s => String(s).replace(/\s+/g, '');
+  /** 把整份 PDF 的文字抓出来（译文页紧跟原文页，说明页在最后，所以不能只看最后一页） */
+  const readAllText = async d => {
+    let t = '';
+    for (let n = 1; n <= d.numPages; n++) {
+      t += (await (await d.getPage(n)).getTextContent()).items.map(it => it.str).join('');
+    }
+    return squeeze(t);
+  };
+  /** 逐页文字（1-based 页码 → 文本），用于精确定位"第 N 页的译文页" */
+  const readPageTexts = async bytes => {
+    const d = await pdfjs.getDocument({
+      data: new Uint8Array(bytes),
+      isEvalSupported: false,
+      standardFontDataUrl: fs.existsSync(standardFontsDir) ? standardFontsDir : undefined
+    }).promise;
+    const out = [];
+    for (let n = 1; n <= d.numPages; n++) {
+      out.push(squeeze((await (await d.getPage(n)).getTextContent()).items.map(it => it.str).join('')));
+    }
+    return out;
+  };
+  const allText = await readAllText(doc);
   if (!result.fontPath) {
     console.log('   ⚠️  本机没找到可嵌入的中文字体，跳过中文断言（CI 环境属正常）');
     console.log(`      警告原文：${result.warnings.join(' / ')}`);
   } else {
-    const lastPage = await doc.getPage(doc.numPages);
-    const text = (await lastPage.getTextContent()).items.map(it => it.str).join('');
-    const squeeze = s => s.replace(/\s+/g, '');
-    const flat = squeeze(text);
-    check('译文出现在附录里', flat.includes(squeeze(ZH1)) && flat.includes(squeeze(ZH3)), `用字体：${path.basename(result.fontPath)}`);
+    check(
+      '每条高光的译文都在（第 1 页两条、第 3 页一条）',
+      allText.includes(squeeze(ZH1)) && allText.includes(squeeze(ZH3)),
+      `用字体：${path.basename(result.fontPath)}`
+    );
     // 折行处不画空格是 PDF 的常态，所以比对前先把空白压掉
-    check('原文也出现在附录里（对照用）', flat.includes(squeeze('video object segmentation pipelines')));
-    check('我的批注出现在附录里', flat.includes('这是全文动机'));
-    check('AI 答疑出现在附录里', flat.includes('这个模块为什么能扩展到在线') && flat.includes('不需要未来帧'));
-    check('图表标签不进附录', !flat.includes(squeeze('IoU mIoU J&F')));
+    check('原文摘录也在（对照用）', allText.includes(squeeze('In this paper, we address')));
+    check('我的批注也在', allText.includes('这是全文动机'));
+    check('AI 答疑也在', allText.includes('这个模块为什么能扩展到在线') && allText.includes('不需要未来帧'));
+    check('图表标签不进译文页', !allText.includes(squeeze('IoU mIoU J&F')));
+    check('译文页用序号与原文页的圆点对应', allText.includes('1.核心要点') && allText.includes('2.方法/公式'));
+    check('末尾有导出说明页', allText.includes('导出说明') && allText.includes('有高光的页')); 
 
     // 排版不能溢出页面（长 URL/长英文词在硬切逻辑上有 bug 时这里会先红）
-    const items = (await lastPage.getTextContent()).items;
-    const viewport = lastPage.getViewport({ scale: 1 });
-    const overflow = items.filter(it => {
-      const x = it.transform[4];
-      const w = typeof it.width === 'number' ? it.width : 0;
-      return x + w > viewport.width - 20;
-    });
-    check('附录文字没有溢出页面右边界', overflow.length === 0, overflow.length ? `溢出的行：${overflow.length}` : '');
+    let overflow = 0;
+    for (let n = 1; n <= doc.numPages; n++) {
+      const pg = await doc.getPage(n);
+      const viewport = pg.getViewport({ scale: 1 });
+      const items = (await pg.getTextContent()).items;
+      overflow += items.filter(it => {
+        const x = it.transform[4];
+        const w = typeof it.width === 'number' ? it.width : 0;
+        return x + w > viewport.width - 20;
+      }).length;
+    }
+    check('译文页文字没有溢出页面右边界', overflow === 0, overflow ? `溢出的行：${overflow}` : '');
   }
 
   console.log('\n[5] 译文解析（用户反馈："译文没有同步到导出的 pdf"）');
@@ -298,22 +360,27 @@ function makePaperData() {
     engineTag: 'engtag',
     includeAllPages: true
   });
-  const readLastPageText = async bytes => {
+  const readWholeDoc = async bytes => {
     const d = await pdfjs.getDocument({
       data: new Uint8Array(bytes),
       isEvalSupported: false,
       standardFontDataUrl: fs.existsSync(standardFontsDir) ? standardFontsDir : undefined
     }).promise;
-    const t = (await (await d.getPage(d.numPages)).getTextContent()).items.map(it => it.str).join('');
-    return t.replace(/\s+/g, '');
+    return await readAllText(d);
   };
 
   if (!result.fontPath) {
     console.log('   ⚠️  无中文字体，跳过（与上一节同样的原因）');
   } else {
-    const tNoSnap = await readLastPageText(rNoSnap.bytes);
-    check('快照里没译文、译文只在缓存里 → 附录仍出现中文', tNoSnap.includes(ZH1.replace(/\s+/g, '')));
-    check('不再出现"本段尚未翻译"', !tNoSnap.includes('本段尚未翻译'));
+    const tNoSnap = await readWholeDoc(rNoSnap.bytes);
+    check('快照里没译文、译文只在缓存里 → 译文页仍出现中文', tNoSnap.includes(squeeze(ZH1)));
+    // 第 1 页的译文页就是全份第 2 页（原文 1 → 译文 1）
+    const pagesNoSnap = await readPageTexts(rNoSnap.bytes);
+    check(
+      '第 1 页那两条高光都没被标成"还没有译文"',
+      !pagesNoSnap[1].includes('这一条还没有译文'),
+      pagesNoSnap[1].slice(0, 60)
+    );
 
     // cacheKey 优先：宿主不必重算指纹
     const paperDataByKey = makePaperData();
@@ -327,7 +394,7 @@ function makePaperData() {
       paperName: 'cycle.pdf',
       includeAllPages: true
     });
-    check('快照带 cacheKey 时按它精确回查', (await readLastPageText(rByKey.bytes)).includes('按cacheKey精确回查到的译文'));
+    check('快照带 cacheKey 时按它精确回查', (await readWholeDoc(rByKey.bytes)).includes('按cacheKey精确回查到的译文'));
 
     // 无引擎标识的旧键兜底
     const paperDataLegacy = makePaperData();
@@ -341,7 +408,7 @@ function makePaperData() {
       paperName: 'cycle.pdf',
       includeAllPages: true
     });
-    check('兼容 0.5.1 之前的无标识缓存键', (await readLastPageText(rLegacy.bytes)).includes('旧版无标识键里的译文'));
+    check('兼容 0.5.1 之前的无标识缓存键', (await readWholeDoc(rLegacy.bytes)).includes('旧版无标识键里的译文'));
   }
 
   // 合并策略：空译文不许覆盖已有译文（重开插件重读同一页时会发生）
@@ -363,20 +430,28 @@ function makePaperData() {
     JSON.stringify(result.translatedPages)
   );
   check(
-    '返回结果里带"哪些页没有译文"（第 2 页在本用例中没译文）',
+    '返回结果里带"哪些高光页还没有译文"（第 2 页那条高光没译过）',
     Array.isArray(result.pagesWithoutTranslation) && result.pagesWithoutTranslation.includes(2),
     JSON.stringify(result.pagesWithoutTranslation)
   );
   if (result.fontPath) {
-    const firstAppendix = await (await doc.getPage(4)).getTextContent();
-    const head = firstAppendix.items.map(it => it.str).join('').replace(/\s+/g, '');
-    check('附录抬头写明译文覆盖几页', /译文覆盖\d+\/3页/.test(head), head.slice(0, 80));
-    const allAppendix = [];
-    for (let n = 4; n <= doc.numPages; n++) {
-      allAppendix.push((await (await doc.getPage(n)).getTextContent()).items.map(it => it.str).join(''));
-    }
-    const tail = allAppendix.join('').replace(/\s+/g, '');
-    check('附录末尾列出未收录译文的页并说明怎么补齐', tail.includes('未收录译文的页') && tail.includes('重新导出即可补齐'));
+    const summary = (await (await doc.getPage(doc.numPages)).getTextContent()).items.map(it => it.str).join('').replace(/\s+/g, '');
+    check(
+      '说明页列出"这些页的高光还没有译文"并给出补齐办法',
+      summary.includes('这些页的高光还没有译文') && summary.includes('重新导出即可补齐'),
+      summary.slice(-140)
+    );
+  }
+  if (result.fontPath) {
+    // 每张译文页都紧跟它对应的原文页：第 1 页的译文页就是第 2 页
+    const sheet1 = (await (await doc.getPage(2)).getTextContent()).items.map(it => it.str).join('').replace(/\s+/g, '');
+    check('第 1 页的译文页紧跟在第 1 页后面（页序：原文1 → 译文1）', sheet1.includes('第1页·高光译文'), sheet1.slice(0, 60));
+    const summary = (await (await doc.getPage(doc.numPages)).getTextContent()).items.map(it => it.str).join('').replace(/\s+/g, '');
+    check(
+      '末尾说明页写明"有高光的页"与"已带译文的页"',
+      summary.includes('有高光的页') && summary.includes('已带译文的页'),
+      summary.slice(0, 120)
+    );
   }
 
   // 自动用系统程序打开是踩过的坑：用户机器上 .pdf 没有关联程序时，
@@ -400,12 +475,12 @@ function makePaperData() {
       includeAllPages: true
     });
     check(
-      '指定了不含汉字的字体时如实降级（不出附录，并给出警告）',
+      '指定了不含汉字的字体时如实降级（不出译文页，并给出警告）',
       latinResult.appendixPages === 0 &&
         latinResult.sourcePages === 3 &&
-        latinResult.drawnAnnotations === 3 &&
+        latinResult.drawnAnnotations === 4 &&
         latinResult.warnings.some(w => w.includes('中文字形')),
-      `字体=${path.basename(latinFont)}，警告=${latinResult.warnings.length} 条`
+      `字体=${path.basename(latinFont)}，译文页=${latinResult.appendixPages}，警告=${latinResult.warnings.length} 条`
     );
   } else {
     console.log('   ⚠️  本机没有可用的拉丁字体，跳过降级路径断言');
