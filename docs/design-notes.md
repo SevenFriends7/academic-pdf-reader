@@ -924,8 +924,8 @@ span 的中心）。而 PDF 常把一条图注拆成多个窄 span：
 | `src/pdfEditorProvider.ts` | `linkZoteroPaper()`：不阻塞首屏（`void`，不 `await`）、页数一致才 `registerPageText`、换论文时清空上一篇的认领结果（否则 AI 会拿 A 论文的原文回答 B 论文的问题） |
 | `media/viewer.js` | `zoteroData` 消息 → 一行提示 + 标题 tooltip；导出精读稿写 `zotero_*` frontmatter 与引言块 |
 | `package.json` | `academicReader.zoteroIntegration`（默认 `true`；关掉则**不发任何本地请求**） |
-| `scratch/zotero/zotero_client_test.js` | 37 条单测（8 条桩 HTTP 端到端 + 1 条真机联调） |
-| `scratch/zotero/viewer_zotero_test.js` | webview 侧回归（真 jsdom + 真派发 `zoteroData` 消息）：异步到达的消息不能踩 TDZ、认领失败要给"怎么开"的指引 |
+| `scratch/zotero/zotero_client_test.js` | 46 条单测（含批注坐标换算、颜色映射、8 条桩 HTTP 端到端、1 条真机联调 + 真机批注结构自检） |
+| `scratch/zotero/viewer_zotero_test.js` | 19 条 webview 侧回归（真 jsdom + 真派发 `zoteroData` 消息）：异步到达的消息不能踩 TDZ、批注导入的判重/不覆盖/畸形输入、认领失败要给"怎么开"的指引 |
 
 ```powershell
 npm run test:zotero          # 一次性：编译 + 客户端 + webview 侧两组单测
@@ -936,4 +936,11 @@ $LASTEXITCODE                                                          # 必须 
 $env:ZOTERO_REAL_TEST='0'; node scratch/zotero/zotero_client_test.js   # 跳过真机联调做二分
 ```
 
-批注坐标口径（`annotationPosition` 的 `rects` 是 PDF 用户空间点、原点左下、y 向上，画之前要 `top = pageHeightPdf - y2`）、判断"Zotero 能不能救坏字形"的逐字节证据、以及尚未实现的部分（批注导入、回写要 Zotero 10+），都在 [design-notes-zotero-source.md](design-notes-zotero-source.md)。
+批注坐标口径（`annotationPosition` 的 `rects` 是 PDF 用户空间点、原点左下、y 向上，画之前要 `top = pageHeightPdf - y2`）、判断"Zotero 能不能救坏字形"的逐字节证据、批注导入的完整实现口径（1.6.2 已落地），以及**唯一仍然不做的那件事**（回写需要 Zotero 10+ 的写接口；直改库官方警告会损坏库，本仓库不碰），都在 [design-notes-zotero-source.md](design-notes-zotero-source.md)。
+
+### 1.6.2 补记：批注导入踩到的四个坑
+
+1. **页高必须逐页取，不能假设"都跟第一页一样"**：`rects` 是 PDF 点坐标，翻 y 用的是**那一页**的高度；尺寸混排（扫描件 + 附录）时用统一高度会让高亮整体偏移。取不到页高就**整条丢弃** —— 翻错的高亮会画在无关段落上，用户会以为是自己标错的。
+2. **颜色别用"比较 RGB 大小"猜**：Zotero 默认黄 `#ffd400` 的 R−G=0 而 G−B=212，早期启发式直接判成橙色（单测抓到）。改成官方九色盘精确匹配 + 自定义色走 HSV 色相。
+3. **判重按 id，且规则是"本机那份更新"**：`zoteroData` 会到两次（先只取元数据、后带页高取批注），整批覆盖会冲掉用户在两次之间加的本机批注；用户也可能改过导入批注的颜色/笔记。所以 id 已存在就整条跳过。
+4. **别触发本机的"自动修复"分支**：`renderPageAnnotations` 对"缺 rects"的批注会按段落去猜位置 —— 那是给用户手划批注准备的。导入时没有有效矩形的批注一律不进数组，而不是塞个空 rects 让它去猜。
