@@ -1,5 +1,29 @@
 # 1.5.0 公式层重做 · 交接（当前状态，务必先读这段）
 
+## ⚠️ 用户报"还是识别不准"时，先做这一步
+
+**先确认界面上跑的到底是哪一版。** 判据（任一即可，前两个最可靠）：
+
+| 看哪里 | 新版（≥1.4.0） | 旧版（≤1.3.9） |
+|---|---|---|
+| 工具栏左上角版本徽章 | `v1.5.0` | `v1.3.9` 或 `v?` |
+| 原文侧行内公式的 HTML | 带 `data-math-source="local"`、内层是 KaTeX（`class="katex"`） | 没有这两个特征 |
+| 公式在界面上的长相 | 排版好的公式（上下标就位） | **残渣：每个字形之间都有一个空格**，如 `AttLT ( X l t , X l m , Y m )` |
+
+**"每个字形之间一个空格"是旧版独有的指纹**——它是旧实现"把一行所有 span 用空格硬拼"的必然结果，
+新版永远不会出现这种长相。用户 2026-10-04 发出的截图正是这个指纹（`(X l, X l, Y)`、`(X l W l, ...)`），
+所以那张截图来自**旧构建**（VS Code / Antigravity 只在启动时扫描扩展目录，
+装完必须**完全退出再打开**，Reload Window 不够）。
+
+另外要检查是不是被**旧 id 扩展抢了界面**（本仓库历史遗留问题）：
+
+```powershell
+Get-ChildItem $env:USERPROFILE -Directory -Recurse -Depth 3 -Force -ErrorAction SilentlyContinue |
+  Where-Object { $_.Name -like 'academic-tools*' } | ForEach-Object { $_.FullName }
+```
+
+有输出就说明旧 id（`academic-tools.academic-pdf-reader`）还在抢同一个 PDF 编辑器 viewType，删掉它。
+
 ## 一句话结论
 
 **目标要求的内容全部完成并验证通过**：公式/符号提取已用确定性方法（PDF 字体族 + 几何位置）

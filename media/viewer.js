@@ -9430,7 +9430,13 @@ let aiPresetQuestion = '';
     let cursor = 0;
     regions.forEach(r => {
       if (r.start > cursor) out += renderEnTextHtml(src.slice(cursor, r.start), kept);
-      out += `<span class="local-math" title="公式（本机按 PDF 字体与位置精确抽取，非模型转写）">${renderVisionMathHtml(
+      /*
+       * `data-math-source="local"` 是刻意留的**版本指纹**：
+       * 排查"用户看到的到底是新版还是旧版"时，特征串一查就知道——
+       * 新版原文侧的行内公式一定带这个属性；旧版（≤1.3.9）只会显示文本层残渣
+       * （特征：每个字形之间都有一个空格，如 `AttLT ( X l t , X l m , Y m )`）。
+       */
+      out += `<span class="local-math" data-math-source="local" title="公式（本机按 PDF 字体与位置精确抽取，非模型转写）">${renderVisionMathHtml(
         r.latex,
         false
       )}</span>`;
