@@ -419,6 +419,137 @@ export function rectToTopDown(rect: number[], pageHeightPdf: number): RectTopDow
   return { x: x1, y: pageHeightPdf - y2, w: x2 - x1, h: y2 - y1 };
 }
 
+/**
+ * 阅读器自己的批注记录（与 media/viewer.js 里 paperData.annotations 的元素同形）。
+ *
+ * 【为什么必须逐字段对齐】`renderPageAnnotations` 直接读 `a.page` / `a.rects[].left` 等，
+ * 少一个字段就是"批注在数据里、界面上看不到"。这些字段名是从 viewer.js 的实现里抄出来的，
+ * 不是猜的。
+ * - `rects`：**未缩放**的 PDF 点坐标（渲染时各自乘 currentScale），与 Zotero 的 rects 同单位
+ * - `id`：用 `zotero-<附件key>-<批注key>`，下次打开时用它判重，避免同一批注被反复追加
+ */
+export interface ViewerAnnotation {
+  id: string;
+  zoteroKey: string;
+  page: number;
+  text: string;
+  color: string;
+  note: string;
+  rects: RectTopDown[];
+  source: 'zotero';
+  annotationType: string;
+  tags: string[];
+}
+
+/**
+ * Zotero 的批注色是 `#ffd400` 这种十六进制；阅读器的 `.highlight-mark` 只认自己那套色名。
+ *
+ * 【为什么先查表再算色相】Zotero 的颜色是**固定的九色盘**，而"按 RGB 大小关系猜色名"的启发式
+ * 会把它的默认黄 `#ffd400` 判成橙（实测：R−G=0 但 G−B=212，早期的 `g-b>40` 分支直接命中）。
+ * 所以先精确匹配调色盘；用户自定义色才退回 HSV 色相判断。
+ */
+const ZOTERO_PALETTE: Record<string, string> = {
+  'ffd400': 'yellow',
+  'ff6666': 'red',
+  '5fb236': 'green',
+  '2ea8e5': 'blue',
+  'a28ae5': 'magenta',
+  'e56eee': 'magenta',
+  'f19837': 'orange',
+  'aaaaaa': 'gray',
+  'cccccc': 'gray'
+};
+
+export function mapAnnotationColor(hex: string | undefined): string {
+  const h = (hex || '').toLowerCase().replace('#', '').trim();
+  if (!/^[0-9a-f]{6}$/.test(h)) return 'yellow';
+  if (ZOTERO_PALETTE[h]) return ZOTERO_PALETTE[h];
+
+  // 自定义颜色：走 HSV 色相（比"比较 RGB 大小"稳，尤其是黄/橙这类相邻色）
+  const r = parseInt(h.slice(0, 2), 16) / 255;
+  const g = parseInt(h.slice(2, 4), 16) / 255;
+  const b = parseInt(h.slice(4, 6), 16) / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const delta = max - min;
+  if (delta < 0.08) return 'gray'; // 近灰
+  let hue: number;
+  if (max === r) hue = 60 * (((g - b) / delta) % 6);
+  else if (max === g) hue = 60 * ((b - r) / delta + 2);
+  else hue = 60 * ((r - g) / delta + 4);
+  if (hue < 0) hue += 360;
+  if (hue < 15 || hue >= 345) return 'red';
+  if (hue < 45) return 'orange';
+  if (hue < 70) return 'yellow';
+  if (hue < 165) return 'green';
+  if (hue < 255) return 'blue';
+  if (hue < 290) return 'magenta';
+  return 'red';
+}
+
+/**
+ * 把 Zotero 批注批量转换成阅读器批注。
+ *
+ * 【为什么要传整页高度表而不是逐条算】`rects` 是 PDF 用户空间坐标（原点在**左下**），
+ * 而阅读器的 `rects` 是左上原点 —— 转换需要该页的 PDF 高度。高度只能由 webview 侧的
+ * pdf.js 给出（`page.getViewport({scale:1}).height`），所以这里按页索引查表。
+ *
+ * 【页高拿不到就整条丢弃】宁可少一条高亮，也不要把 y 翻错 —— 翻错的高亮会画在
+ * 完全无关的段落上，用户会以为那是自己标错的。
+ */
+export function toViewerAnnotations(
+  annotations: ZoteroAnnotation[],
+  pageHeights: Record<number, number>,
+  attachmentKey: string,
+  pageLabelToIndex?: Record<string, number>
+): ViewerAnnotation[] {
+  const out: ViewerAnnotation[] = [];
+  for (const a of annotations) {
+    const d = a?.data || ({} as ZoteroAnnotation['data']);
+    const pos = parseAnnotationPosition(d.annotationPosition);
+    if (!pos) continue;
+
+    // 页码：优先 pageIndex（0 基，与 Zotero reader 的语义一致），
+    // 没有就退回页面标签表（`annotationPageLabel` 存在时形如 "1"、"iv"）。
+    let pageIndex: number | undefined = typeof pos.pageIndex === 'number' ? pos.pageIndex : undefined;
+    if (pageIndex === undefined && d.annotationPageLabel && pageLabelToIndex) {
+      const hit = pageLabelToIndex[String(d.annotationPageLabel).trim()];
+      if (typeof hit === 'number') pageIndex = hit;
+    }
+    if (pageIndex === undefined || pageIndex < 0) continue;
+
+    const page = pageIndex + 1; // 阅读器是 1 基
+    const pageHeight = pageHeights[page];
+    if (!Number.isFinite(pageHeight) || pageHeight <= 0) continue;
+
+    const rects: RectTopDown[] = [];
+    for (const r of pos.rects || []) {
+      const box = rectToTopDown(r, pageHeight);
+      // 丢掉零面积矩形：Zotero 会给某些批注塞退化矩形（宽或高为 0），画出来看不见还占点击区
+      if (box && box.w > 0.5 && box.h > 0.5) rects.push(box);
+    }
+    if (rects.length === 0) continue;
+
+    const text = String(d.annotationText || '').trim();
+    const comment = String(d.annotationComment || '').trim();
+    const kind = mapAnnotationKind(d.annotationType);
+    out.push({
+      id: `zotero-${attachmentKey}-${a.key}`,
+      zoteroKey: a.key,
+      page,
+      // 没有选中文字的批注（方框/墨迹/纯笔记）用注释或类型当标题，否则列表里是一条空白
+      text: text || comment || (kind === 'image' ? '（图片批注）' : kind === 'ink' ? '（手写批注）' : '（无文字批注）'),
+      color: mapAnnotationColor(d.annotationColor),
+      note: comment,
+      rects,
+      source: 'zotero',
+      annotationType: String(d.annotationType || ''),
+      tags: (d.tags || []).map(t => t?.tag).filter(Boolean) as string[]
+    });
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // 全文
 // ---------------------------------------------------------------------------

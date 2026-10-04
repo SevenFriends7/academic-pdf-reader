@@ -326,7 +326,10 @@ function makeInstance(exposeName, extraExpose) {
   window.${exposeName} = {
     buildReadingDocMarkdown,
     setZoteroInfo: v => { zoteroInfo = v; },
-    getZoteroInfo: () => zoteroInfo${extraExpose || ''}
+    getZoteroInfo: () => zoteroInfo,
+    mergeZoteroAnnotations: (list) => mergeZoteroAnnotations(list),
+    getAnnotations: () => (paperData.annotations || []).slice(),
+    setAnnotations: (list) => { paperData.annotations = list; }
   };
   `;
   const patched = code.slice(0, idx) + expose + code.slice(idx);
@@ -381,6 +384,131 @@ t('标题/作者里的双引号不会把 YAML frontmatter 破坏掉', () => {
   assert.ok(line, '没写 zotero_title');
   assert.ok(/A 'quoted' title/.test(line), `双引号没被替换成单引号：${line}`);
   assert.ok(!/zotero_title: "A "quoted"/.test(md), 'frontmatter 被未转义的双引号截断');
+});
+
+// ---------------------------------------------------------------------------
+console.log('\n【4】Zotero 批注导入：并进 paperData.annotations 并落盘');
+// ---------------------------------------------------------------------------
+/** 与宿主 toViewerAnnotations 产出的形状一致（字段名照抄 src/zoteroClient.ts 的 ViewerAnnotation） */
+function mkViewerAnno(id, page, extra) {
+  return Object.assign(
+    {
+      id,
+      zoteroKey: id.split('-').pop(),
+      page,
+      text: 'gy, Zhejian',
+      color: 'yellow',
+      note: '',
+      rects: [{ x: 100, y: 572, w: 200, h: 20 }],
+      source: 'zotero',
+      annotationType: 'highlight',
+      tags: []
+    },
+    extra || {}
+  );
+}
+
+t('导入一条：进数组、计数正确、并发出 saveAnnotations 落盘', () => {
+  const api = makeInstance('__ZT_ANNO1__');
+  sent.length = 0;
+  const n = api.mergeZoteroAnnotations([mkViewerAnno('zotero-K-A1', 1)]);
+  assert.strictEqual(n, 1, '应当导入 1 条');
+  const list = api.getAnnotations();
+  assert.strictEqual(list.length, 1);
+  assert.strictEqual(list[0].page, 1);
+  assert.ok(
+    sent.some(m => m.type === 'saveAnnotations' && Array.isArray(m.annotations) && m.annotations.length === 1),
+    '必须发 saveAnnotations，否则导入的批注下次打开就没了'
+  );
+});
+
+t('同一条批注重复到达不重复追加（zoteroData 会到两次）', () => {
+  const api = makeInstance('__ZT_ANNO2__');
+  const a = mkViewerAnno('zotero-K-A1', 1);
+  assert.strictEqual(api.mergeZoteroAnnotations([a]), 1);
+  assert.strictEqual(api.mergeZoteroAnnotations([a]), 0, '第二次必须是 0');
+  assert.strictEqual(api.getAnnotations().length, 1);
+});
+
+t('用户在本地改过的同名批注不被 Zotero 覆盖（本机那份更新）', () => {
+  const api = makeInstance('__ZT_ANNO3__');
+  api.setAnnotations([
+    { id: 'zotero-K-A1', page: 1, text: '原文', color: 'red', note: '我的笔记', rects: [{ x: 1, y: 2, w: 3, h: 4 }] }
+  ]);
+  const n = api.mergeZoteroAnnotations([mkViewerAnno('zotero-K-A1', 1, { color: 'yellow', note: '' })]);
+  assert.strictEqual(n, 0, '不能覆盖');
+  const kept = api.getAnnotations()[0];
+  assert.strictEqual(kept.color, 'red', '颜色是本机改过的');
+  assert.strictEqual(kept.note, '我的笔记', '笔记不能被清空');
+});
+
+t('本机已有批注不被动（导入是追加，不是整体替换）', () => {
+  const api = makeInstance('__ZT_ANNO4__');
+  api.setAnnotations([{ id: 'local-1', page: 1, text: '我自己划的', color: 'green', note: '', rects: [{ x: 5, y: 6, w: 7, h: 8 }] }]);
+  const n = api.mergeZoteroAnnotations([mkViewerAnno('zotero-K-A1', 1)]);
+  assert.strictEqual(n, 1);
+  const list = api.getAnnotations();
+  assert.strictEqual(list.length, 2);
+  assert.ok(list.some(a => a.id === 'local-1'), '本机那条必须还在');
+});
+
+t('没有 rects 的批注不导入（会被本机的"自动修复"分支拿去猜段落，那是给用户手划批注准备的）', () => {
+  const api = makeInstance('__ZT_ANNO5__');
+  const n = api.mergeZoteroAnnotations([mkViewerAnno('zotero-K-B1', 1, { rects: [] })]);
+  assert.strictEqual(n, 0);
+  assert.strictEqual(api.getAnnotations().length, 0);
+});
+
+t('畸形输入（null / 非数组 / 缺 id）不崩', () => {
+  const api = makeInstance('__ZT_ANNO6__');
+  assert.strictEqual(api.mergeZoteroAnnotations(null), 0);
+  assert.strictEqual(api.mergeZoteroAnnotations([]), 0);
+  assert.strictEqual(api.mergeZoteroAnnotations([{ page: 1, rects: [{ x: 1, y: 1, w: 1, h: 1 }] }]), 0, '缺 id 的丢掉');
+  assert.strictEqual(api.getAnnotations().length, 0);
+});
+
+t('认领提示里会报导入了几条批注（而不是静默）', () => {
+  const api = makeInstance('__ZT_ANNO7__');
+  assert.ok(typeof api.mergeZoteroAnnotations === 'function');
+  // 提示走的是主实例（真派发消息那条路径），单独在这里断言主实例上的提示文案
+  sent.length = 0;
+  send({
+    type: 'zoteroData',
+    link: {
+      attachmentKey: 'K',
+      matchedBy: 'basename',
+      fileName: 'a.pdf',
+      meta: { title: 'T', creators: '', year: '', venue: '', doi: '', url: '', itemType: '', summary: '' },
+      annotationCount: 2,
+      importedAnnotations: 2,
+      annotations: [mkViewerAnno('zotero-K-A1', 1), mkViewerAnno('zotero-K-A2', 1)],
+      fullTextPages: 0,
+      pageCountMismatch: false
+    },
+    detect: { available: true, message: 'ok', prefsPath: null, baseUrl: '' }
+  });
+  const txt = toastText();
+  assert.ok(/导入 2 条 Zotero 批注/.test(txt), `提示里应当报告导入条数，实际：「${txt}」`);
+});
+
+t('有批注但坐标不可用：提示说清"未导入"，不假装没有', () => {
+  send({
+    type: 'zoteroData',
+    link: {
+      attachmentKey: 'K',
+      matchedBy: 'basename',
+      fileName: 'a.pdf',
+      meta: { title: 'T', creators: '', year: '', venue: '', doi: '', url: '', itemType: '', summary: '' },
+      annotationCount: 3,
+      importedAnnotations: 0,
+      annotations: [],
+      fullTextPages: 0,
+      pageCountMismatch: false
+    },
+    detect: { available: true, message: 'ok', prefsPath: null, baseUrl: '' }
+  });
+  const txt = toastText();
+  assert.ok(/坐标不可用/.test(txt), `应当说明未导入，实际：「${txt}」`);
 });
 
 console.log(`\n===== 结果: ${pass} 通过 / ${fail} 失败 =====`);

@@ -702,15 +702,27 @@
         const detect = msg.detect || {};
         if (link && link.meta) {
           zoteroInfo = { key: link.attachmentKey, meta: link.meta, matchedBy: link.matchedBy };
-          const bits = [link.meta.summary || link.meta.title].filter(Boolean).join(' · ');
-          let extra = '';
-          if (link.pageCountMismatch) {
-            extra = '（Zotero 只索引了部分页，全文上下文已跳过）';
-          } else if (link.fullTextPages > 0) {
-            extra = `（全书 ${link.fullTextPages} 页已加入问答上下文）`;
-          } else if (link.annotationCount > 0) {
-            extra = `（${link.annotationCount} 条批注）`;
+          // 把 Zotero 批注并进本地批注（只读导入，不回写）。失败不能影响认领提示本身。
+          let imported = 0;
+          try {
+            imported = mergeZoteroAnnotations(Array.isArray(link.annotations) ? link.annotations : []);
+          } catch (e) {
+            console.warn('[Viewer] 导入 Zotero 批注失败:', e && e.message);
           }
+          const bits = [link.meta.summary || link.meta.title].filter(Boolean).join(' · ');
+          const extraBits = [];
+          if (link.pageCountMismatch) {
+            extraBits.push('Zotero 只索引了部分页，全文上下文已跳过');
+          } else if (link.fullTextPages > 0) {
+            extraBits.push(`全书 ${link.fullTextPages} 页已加入问答上下文`);
+          }
+          if (imported > 0) {
+            extraBits.push(`导入 ${imported} 条 Zotero 批注`);
+          } else if (link.annotationCount > 0 && imported === 0) {
+            // 有批注但一条都没导入：说清是坐标用不了，而不是假装没有
+            extraBits.push(`${link.annotationCount} 条 Zotero 批注坐标不可用，未导入`);
+          }
+          const extra = extraBits.length ? `（${extraBits.join('；')}）` : '';
           showReaderToast(`已认领 Zotero 论文：${bits}${extra}`, 'info');
           if (dom.paperTitle) {
             dom.paperTitle.title = `${dom.paperTitle.title || dom.paperTitle.textContent}\nZotero：${link.meta.title}${link.meta.summary ? `（${link.meta.summary}）` : ''}`;
@@ -767,12 +779,41 @@
           updateReadingProgress();
 
           /*
-           * 把**真实页数**报给宿主：Zotero 全文是按页存的，宿主只有拿到这个数字才能校验
-           * "Zotero 是不是只索引了前 N 页"。页数对不上就必须判废 Zotero 全文——
-           * 按页码取上下文会静默错位（AI 会拿第 5 页的原文回答第 9 页的问题），比没有上下文更坏。
-           * 放在这里而不是 initPdfData 回包时：此时 pdf.js 已经解析出 numPages。
+           * 把**真实页数**与**每页 PDF 高度**报给宿主。
+           *
+           * 页数：Zotero 全文是按页存的，宿主只有拿到这个数字才能校验"Zotero 是不是只索引了前 N 页"。
+           *   页数对不上就必须判废 Zotero 全文——按页码取上下文会静默错位（AI 会拿第 5 页的原文
+           *   回答第 9 页的问题），比没有上下文更坏。
+           * 页高：Zotero 批注的 rects 是 PDF 用户空间坐标（原点在**左下**），要翻成阅读器的
+           *   左上原点必须知道每页高度；只有这里的 pdf.js viewport 给得出来。
+           *   拿不到就宁可不导入批注（翻错 y 会把高亮画到无关段落上，用户会以为是自己标错的）。
            */
-          vscode.postMessage({ type: 'pdfOpened', pageCount: totalPages, fileName: msg.fileName || '' });
+          try {
+            /*
+             * 逐页取**未缩放**高度。
+             *
+             * 【为什么是 N 次 await 也接受】getPage + getViewport 不解码页面内容、不渲染，
+             * 实测每页是毫秒级；Zotero 的 rects 是 PDF 点坐标，翻 y 必须知道**那一页**的真实高度，
+             * 不同尺寸混排（扫描件 + 附录）时用统一高度会整体偏移。
+             * 【上限 400 页】再大的文件不值得为首屏付这个代价；超出的页不导入批注（会如实报数）。
+             * 若将来这里成为瓶颈，改成"翻到哪页取哪页"的懒加载即可，别提前优化。
+             */
+            const heights = {};
+            const limit = Math.min(totalPages, 400);
+            for (let p = 1; p <= limit; p++) {
+              const pg = await pdfDoc.getPage(p);
+              heights[p] = pg.getViewport({ scale: 1 }).height;
+            }
+            vscode.postMessage({
+              type: 'pdfOpened',
+              pageCount: totalPages,
+              fileName: msg.fileName || '',
+              pageHeights: heights
+            });
+          } catch (e) {
+            console.warn('[Viewer] 取页高失败（Zotero 批注将不导入）:', e && e.message);
+            vscode.postMessage({ type: 'pdfOpened', pageCount: totalPages, fileName: msg.fileName || '' });
+          }
 
           // 打开即"适合窗口宽度"，并开始监听左栏尺寸变化
           setupAutoFitResize();
@@ -8115,6 +8156,65 @@
       if (byText) return byText;
     }
     return byId || null;
+  }
+
+  /**
+   * 把宿主转换好的 Zotero 批注并进 `paperData.annotations`（只读导入）。
+   *
+   * 【为什么按 id 判重而不是整批覆盖】
+   *   ① `zoteroData` 可能到两次（webviewReady 一趟只取元数据、pdfOpened 一趟带页高取批注），
+   *      整批覆盖会把用户在两次之间加的本机批注冲掉；
+   *   ② 用户可能对导入的批注改过颜色/补过笔记，下次打开时不能被 Zotero 原样覆盖回去。
+   *   所以：id 已存在就整条跳过 —— 本机的永远是"更新的那份"。
+   *
+   * 【为什么只读】Zotero 9.0.6 的本地接口只有 GET（写接口是 Zotero 10+），
+   * 直改它的库官方明确警告会损坏库；扩展这边也绝不回写。
+   */
+  function mergeZoteroAnnotations(incoming) {
+    if (!Array.isArray(incoming) || incoming.length === 0) return 0;
+    if (!Array.isArray(paperData.annotations)) paperData.annotations = [];
+    const existing = new Set(paperData.annotations.map(a => a && a.id));
+    let added = 0;
+    incoming.forEach(a => {
+      if (!a || !a.id || existing.has(a.id)) return;
+      // 只认带有效矩形的：没有 rects 的批注在本机渲染路径里会被当成"待修复"去猜段落位置，
+      // 那是给用户自己划的批注准备的分支，不该被外部数据触发
+      if (!Array.isArray(a.rects) || a.rects.length === 0) return;
+      paperData.annotations.push({
+        id: a.id,
+        zoteroKey: a.zoteroKey || '',
+        page: a.page,
+        text: a.text || '',
+        color: a.color || 'yellow',
+        note: a.note || '',
+        rects: a.rects,
+        paraIndex: undefined,
+        createdAt: new Date().toISOString(),
+        source: 'zotero',
+        annotationType: a.annotationType || '',
+        tags: Array.isArray(a.tags) ? a.tags : []
+      });
+      existing.add(a.id);
+      added++;
+    });
+    if (added > 0) {
+      try {
+        vscode.postMessage({ type: 'saveAnnotations', annotations: paperData.annotations });
+      } catch (e) {
+        console.warn('[Viewer] 保存导入的 Zotero 批注失败:', e && e.message);
+      }
+      try {
+        updateNotesBadge();
+        renderNotesList();
+        // 当前页重画一遍，导入的高亮立刻可见（其他页在翻到时按 paperData 渲染）。
+        // 元素 id 口径与 deleteAnnotationById 等处一致：`annotLayer_<页码>`。
+        const annotLayer = document.getElementById(`annotLayer_${currentPage}`);
+        if (annotLayer) renderPageAnnotations(currentPage, annotLayer);
+      } catch (e) {
+        console.warn('[Viewer] 刷新区批注显示失败（数据已保存）:', e && e.message);
+      }
+    }
+    return added;
   }
 
   function renderPageAnnotations(pageNum, annotLayerDiv) {

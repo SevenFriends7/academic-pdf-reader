@@ -5,7 +5,7 @@ import { LlmError, DEFAULT_TRANSLATION_MODEL } from './llmClient';
 import { NotesStorageManager, PaperMetadata } from './notesStorage';
 import { buildAnnotatedPdf } from './pdfExport';
 import { mergeArchivedParagraphs } from './pageArchive';
-import { ZoteroClient, ZoteroLink, ZoteroDetectResult } from './zoteroClient';
+import { ZoteroClient, ZoteroLink, ZoteroDetectResult, toViewerAnnotations, ViewerAnnotation } from './zoteroClient';
 
 /**
  * 段落内容指纹：FNV-1a + 长度。
@@ -83,7 +83,8 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
     webview: vscode.Webview,
     document: vscode.Uri,
     expectedPages?: number,
-    withFullText = true
+    withFullText = true,
+    pdfPageHeights?: Record<number, number>
   ): Promise<void> {
     const enabled = vscode.workspace.getConfiguration('academicReader').get<boolean>('zoteroIntegration', true);
     if (!enabled) return;
@@ -103,6 +104,22 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
       } else if (link) {
         console.log('[AcademicReader] Zotero 认领成功，但没有可用的逐页全文（未索引或页数不一致）');
       }
+
+      /*
+       * 批注转换需要**每页的 PDF 高度**（Zotero 的 rects 是左下原点，要翻 y）。
+       * 页高只有 webview 侧的 pdf.js 给得出来，所以第一趟（webviewReady，没有页高）不转换，
+       * 等 pdfOpened 那一趟带着 pageHeights 回来再转 —— 没有页高就宁可不画。
+       */
+      const viewerAnnotations: ViewerAnnotation[] =
+        link && pdfPageHeights && Object.keys(pdfPageHeights).length > 0
+          ? toViewerAnnotations(link.annotations, pdfPageHeights, link.attachmentKey)
+          : [];
+      if (link && link.annotations.length > 0 && viewerAnnotations.length === 0) {
+        console.log(
+          `[AcademicReader] Zotero 有 ${link.annotations.length} 条批注，但这一趟拿不到页高（或坐标不可用），暂不导入`
+        );
+      }
+
       webview.postMessage({
         type: 'zoteroData',
         link: link
@@ -113,6 +130,8 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
               fileName: link.fileName,
               meta: link.meta,
               annotationCount: link.annotations.length,
+              importedAnnotations: viewerAnnotations.length,
+              annotations: viewerAnnotations,
               fullTextPages: link.fullText ? link.fullText.pages.length : 0,
               pageCountMismatch: link.fullText ? link.fullText.pageCountMismatch : false
             }
@@ -247,7 +266,23 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
          */
         case 'pdfOpened': {
           const pages = Number(message.pageCount) || 0;
-          void this.linkZoteroPaper(webviewPanel.webview, document.uri, pages > 0 ? pages : undefined);
+          // pageHeights 由 webview 从 pdf.js 的 viewport 里取（键是 1 基页码）。
+          // 没有它就无法把 Zotero 的批注坐标从"左下原点"翻成"左上原点"，所以这一趟才做批注导入。
+          const heights: Record<number, number> = {};
+          if (message.pageHeights && typeof message.pageHeights === 'object') {
+            for (const [k, v] of Object.entries(message.pageHeights as Record<string, unknown>)) {
+              const page = Number(k);
+              const h = Number(v);
+              if (Number.isFinite(page) && page > 0 && Number.isFinite(h) && h > 0) heights[page] = h;
+            }
+          }
+          void this.linkZoteroPaper(
+            webviewPanel.webview,
+            document.uri,
+            pages > 0 ? pages : undefined,
+            true,
+            heights
+          );
           break;
         }
 

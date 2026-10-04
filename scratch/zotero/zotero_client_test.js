@@ -240,6 +240,96 @@ t('annotationType 映射：underline 归到高亮，text 归到笔记', () => {
 });
 
 // ---------------------------------------------------------------------------
+console.log('\n【5b】Zotero 批注 → 阅读器批注（坐标翻错会画到无关段落上）');
+// ---------------------------------------------------------------------------
+function mkAnno(key, pageIndex, rects, extra) {
+  return {
+    key,
+    data: Object.assign(
+      {
+        itemType: 'annotation',
+        key,
+        parentItem: 'NQI6N4AP',
+        annotationType: 'highlight',
+        annotationText: 'gy, Zhejian',
+        annotationComment: '',
+        annotationColor: '#ffd400',
+        annotationPosition: JSON.stringify({ pageIndex, rects })
+      },
+      extra || {}
+    )
+  };
+}
+// 真值口径：Letter 页面高 792pt；Zotero 存的是左下原点，画到画布要翻成左上原点
+const H = { 1: 792, 2: 792 };
+
+t('坐标翻转：左下原点 [x1,y1,x2,y2] → 左上原点 {left,top,w,h}', () => {
+  const out = zc.toViewerAnnotations([mkAnno('A1', 0, [[100, 200, 300, 220]])], H, 'NQI6N4AP');
+  assert.strictEqual(out.length, 1);
+  assert.strictEqual(out[0].page, 1, 'pageIndex 是 0 基，阅读器是 1 基');
+  assert.deepStrictEqual(out[0].rects[0], { x: 100, y: 572, w: 200, h: 20 });
+});
+t('没有页高就整条丢弃（宁可不画，也不画错位置）', () => {
+  assert.strictEqual(zc.toViewerAnnotations([mkAnno('A1', 5, [[1, 2, 3, 4]])], H, 'K').length, 0, '第 6 页没有页高');
+  assert.strictEqual(zc.toViewerAnnotations([mkAnno('A1', 0, [[1, 2, 3, 4]])], {}, 'K').length, 0, '页高表是空的');
+});
+t('id 带附件 key 与批注 key（用于判重，且跨论文不会撞）', () => {
+  const out = zc.toViewerAnnotations([mkAnno('A1', 0, [[1, 2, 30, 40]])], H, 'NQI6N4AP');
+  assert.strictEqual(out[0].id, 'zotero-NQI6N4AP-A1');
+  assert.strictEqual(out[0].zoteroKey, 'A1');
+  assert.strictEqual(out[0].source, 'zotero');
+});
+t('零面积/退化矩形被丢掉（画出来看不见还占点击区）', () => {
+  const out = zc.toViewerAnnotations([mkAnno('A1', 0, [[10, 20, 10, 40], [10, 20, 30, 20], [10, 20, 30, 40]])], H, 'K');
+  assert.strictEqual(out[0].rects.length, 1, '只该留下有效的那一个');
+});
+t('矩形顺序倒着写也能归一化', () => {
+  const out = zc.toViewerAnnotations([mkAnno('A1', 0, [[300, 220, 100, 200]])], H, 'K');
+  assert.deepStrictEqual(out[0].rects[0], { x: 100, y: 572, w: 200, h: 20 });
+});
+t('坏 JSON / 缺 rects 的批注不炸也不导入', () => {
+  const bad = mkAnno('A1', 0, [[1, 2, 3, 4]], { annotationPosition: '{oops' });
+  assert.strictEqual(zc.toViewerAnnotations([bad], H, 'K').length, 0);
+  const noRects = mkAnno('A2', 0, [], { annotationPosition: '{"pageIndex":0}' });
+  assert.strictEqual(zc.toViewerAnnotations([noRects], H, 'K').length, 0);
+});
+t('没有 pageIndex 时用 annotationPageLabel 兜底', () => {
+  const a = mkAnno('A1', undefined, [[1, 2, 30, 40]], {
+    annotationPosition: JSON.stringify({ rects: [[1, 2, 30, 40]] }),
+    annotationPageLabel: '2'
+  });
+  const out = zc.toViewerAnnotations([a], H, 'K', { '2': 1 });
+  assert.strictEqual(out.length, 1);
+  assert.strictEqual(out[0].page, 2);
+});
+t('颜色映射：Zotero 九色盘精确匹配 + 自定义色走色相', () => {
+  // 这九条是 Zotero 官方调色盘；真值来自 Zotero 的批注颜色菜单
+  assert.strictEqual(zc.mapAnnotationColor('#ffd400'), 'yellow', 'Zotero 默认黄 —— 早期启发式会误判成橙');
+  assert.strictEqual(zc.mapAnnotationColor('#ff6666'), 'red');
+  assert.strictEqual(zc.mapAnnotationColor('#5fb236'), 'green');
+  assert.strictEqual(zc.mapAnnotationColor('#2ea8e5'), 'blue');
+  assert.strictEqual(zc.mapAnnotationColor('#a28ae5'), 'magenta');
+  assert.strictEqual(zc.mapAnnotationColor('#e56eee'), 'magenta');
+  assert.strictEqual(zc.mapAnnotationColor('#f19837'), 'orange');
+  assert.strictEqual(zc.mapAnnotationColor('#cccccc'), 'gray');
+  // 自定义色
+  assert.strictEqual(zc.mapAnnotationColor('#00ff00'), 'green');
+  assert.strictEqual(zc.mapAnnotationColor('#0000ff'), 'blue');
+  assert.strictEqual(zc.mapAnnotationColor('#7f7f7f'), 'gray');
+  assert.strictEqual(zc.mapAnnotationColor('#FFD400'), 'yellow', '大小写不敏感');
+  assert.strictEqual(zc.mapAnnotationColor(''), 'yellow');
+  assert.strictEqual(zc.mapAnnotationColor(undefined), 'yellow');
+  assert.strictEqual(zc.mapAnnotationColor('not-a-color'), 'yellow');
+});
+t('无文字的批注（方框/墨迹/纯笔记）用注释或类型占位，列表里不是空白条', () => {
+  const ink = mkAnno('A1', 0, [[1, 2, 30, 40]], { annotationType: 'ink', annotationText: '' });
+  assert.ok(/手写/.test(zc.toViewerAnnotations([ink], H, 'K')[0].text));
+  const note = mkAnno('A2', 0, [[1, 2, 30, 40]], { annotationType: 'note', annotationText: '', annotationComment: '这里要复现' });
+  assert.strictEqual(zc.toViewerAnnotations([note], H, 'K')[0].text, '这里要复现');
+  assert.strictEqual(zc.toViewerAnnotations([note], H, 'K')[0].note, '这里要复现');
+});
+
+// ---------------------------------------------------------------------------
 console.log('\n【6】逐页全文与页数校验（错位是静默的，必须显式判废）');
 // ---------------------------------------------------------------------------
 t('按 \\f 切页：本机实测 3 页样例切成 3 段', () => {
@@ -442,6 +532,42 @@ function stubFetch(routes) {
         console.log(`     全文 ${link.link.fullText.pages.length} 页 / ${link.link.fullText.chars} 字，页数一致=${!link.link.fullText.pageCountMismatch}`);
         console.log(`     批注 ${link.link.annotations.length} 条`);
       });
+
+      /*
+       * 真机批注的**结构自检**（库里有批注时才跑）。
+       *
+       * 【为什么值得单独写】批注导入依赖三条只有真数据才能证伪的假设：
+       *   ① `annotationPosition` 里确实有 `pageIndex`（不是只有 pageLabel）
+       *   ② `rects` 确实是 `[[x1,y1,x2,y2], ...]` 的 PDF 点坐标
+       *   ③ `annotationColor` 确实是我们认得的那套十六进制
+       * 桩测试只能证明"按这套假设写的代码自洽"，证明不了假设本身对。
+       * 库里没有批注时如实跳过（本机 2026-10-04 实测 itemAnnotations 是 0 行）。
+       */
+      const allAnnos = link.link.annotations;
+      if (allAnnos.length === 1) {
+        t('真机批注结构自检：pageIndex / rects / color 三条假设都成立', () => {
+          const d = allAnnos[0].data;
+          const pos = zc.parseAnnotationPosition(d.annotationPosition);
+          assert.ok(pos, 'annotationPosition 必须能解析成 JSON');
+          assert.ok(typeof pos.pageIndex === 'number', `必须有 pageIndex，实际字段：${Object.keys(pos).join(',')}`);
+          assert.ok(Array.isArray(pos.rects) && pos.rects.length > 0, '必须有非空 rects');
+          pos.rects.forEach((r, i) => {
+            assert.strictEqual(r.length, 4, `第 ${i} 个 rect 必须是 4 个数`);
+            r.forEach(n => assert.ok(Number.isFinite(n), `第 ${i} 个 rect 含非数字`));
+          });
+          assert.strictEqual(zc.mapAnnotationKind(d.annotationType) !== undefined, true);
+          console.log(
+            `     真机批注：type=${d.annotationType} pageIndex=${pos.pageIndex} rects=${pos.rects.length} color=${d.annotationColor} → ${zc.mapAnnotationColor(d.annotationColor)}`
+          );
+          // 矩形的 y 必须落在页面内（页高从全文页数推不出来，这里只做"非负且不是天文数字"的粗检）
+          pos.rects.forEach(r => {
+            assert.ok(r[1] >= -1 && r[3] >= -1, 'y 不应为负（PDF 用户空间原点在左下）');
+            assert.ok(r[3] < 5000, `y 超出任何正常页面高度：${r[3]}`);
+          });
+        });
+      } else {
+        console.log(`  ℹ️  真机批注 ${allAnnos.length} 条，跳过结构自检（需要恰好 1 条才能逐字段核对）`);
+      }
     }
   } else {
     console.log(`  ℹ️  真机 Zotero 不可用（${realDetect.reason}）：${realDetect.message}`);
