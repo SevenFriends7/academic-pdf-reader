@@ -5472,17 +5472,48 @@
     return md;
   }
 
-  /** 图表内部标签（轴标签/图例/子图编号）：只展示原文，不送翻译 */
+  /**
+   * 图表内部标签（流程框、坐标轴、图例里的文字）：**默认折叠**，只留一行可展开的摘要。
+   *
+   * 【为什么要折叠】这些文字是图的一部分，不是可读正文：实测 AOT 第 2 页那段
+   * `Reference Prediction Reference Separation 4 x Post -ensemble …` 是流程图框内文字，
+   * 被拼成一段 357 字的"正文"，平铺在译文栏里会淹没真正的正文。
+   * 【为什么保留可展开】读者有时就是想看图里写了什么（比如对照图例），直接删掉会变成"内容不见了"。
+   */
   function renderFigureLabelNoticeHtml(para) {
     const text = (para && para.cleanText) || '';
+    const chars = text.replace(/\s+/g, ' ').trim().length;
+    const pid = para ? para.id : 0;
     return `
-      <div class="trans-skip-note">图表内部标签，未翻译</div>
-      <div class="sentence-pair-row" data-sent-idx="0" title="点击在左侧 PDF 中高亮">
+      <div class="trans-skip-note figlabel-head" data-figlabel-head="${pid}">
+        图表内部标签，未翻译（${chars} 字）
+        <button type="button" class="figlabel-toggle" data-figlabel-toggle="${pid}" aria-expanded="false">展开</button>
+      </div>
+      <div class="sentence-pair-row figlabel-body" data-figlabel-body="${pid}" style="display:none" title="点击在左侧 PDF 中高亮">
         <div class="sent-num">·</div>
         <div class="sent-content">
           <div class="sent-en">${renderParaEnHtml(text, para)}</div>
         </div>
       </div>`;
+  }
+
+  /**
+   * 折叠/展开图表内部标签。
+   *
+   * 用**事件委托**挂在译文容器上，而不是给每个按钮单独 bind：
+   *   ① 卡片会被反复重绘（翻页、重译、缩放后重建），单独 bind 的监听器会随 DOM 一起丢；
+   *   ② 一页可能有十几个标签段，逐个 bind 是没必要的开销。
+   * 这也是本仓库既有的做法（见译文容器上的其它委托监听）。
+   */
+  function toggleFigureLabel(btn) {
+    if (!btn) return;
+    const pid = btn.getAttribute('data-figlabel-toggle');
+    const body = document.querySelector(`.figlabel-body[data-figlabel-body="${pid}"]`);
+    if (!body) return;
+    const hidden = body.style.display === 'none' || !body.style.display;
+    body.style.display = hidden ? '' : 'none';
+    btn.textContent = hidden ? '收起' : '展开';
+    btn.setAttribute('aria-expanded', hidden ? 'true' : 'false');
   }
 
   /**
@@ -5775,6 +5806,17 @@
 
       // 逐句精读行点击事件委托：点击任意句对（无论点中文还是英文），100% 精准高亮对应英文句！
       sentencePairsView.addEventListener('click', (e) => {
+        /*
+         * 图表内部标签的"展开/收起"必须**先**处理并吃掉事件：
+         * 否则会继续走到下面的句对高亮分支，点一下"展开"顺带在 PDF 上闪一次高亮（用户会以为点错了）。
+         */
+        const figToggle = e.target.closest('[data-figlabel-toggle]');
+        if (figToggle) {
+          e.stopPropagation();
+          e.preventDefault();
+          toggleFigureLabel(figToggle);
+          return;
+        }
         const btnRowAi = e.target.closest('.btn-row-ai');
         if (btnRowAi) {
           e.stopPropagation();
@@ -6259,13 +6301,26 @@
 
     const sentences = para.sentencesEn ? para.sentencesEn.map(s => s.text) : [];
 
+    /*
+     * 标题/摘要/章节标题即使很短也必须真翻。
+     *
+     * 【为什么】宿主侧 looksNonProse() 会把"<60 字符且无句末标点"的段落判成
+     * "人名/机构/图表标签"并**原样保留**——论文标题（"Associating Objects with Transformers for"，
+     * 41 字符）和 "Abstract" 正好落在这个区间，用户看到的"译文"就是英文原文（实测数据确认）。
+     * 判据本身是为图表标签簇设计的，所以对**已经被版面/视觉确认为标题类**的段落直接开直通路。
+     * keywords 一并放行：关键词列表也是读者要中文的。
+     */
+    const forceTranslate =
+      para.type === 'title' || para.type === 'abstract' || para.type === 'heading' || para.type === 'keywords';
+
     vscode.postMessage({
       type: 'requestTranslate',
       page: pageNum,
       paraIndex: para.id,
       cacheKey: cacheKey,
       text: para.cleanText,
-      sentences: sentences
+      sentences: sentences,
+      forceTranslate: forceTranslate
     });
   }
 

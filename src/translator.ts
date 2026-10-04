@@ -340,7 +340,19 @@ export class PaperTranslator {
   public async translateParagraph(
     text: string,
     sentences: string[],
-    targetLang?: string
+    targetLang?: string,
+    opts?: {
+      /**
+       * 强制送翻，跳过 looksNonProse 短路。
+       *
+       * 【为什么需要】2026-10-04 实测：论文标题（"Associating Objects with Transformers for"，
+       * 41 字符）与摘要标题（"Abstract"）都被 looksNonProse 判成"非叙述内容"原样保留，
+       * 于是界面上的"译文"就是英文原文 —— 用户看到的就是"该翻的没翻"。
+       * 判据本身是为"图表标签簇"设计的，而短字符串（<60 字符）在它眼里一律是标签，
+       * 所以对**已经由版面/视觉确认是标题、摘要、章节标题**的段落，直接开这条路。
+       */
+      forceTranslate?: boolean;
+    }
   ): Promise<ParagraphTranslation> {
     const trimmed = (text || '').trim();
     if (!trimmed) {
@@ -354,7 +366,8 @@ export class PaperTranslator {
     // 非叙述性内容（人名名单、机构、图表标签、公式片段）不送去翻译：
     // 模型会把它们原样返回，随后被"照搬原文"校验拦下、在界面上弹出红色报错。
     // 直接原样保留并说明原因，既省一次 API 调用，也不产生假错误。
-    if (this.looksNonProse(trimmed)) {
+    // 例外：类型已被确认为标题/摘要/章节标题的段落（forceTranslate）—— 它们必须翻。
+    if (!opts?.forceTranslate && this.looksNonProse(trimmed)) {
       return {
         translation: trimmed,
         sentences: sentences.length === 1 ? [trimmed] : [],
@@ -505,7 +518,7 @@ export class PaperTranslator {
    * 返回数组与 inputs 一一对应；某一项是 Error 表示该段需要单独重试/上报。
    */
   public async translateParagraphsBatch(
-    inputs: { text: string; sentences: string[] }[],
+    inputs: { text: string; sentences: string[]; forceTranslate?: boolean }[],
     targetLang?: string
   ): Promise<(ParagraphTranslation | Error)[]> {
     const cfg = this.cfg();
@@ -524,7 +537,7 @@ export class PaperTranslator {
           const i = cursor++;
           if (i >= inputs.length) return;
           try {
-            results[i] = await this.translateParagraph(inputs[i].text, inputs[i].sentences, lang);
+            results[i] = await this.translateParagraph(inputs[i].text, inputs[i].sentences, lang, { forceTranslate: inputs[i].forceTranslate });
           } catch (e: any) {
             results[i] = e instanceof Error ? e : new Error(String(e));
           }
@@ -556,7 +569,7 @@ export class PaperTranslator {
     if (pending.length === 1) {
       const i = pending[0];
       try {
-        results[i] = await this.translateParagraph(inputs[i].text, inputs[i].sentences, lang);
+        results[i] = await this.translateParagraph(inputs[i].text, inputs[i].sentences, lang, { forceTranslate: inputs[i].forceTranslate });
       } catch (e: any) {
         results[i] = e instanceof Error ? e : new Error(String(e));
       }
@@ -580,7 +593,7 @@ export class PaperTranslator {
       const i = pending[k];
       if (results[i]) continue;
       try {
-        results[i] = await this.translateParagraph(inputs[i].text, inputs[i].sentences, lang);
+        results[i] = await this.translateParagraph(inputs[i].text, inputs[i].sentences, lang, { forceTranslate: inputs[i].forceTranslate });
       } catch (e: any) {
         results[i] = e instanceof Error ? e : new Error(String(e));
       }
@@ -2151,7 +2164,7 @@ ${rawText.slice(0, 8000)}
       this.log(`视觉分割返回空（多半是推理吃光了 ${budget} token），加倍到 ${bigger} 重试一次`);
       res = await callWithBudget(bigger);
     }
-    return this.toVisionResult(res.text, res.model, Date.now() - startedAt, res.usage);
+    return this.toVisionResult(res.text, res.model, Date.now() - startedAt, res.usage, opts.segments.length);
   }
 
   /**
@@ -2189,7 +2202,12 @@ ${rawText.slice(0, 8000)}
     raw: string,
     model: string,
     totalMs: number,
-    usage?: { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number }
+    usage?: { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number },
+    /**
+     * 请求时下发的分段条数。用于**按位置兜底对齐**（见下方 index 兜底那段的注释）：
+     * 只有"回包条数与请求条数完全一致"时才敢按位置对齐，否则宁可不改。
+     */
+    expectedSegmentCount?: number
   ): VisionSegmentationResult {
     const text = (raw || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '');
     let parsed: any;
@@ -2252,9 +2270,38 @@ ${rawText.slice(0, 8000)}
       return list.length > 0 ? list : undefined;
     };
     const rawSegs = Array.isArray(parsed?.segments) ? parsed.segments : [];
+    /*
+     * 段落编号的兜底（2026-10-04 实测抓到的真 bug）。
+     *
+     * 【症状】用户真实数据里，整页视觉纠错**完全没生效**：论文标题、作者块始终是 body，
+     * 于是被 looksNonProse 当成"非叙述内容"原样保留 → 界面上"译文"就是英文原文。
+     * 而视觉模型其实判对了（缓存里 8 条全是 title/title/metadata/abstract/heading/body）。
+     *
+     * 【根因】模型回来的 segment 里**没有 `i`**（也没有 `index`），
+     * 而旧代码 `Number(s?.i ?? s?.index)` 拿不到编号就 `continue` —— 8 条全被丢掉，
+     * 类型纠错落不到任何段落上。提示词里虽然要求 `"i"`，但模型并不保证给。
+     *
+     * 【为什么能安全兜底】提示词明确要求"segments 请按你判断的阅读顺序排列，
+     * 每个 i 必须恰好出现一次，不要新增、不要漏掉"。所以当**回包条数与请求条数完全相等**
+     * 时，数组下标就是段落编号（prompt 的第 i 条 = 回包的第 i 条），这是提示词本身给出的契约。
+     * 条数不等时**绝不按位置猜**：那会把 A 段的类型安到 B 段上，比不纠错更坏（会误折叠真正文）。
+     */
+    const anyExplicitIndex = rawSegs.some((s: any) => Number.isFinite(Number(s?.i ?? s?.index)));
+    const positionalOk =
+      !anyExplicitIndex &&
+      typeof expectedSegmentCount === 'number' &&
+      expectedSegmentCount > 0 &&
+      rawSegs.length === expectedSegmentCount;
+    if (!anyExplicitIndex && !positionalOk) {
+      this.log(
+        `[Vision] 回包既没有段落编号 i，条数(${rawSegs.length})又与请求(${expectedSegmentCount ?? '?'})不一致 —— 放弃本次纠错（宁可不改，也不按位置猜）`
+      );
+    }
     const segments: VisionSegment[] = [];
-    for (const s of rawSegs) {
-      const i = Number(s?.i ?? s?.index);
+    for (let si = 0; si < rawSegs.length; si++) {
+      const s = rawSegs[si];
+      const explicit = Number(s?.i ?? s?.index);
+      const i = Number.isFinite(explicit) ? explicit : positionalOk ? si : NaN;
       if (!Number.isFinite(i)) continue;
       const type = String(s?.type || '');
       const action = String(s?.action || 'keep');

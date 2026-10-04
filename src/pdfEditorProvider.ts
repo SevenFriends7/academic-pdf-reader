@@ -44,6 +44,8 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
     cacheKey: string;
     text: string;
     sentences: string[];
+    /** 标题/摘要等已确认可翻的段落：跳过 looksNonProse 短路 */
+    forceTranslate?: boolean;
     webview: vscode.Webview;
   }[] = [];
   private translateTimer: NodeJS.Timeout | null = null;
@@ -54,7 +56,17 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
    * 提示词/校验规则一改，旧译文就不该再命中缓存——否则用户永远看不到改进
    * （改提示词却不改这个版本号 = 改进对已翻译过的论文完全无效）。
    */
-  private static readonly PROMPT_VERSION = 'p3-fidelity-wordorder-terms';
+  /**
+   * 翻译提示词 / 段落类型语义的版本号，参与缓存键计算。
+   *
+   * 提示词、校验规则，或**"哪些段落该翻"的语义**一改，旧译文就不该再命中缓存 ——
+   * 否则用户永远看不到改进（改了却不改版本号 = 对已翻译过的论文完全无效）。
+   *
+   * p4（1.6.3）：视觉回包编号兜底修复后，标题/作者块/图内文字终于能被正确分类；
+   * 同时标题类段落开了"强制翻译"直通路。这两件事都会改变已有段落的**处理方式**，
+   * 所以必须换版本号让旧译文失效重来（旧缓存里那些"译文=英文原文"的标题就在此列）。
+   */
+  private static readonly PROMPT_VERSION = 'p4-vision-index-title-force';
 
   /**
    * Zotero 只读客户端（本文件生命周期内共用一个：条目列表与探测结果都在它里面缓存，
@@ -368,13 +380,15 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
         }
 
         case 'requestTranslate': {
-          const { page, paraIndex, cacheKey, text, sentences } = message;
+          const { page, paraIndex, cacheKey, text, sentences, forceTranslate } = message;
           this.enqueueTranslate(webviewPanel.webview, document.uri, paperData, {
             page,
             paraIndex,
             cacheKey: cacheKey || `${page}_${hashText(text || '')}`,
             text: text || '',
-            sentences: sentences || []
+            sentences: sentences || [],
+            // 标题/摘要/章节标题即使很短也必须翻 —— 否则会被"非叙述内容原样保留"短路成英文
+            forceTranslate: forceTranslate === true
           });
           break;
         }
@@ -689,6 +703,7 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
       cacheKey: string;
       text: string;
       sentences: string[];
+      forceTranslate?: boolean;
     }
   ): void {
     if (!item.text.trim()) return;
@@ -724,7 +739,8 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
     let results: (import('./translator').ParagraphTranslation | Error)[];
     try {
       results = await this.translator.translateParagraphsBatch(
-        batch.map(b => ({ text: b.text, sentences: b.sentences }))
+        // forceTranslate 必须逐项透传：标题/摘要即使很短也不能被"非叙述内容"短路成英文
+        batch.map(b => ({ text: b.text, sentences: b.sentences, forceTranslate: b.forceTranslate }))
       );
     } catch (err: any) {
       const e = err instanceof Error ? err : new Error(String(err));

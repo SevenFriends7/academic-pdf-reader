@@ -7,7 +7,7 @@
                           "color":  "#0b578a",
                           "theme":  "dark"
                       },
-    "version":  "1.6.2",
+    "version":  "1.6.3",
     "publisher":  "paper-reader",
     "license":  "MIT",
     "repository":  {
@@ -291,7 +291,7 @@
                     "test:para":  "node scratch/para_rebuild_test.js",
                     "test:math":  "node scratch/math_layer_test.js",
                     "test:zhmath":  "node scratch/zh_math_subst_test.js",
-                    "test:zotero":  "npx tsc src/zoteroClient.ts --outDir dist-test --module commonjs --target es2020 --skipLibCheck --esModuleInterop \u0026\u0026 node scratch/zotero/zotero_client_test.js \u0026\u0026 node scratch/zotero/viewer_zotero_test.js"
+                    "test:zotero":  "npx tsc src/zoteroClient.ts --outDir dist-test --module commonjs --target es2020 --skipLibCheck --esModuleInterop \u0026\u0026 node scratch/zotero/zotero_client_test.js \u0026\u0026 node scratch/zotero/viewer_zotero_test.js \u0026\u0026 node scratch/zotero/vision_index_test.js"
                 },
     "devDependencies":  {
                             "@pdf-lib/fontkit":  "^1.1.1",

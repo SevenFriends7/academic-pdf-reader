@@ -3827,6 +3827,35 @@ body.theme-paper-dark .article-section-zh {
   margin-bottom: 6px;
 }
 
+/*
+ * 图表内部标签：默认折叠成一行，点「展开」才显示原文。
+ * 这些文字是图的一部分（流程框/坐标轴/图例），平铺会淹没真正的正文——
+ * 实测 AOT 第 2 页有一段 357 字的流程图文字被拼成"正文段"。
+ */
+.figlabel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.figlabel-toggle {
+  font-size: 10.5px;
+  line-height: 1;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.figlabel-toggle:hover {
+  color: var(--text-primary, inherit);
+  border-color: var(--accent-color, var(--border-color));
+}
+.figlabel-body {
+  opacity: 0.85;
+}
+
 /* 「已跳过 N 段图表内容」的汇总提示 */
 .trans-skip-summary {
   font-size: 11.5px;
