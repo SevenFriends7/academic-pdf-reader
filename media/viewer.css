@@ -673,6 +673,23 @@ body.theme-paper-dark .btn-secondary:hover {
   transform-origin: 0% 0%;
 }
 
+/*
+ * 高光对齐诊断：把文本层变成可见（红字 + 蓝虚线框）。
+ *
+ * 【怎么用】点一句话让高光亮起来，再开这个开关（阅读器里 Ctrl+Shift+D，
+ * 或控制台执行 __academicDebugTextLayer()）：
+ *   · 高光块**正好盖住它对应的那几个字** → 区间选对了、位置也对；
+ *   · 高光悬在文字上方/下方约一行 → 文本层与高光层的纵向基准不一致；
+ *   · 高光左端停在行首、右端比预期短 → 字符区间选错了（盖到了别的字上）。
+ * 【为什么默认透明】文本层若默认可视，会和 Canvas 上的字形重叠成重影，所以只在诊断时显形。
+ */
+body.debug-text-layer .text-layer span,
+body.debug-text-layer .textLayer span {
+  color: rgba(220, 38, 38, 0.85) !important;
+  outline: 1px dashed rgba(37, 99, 235, 0.5);
+  background: rgba(37, 99, 235, 0.06);
+}
+
 .text-layer span[data-para-id],
 .textLayer span[data-para-id] {
   cursor: pointer;

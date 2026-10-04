@@ -3479,6 +3479,114 @@
     return merged;
   }
 
+  /**
+   * 高光对齐诊断开关（排查"高光看起来偏移/盖错地方"时用）。
+   *
+   * 【为什么需要它】高光矩形是用 `range.getClientRects()` 从**真实渲染出来的文字**量的，
+   * 所以"坐标算错"在原理上不成立。剩下的可能就是"量到的字符区间不对"——
+   * 那必须把**被量的文字**显示出来才能判断：把文本层变成可见，
+   * 高光块应当正好压在它所覆盖的那几个字上面（字被盖住就说明区间选对了）。
+   *
+   * 打开方式：在阅读器里按 Ctrl+Shift+D（或 F1 命令面板运行 Developer: Toggle Developer Tools
+   * 后在 Console 里执行 __academicDebugTextLayer()）。
+   * 也可以只开一次排查：控制台执行 __academicDebugTextLayer('pair') 会额外把
+   * "高光块的 left/top/width/height"与"被量到的文字"一起打印出来。
+   */
+  function toggleTextLayerDebug(mode) {
+    const on = document.body.classList.toggle('debug-text-layer');
+    const report = [];
+    const pageWrapper = document.getElementById(`pageWrapper_${currentPage}`);
+    const overlay = document.getElementById(`focusHighlightLayer_${currentPage}`);
+    if (pageWrapper && overlay) {
+      const wrapRect = pageWrapper.getBoundingClientRect();
+      const rects = [...overlay.querySelectorAll('.focus-highlight-rect')].map(el => ({
+        cls: el.className,
+        left: Math.round(parseFloat(el.style.left) || 0),
+        top: Math.round(parseFloat(el.style.top) || 0),
+        w: Math.round(parseFloat(el.style.width) || 0),
+        h: Math.round(parseFloat(el.style.height) || 0)
+      }));
+      report.push(`高光块 ${rects.length} 个（页码 ${currentPage}）：`);
+      rects.forEach(r => report.push(`   ${r.cls} left=${r.left} top=${r.top} ${r.w}×${r.h}`));
+      // 逐个高光块，把"它实际压住的文本"读出来——这是判断区间对错的直接证据
+      const spans = [...pageWrapper.querySelectorAll('.text-layer span')];
+      const probe = (cx, cy) => {
+        let best = null, bestDist = Infinity;
+        spans.forEach(sp => {
+          const r = sp.getBoundingClientRect();
+          if (cx >= r.left - 2 && cx <= r.right + 2 && cy >= r.top - 2 && cy <= r.bottom + 2) {
+            const d = Math.abs(cy - (r.top + r.bottom) / 2);
+            if (d < bestDist) { bestDist = d; best = sp; }
+          }
+        });
+        return best ? String(best.textContent || '').slice(0, 60) : '(该点没有文字层 span)';
+      };
+      rects.slice(0, 6).forEach(r => {
+        const cx = wrapRect.left + r.left + Math.min(12, r.w / 2);
+        const cy = wrapRect.top + r.top + r.h / 2;
+        report.push(`   块@(${r.left},${r.top}) 压住的文字：${JSON.stringify(probe(cx, cy))}`);
+      });
+
+      /*
+       * 【决定性自检】文本层 span 的**实际渲染位置** vs **按 PDF 坐标推算的位置**。
+       *
+       * 为什么这条最关键：高光的矩形是用 `range.getClientRects()` 从文本层量出来的，
+       * 所以"高光偏了"等价于"文本层本身没有落在 PDF 字形上"。
+       * 两者一致 → 文本层是对的，问题在别处；两者差一个固定量 → 抓到现行（缩放/翻转/原点没对齐）。
+       * 推算口径：pdf.js 的 y 向下翻转后，基线 = 页面高 - pdfY，再乘缩放。
+       */
+      const content = pageWrapper.querySelector('.text-layer') || pageWrapper;
+      const contentRect = content.getBoundingClientRect();
+      const pageH = (currentViewport && currentViewport.height) ? currentViewport.height : contentRect.height;
+      const scale = currentScale || 1;
+      const items = (currentTextContent && currentTextContent.items) || [];
+      const diffs = [];
+      spans.slice(0, 400).forEach((sp, idx) => {
+        const it = items[sp._pdfIdx !== undefined ? sp._pdfIdx : idx];
+        if (!it || !it.transform) return;
+        const r = sp.getBoundingClientRect();
+        if (!r.height) return;
+        // 期望：该 span 的底部（基线附近）应落在 页面顶 + (页面高 - pdfY)*scale
+        const expectedBaseline = contentRect.top + (pageH - it.transform[5]) * scale;
+        // 实际：盒子的底边（近似基线下方一点）
+        const actualBottom = r.bottom;
+        diffs.push({ idx, d: actualBottom - expectedBaseline, txt: String(it.str || '').slice(0, 18), pdfY: it.transform[5] });
+      });
+      if (diffs.length) {
+        const avg = diffs.reduce((n, x) => n + x.d, 0) / diffs.length;
+        const min = Math.min(...diffs.map(x => x.d));
+        const max = Math.max(...diffs.map(x => x.d));
+        report.push(
+          `文本层位置自检：对比 ${diffs.length} 个 span，偏差 平均 ${avg.toFixed(1)}px（最小 ${min.toFixed(1)} / 最大 ${max.toFixed(1)}）`
+        );
+        report.push(`   期望口径：基线 = 页面顶 + (页面高 ${pageH.toFixed(1)} − pdfY) × 缩放 ${scale.toFixed(3)}`);
+        if (Math.abs(avg) > 2) {
+          report.push('   ⚠️ 平均偏差超过 2px → 文本层没有落在 PDF 字形上，这就是高光偏移的根因');
+          diffs.slice(0, 5).forEach(x => report.push(`      span#${x.idx} ${JSON.stringify(x.txt)} pdfY=${x.pdfY.toFixed(1)} 偏差 ${x.d.toFixed(1)}px`));
+        } else {
+          report.push('   ✅ 文本层与 PDF 字形对齐（偏差在 2px 内）');
+        }
+      }
+    }
+    report.push(`文本层可见化：${on ? '开' : '关'}（可见后，高光块应当正好盖住它对应的那几个字）`);
+    report.forEach(line => console.log('[高光诊断] ' + line));
+    showReaderToast(on ? '文本层已可见：看高光是否正好盖住它对应的文字' : '文本层已恢复隐藏', 'info');
+    return report;
+  }
+  // 控制台/自动化可用
+  window.__academicDebugTextLayer = toggleTextLayerDebug;
+
+  // 快捷键入口：Ctrl+Shift+D 切换"文本层可见"（排查高光对齐时用；不影响其它快捷键）
+  window.addEventListener('keydown', (e) => {
+    if (!e.ctrlKey || !e.shiftKey) return;
+    const k = String(e.key || '').toLowerCase();
+    if (k !== 'd') return;
+    const tag = (e.target && e.target.tagName) || '';
+    if (/^(INPUT|TEXTAREA)$/.test(tag)) return; // 输入框里按 Ctrl+Shift+D 不该被劫持
+    e.preventDefault();
+    toggleTextLayerDebug();
+  });
+
   function clearAllHighlights() {
     const overlay = document.getElementById(`focusHighlightLayer_${currentPage}`);
     if (overlay) overlay.innerHTML = '';
