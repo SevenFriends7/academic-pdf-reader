@@ -2835,6 +2835,23 @@
       curParaLines.forEach(line => line.spans.forEach(span => orderedSpans.push(span)));
       const itemOfSpan = span => (textContent.items && textContent.items[span._pdfIdx]) || null;
 
+      /**
+       * 每个 span 已经往 charMap 里追加了多少个字符 = 下一个片段该用的起始 offset。
+       *
+       * 【为什么不能用"该 span 已有片段的文本长度之和"】旧实现是这么算的，结果系统性错位：
+       * `charMap` 的增长并不等于片段文本长度 —— 片段之间还会插**合成空格**（补词距）、
+       * 插**公式文本**（行内公式，占 charMap 但不属于任何 span）、以及被 trim 掉的空白。
+       * 于是只要一个 span 中途被别的内容打断（行内公式/补空格），它**第二次出现时起始偏移就错了**，
+       * 从那里往后整段映射集体偏移 —— 这正是高光"整体漂移/重复"的来源。
+       *
+       * 【实测】旧口径下的对账结果（三篇论文 112 段）：偏移回退 84 处、
+       * 逐字符比对 34.4% 对不上（如 cleanText[80]="-" 却指向 span[0]="i"）。
+       *
+       * 【新口径】每次真的把字符写进 charMap 时同步累加这个计数；
+       * 删字符（折行连字符）时同步扣减，保证与实际 charMap 一一对应。
+       */
+      const spanCharsMapped = new Map();
+
       const pushBody = (text, span, item) => {
         if (!text) return;
         const last = para.segments[para.segments.length - 1];
@@ -2843,11 +2860,8 @@
           if (item) last.items.push(item);
           return;
         }
-        // __off = 本片段在"该 span 原始文本"里的起始下标（切分后必须逐段累加，
-        // 否则 charMap 的 offset 会指错字符，划线高亮就会漂移）
-        const consumed = para.segments
-          .filter(s => s.spanRef === span)
-          .reduce((n, s) => n + s.text.length, 0);
+        // __off = 本片段在"该 span 原始文本"里的起始下标（以实际写入 charMap 的字符数为准）
+        const consumed = spanCharsMapped.get(span) || 0;
         para.segments.push({ kind: 'body', text, spanRef: span, spans: [span], items: item ? [item] : [], __off: consumed });
       };
       const pushMath = (latex, text, itemsIn) => {
@@ -2935,14 +2949,25 @@
           }
           if (needSpace) {
             para.cleanText += ' ';
-            const anchor = (seg.spans && seg.spans[0]) || (prevSeg.spans && prevSeg.spans[0]) || null;
-            para.charMap.push({ span: anchor, offset: 0 });
+            /*
+             * 合成空格挂 **span: null**，不挂真实 span。
+             *
+             * 【为什么】这个空格是代码补的词距，PDF 里没有对应字形。旧实现给它挂了
+             * `{ span: 前一个span, offset: 0 }`，于是同一个 span 上出现"先 offset 58、后 offset 0"
+             * 的**偏移回退**（对账时实测 84 处）——高光按这个映射去取区间，就会取到整段开头的字符，
+             * 表现为"高光画到了别处/重复盖住一段"。
+             * 本文件既有的口径就是：span=null 的字符是"安全垫"，不参与高光（见下方 1:1 兜底的注释）。
+             */
+            para.charMap.push({ span: null, offset: 0 });
           }
         }
         for (let c = 0; c < seg.text.length; c++) {
           para.cleanText += seg.text[c];
           const sp = seg.spans && seg.spans[0] ? seg.spans[0] : null;
           para.charMap.push(sp ? { span: sp, offset: (seg.__off || 0) + c } : { span: null, offset: 0 });
+          // 同步记下"这个 span 已经被映射了多少字符"——下一个片段（同 span 被公式/空格打断后）
+          // 的起始 offset 就靠它，否则整段会从错的地方开始映射（见 spanCharsMapped 的注释）
+          if (sp) spanCharsMapped.set(sp, (spanCharsMapped.get(sp) || 0) + 1);
         }
         seg.spans.forEach(sp => para.rawSpans.push(sp));
         if (seg.kind === 'body' && seg.spans.length === 0 && seg.spanRef) para.rawSpans.push(seg.spanRef);
