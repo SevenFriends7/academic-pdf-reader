@@ -5419,7 +5419,7 @@
       return `<div class="sentence-pair-row" data-sent-idx="0">
         <div class="sent-num">1</div>
         <div class="sent-content">
-          <div class="sent-zh">${renderEnTextHtml(cachedTrans, para.visionInline)}</div>
+          <div class="sent-zh">${renderZhWithMath(cachedTrans, para)}</div>
           <div class="sent-en">${renderParaEnHtml(para.cleanText, para)}</div>
         </div>
       </div>`;
@@ -5470,7 +5470,7 @@
         <div class="sentence-pair-row" data-sent-idx="${idx}" title="点击可使左侧 PDF 原件 100% 精确高亮对应本句">
           <div class="sent-num">${idx + 1}</div>
           <div class="sent-content">
-            <div class="sent-zh">${renderEnTextHtml(zh, para.visionInline)}</div>
+            <div class="sent-zh">${renderZhWithMath(zh, para)}</div>
             <div class="sent-en">${renderParaEnHtml(sent.text, para)}</div>
           </div>
           <div class="sent-row-actions">
@@ -6090,7 +6090,7 @@
     // 【译文也要走公式渲染】译文里的公式现在是 $...$ LaTeX（提示词要求模型转写），
     // 残渣形式的老译文则靠视觉模型的替换表就地补渲染——两条路都通到 KaTeX。
     if (!aligned) {
-      return `<div class="zh-paragraph-plain">${renderParaEnHtml(transText, para)}</div>`;
+      return `<div class="zh-paragraph-plain">${renderZhWithMath(transText, para)}</div>`;
     }
 
     return cached
@@ -9444,6 +9444,89 @@ let aiPresetQuestion = '';
     });
     if (cursor < src.length) out += renderEnTextHtml(src.slice(cursor), kept);
     return out;
+  }
+
+  /** 把一段残渣文本转成"字面 LaTeX"（原文/译文里的公式必须原样显示，不能被当成命令） */
+  function residueToLiteralLatex(s) {
+    return String(s == null ? '' : s)
+      .replace(/\\/g, '\\textbackslash{}')
+      .replace(/([{}%&#_$])/g, '\\$1')
+      .replace(/\^/g, '\\textasciicircum{}')
+      .replace(/~/g, '\\textasciitilde{}')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  /** 归一化后比较两个"残渣写法"是否指同一条公式 */
+  function residueKeyOf(s) {
+    return String(s == null ? '' : s)
+      .replace(/\s+/g, '')
+      .replace(/[̂̃̄̇̈̌]/g, '')
+      .replace(/[−–—]/g, '-')
+      .toLowerCase();
+  }
+
+  /**
+   * 译文里的公式：把模型抄下来的残渣换成**本地数学层抽出的规范 LaTeX**。
+   *
+   * 【为什么必须这么做】旧提示词要求模型"把公式转写成 LaTeX"，实测模型会转错——
+   * 真实回包里有 `$X_{Tl}$`（原文是 `X_l^t`）、`$tHW \times CEq$`（原文是 `X_l^t \in R^{HW\times C}`）。
+   * KaTeX 对错式子照样渲染，**用户看到一个漂亮但内容错误的公式**，比残渣更危险。
+   *
+   * 现在提示词改成"照抄残渣并用 ⟦…⟧ 括起来"（见 translator.ts 的 FORMULA_LATEX_RULE），
+   * 这里负责配对：
+   *   ① 先按"归一化残渣"精确匹配段落里的公式；
+   *   ② 匹配不到再按**出现顺序**兜底取第 i 条（模型偶尔会抄错一两个字）；
+   *   ③ 本地公式表为空时，退化成"把括号里的残渣原样排版"——绝不丢掉内容。
+   */
+  function renderZhWithMath(text, para) {
+    const src = String(text == null ? '' : text);
+    if (!src) return '';
+    const table = (para && Array.isArray(para.localMath) ? para.localMath : [])
+      .map(x => ({ text: String(x && x.text ? x.text : ''), latex: String(x && x.latex ? x.latex : '').trim() }))
+      .filter(x => x.latex);
+    const inline = para && Array.isArray(para.visionInline) ? para.visionInline : [];
+    /*
+     * 【绝不能把"已渲染好的公式 HTML"再喂回 renderEnTextHtml】
+     * 那条路径会先 escapeHtml 再找 `$...$`，于是拼进去的 `<span class="katex">`
+     * 会被转义成 `&lt;span…`，界面上直接显示一坨标签源码（实测第一版就是这么错的）。
+     * 正确做法：**按公式边界切成片段**——纯文字片段走 renderEnTextHtml，
+     * 公式片段直接把渲染结果拼进去，两者不再互相处理。
+     */
+    const pieces = [];
+    let cursor = 0;
+    let hit = 0;
+    const re = /⟦([^⟧]{1,200})⟧/g;
+    let m;
+    while ((m = re.exec(src))) {
+      if (m.index > cursor) pieces.push({ text: src.slice(cursor, m.index) });
+      const inner = m[1];
+      const pick = (() => {
+        const k = residueKeyOf(inner);
+        const exact = table.find(x => residueKeyOf(x.text) === k);
+        if (exact) return exact.latex;
+        if (table.length) {
+          const byOrder = table[hit] || table[table.length - 1];
+          return byOrder ? byOrder.latex : '';
+        }
+        return '';
+      })();
+      hit++;
+      if (pick) {
+        pieces.push({
+          html: `<span class="local-math" data-math-source="local-zh" title="公式（本机按 PDF 字体与位置精确抽取）">${renderVisionMathHtml(pick, false)}</span>`
+        });
+      } else {
+        // 表里没有这条：把残渣**原样排版**（走字面 LaTeX），绝不丢掉内容
+        pieces.push({
+          html: `<span class="vision-residue-math" title="这条公式本地没抽到规范写法，按原文残渣显示">${renderVisionMathHtml(residueToLiteralLatex(inner), false)}</span>`
+        });
+      }
+      cursor = m.index + m[0].length;
+    }
+    if (cursor < src.length) pieces.push({ text: src.slice(cursor) });
+    if (pieces.length === 0) return renderEnTextHtml(src, inline);
+    return pieces.map(p => (p.html !== undefined ? p.html : renderEnTextHtml(p.text, inline))).join('');
   }
 
   /**

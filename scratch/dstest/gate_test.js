@@ -182,13 +182,21 @@ check(
   /const FORMULA_LATEX_RULE/.test(translatorSrc) && (translatorSrc.match(/\$\{FORMULA_LATEX_RULE\}/g) || []).length >= 5,
   `引用了 ${(translatorSrc.match(/\$\{FORMULA_LATEX_RULE\}/g) || []).length} 处`
 );
-check('规则本身明确要求 $...$ 包起来', /\$\.\.\.\$/.test(translatorSrc) && /不要保留/.test(translatorSrc));
+/*
+ * 1.5.2 起规则反过来了：**不再要求模型转写 LaTeX**，而是让它照抄残渣并用 ⟦…⟧ 括起来，
+ * 由客户端（renderZhWithMath）配上本地数学层抽出的规范 LaTeX。
+ * 原因：模型转写经常写错（实测 `$X_{Tl}$` 而原文是 `X_l^t`），而 KaTeX 对错式子照样渲染，
+ * 用户看到"漂亮但内容错误"的公式，比残渣更危险。
+ */
+check('提示词改成"照抄残渣 + ⟦⟧ 占位"（不再让模型转写 LaTeX）',
+  /FORMULA_LATEX_RULE/.test(translatorSrc) && /⟦/.test(translatorSrc) && /不要自己转写/.test(translatorSrc));
 check('旧的"公式原样保留"要求已全部删除（那等于命令模型抄残渣）', !/公式、数学符号、变量名、缩写、文献引用编号原样保留/.test(translatorSrc));
 check('闸门会先剥 LaTeX 再判语言与相似度', /stripLatexForCounting/.test(translatorSrc) && /similarity\(source, oPlain\)/.test(translatorSrc));
 check(
-  '译文行走公式渲染（逐句两处 + 连贯段落一处；1.4.0 起原文侧改走本地数学层）',
-  (viewerSrc.match(/sent-zh">\$\{renderEnTextHtml\(/g) || []).length === 2 &&
-    /zh-paragraph-plain">\$\{renderParaEnHtml\(transText/.test(viewerSrc) &&
+  '译文行走公式渲染（逐句两处 + 连贯段落一处；译文公式由 renderZhWithMath 换成本地 LaTeX）',
+  (viewerSrc.match(/sent-zh">\$\{renderZhWithMath\(/g) || []).length === 2 &&
+    /zh-paragraph-plain">\$\{renderZhWithMath\(transText/.test(viewerSrc) &&
+    /function renderZhWithMath\(text, para\)/.test(viewerSrc) &&
     // 原文侧：允许换行（renderParaEnHtml 有多处带换行的调用写法）
     /sent-en">\$\{renderParaEnHtml\([\s\S]{0,40}?sent\.text/.test(viewerSrc)
 );
