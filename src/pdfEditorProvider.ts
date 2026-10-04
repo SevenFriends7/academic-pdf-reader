@@ -5,6 +5,7 @@ import { LlmError, DEFAULT_TRANSLATION_MODEL } from './llmClient';
 import { NotesStorageManager, PaperMetadata } from './notesStorage';
 import { buildAnnotatedPdf } from './pdfExport';
 import { mergeArchivedParagraphs } from './pageArchive';
+import { ZoteroClient, ZoteroLink, ZoteroDetectResult } from './zoteroClient';
 
 /**
  * 段落内容指纹：FNV-1a + 长度。
@@ -55,9 +56,77 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
    */
   private static readonly PROMPT_VERSION = 'p3-fidelity-wordorder-terms';
 
+  /**
+   * Zotero 只读客户端（本文件生命周期内共用一个：条目列表与探测结果都在它里面缓存，
+   * 每次打开论文都新建会重复打本地接口）。
+   */
+  private readonly zotero = new ZoteroClient();
+  /** 当前阅读窗口认领到的 Zotero 论文（用于把 Zotero 全文喂给 AI 问答的上下文） */
+  private zoteroLink: ZoteroLink | null = null;
+
   constructor(private readonly context: vscode.ExtensionContext) {
     this.translator = new PaperTranslator((msg) => console.log(`[AcademicReader] ${msg}`));
     this.storageManager = new NotesStorageManager(context);
+  }
+
+  /**
+   * 把本地 PDF 认领到 Zotero 条目（只读）。
+   *
+   * 这些事都**不能**让它挡住阅读器打开：探测超时 4 秒、任何异常都吞掉并只记日志。
+   * 认领成功后会做两件有实效的事：
+   *   ① 把 Zotero 的**逐页全文**注册进 translator 的页面索引 —— AI 问答能引用用户还没翻到的页
+   *      （Zotero 已经索引全书，等于白送一份全文上下文）；
+   *   ② 把结果发给 webview 显示一行"已认领 + 元数据"。
+   * 页数不一致时**只发提示、不注册全文** —— 错位的上下文比没有上下文更坏。
+   */
+  private async linkZoteroPaper(
+    webview: vscode.Webview,
+    document: vscode.Uri,
+    expectedPages?: number,
+    withFullText = true
+  ): Promise<void> {
+    const enabled = vscode.workspace.getConfiguration('academicReader').get<boolean>('zoteroIntegration', true);
+    if (!enabled) return;
+    try {
+      const fileSize = await vscode.workspace.fs.stat(document).then(s => s.size, () => undefined);
+      const { link, detect } = await this.zotero.linkPdf(document.fsPath, { fileSize, expectedPages, withFullText });
+      this.zoteroLink = link;
+      if (link?.fullText && !link.fullText.pageCountMismatch) {
+        for (let i = 0; i < link.fullText.pages.length; i++) {
+          const text = (link.fullText.pages[i] || '').trim();
+          if (!text) continue;
+          this.translator.registerPageText(i + 1, [{ type: 'body', text }]);
+        }
+        console.log(
+          `[AcademicReader] Zotero 已认领《${link.meta.title}》，注册 ${link.fullText.pages.length} 页全文作为问答上下文`
+        );
+      } else if (link) {
+        console.log('[AcademicReader] Zotero 认领成功，但没有可用的逐页全文（未索引或页数不一致）');
+      }
+      webview.postMessage({
+        type: 'zoteroData',
+        link: link
+          ? {
+              attachmentKey: link.attachmentKey,
+              parentKey: link.parentKey,
+              matchedBy: link.matchedBy,
+              fileName: link.fileName,
+              meta: link.meta,
+              annotationCount: link.annotations.length,
+              fullTextPages: link.fullText ? link.fullText.pages.length : 0,
+              pageCountMismatch: link.fullText ? link.fullText.pageCountMismatch : false
+            }
+          : null,
+        detect
+      });
+    } catch (err: any) {
+      console.warn('[AcademicReader] Zotero 认领失败（不影响阅读）:', err?.message);
+      webview.postMessage({
+        type: 'zoteroData',
+        link: null,
+        detect: { available: false, reason: 'error', message: String(err?.message || err), prefsPath: null, baseUrl: '' } as ZoteroDetectResult
+      });
+    }
   }
 
   public static register(context: vscode.ExtensionContext): {
@@ -93,6 +162,9 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
     _token: vscode.CancellationToken
   ): Promise<void> {
     this.currentActiveDocUri = document.uri;
+    // 每个阅读窗口的 Zotero 认领从零开始：换论文时必须清掉上一篇的引用，
+    // 否则"这篇没认领成功"时会残留上一篇的全文上下文（AI 会拿 A 论文的原文回答 B 论文的问题）。
+    this.zoteroLink = null;
     // 记住当前 webview：命令面板的「导出笔记」也要能触达它（精读稿由 webview 侧生成，
     // 因为只有它手里有段落切分、句级译文和 AI 答疑上下文）
     this.currentActiveWebview = webviewPanel.webview;
@@ -147,7 +219,6 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
               data: Array.from(fileData),
               fileName: path.basename(document.uri.fsPath),
               paperData: paperData,
-              engineTag: this.engineTag(),
               // 版面分割引擎要在首屏渲染前就位，否则设成 local 的用户也会被发一次视觉请求
               segmentationEngine: vscode.workspace
                 .getConfiguration('academicReader')
@@ -157,9 +228,26 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
               // 视觉模型名要在首屏渲染前就位：换模型后每页的视觉缓存要自动判废重判
               visionModel: vscode.workspace.getConfiguration('academicReader').get<string>('visionModel', '')
             });
+            // Zotero 认领是"锦上添花"，绝不 await 在这个分支里：
+            // 本地接口探测最长 4 秒，放在这里会让首屏白屏 4 秒。
+            // 这一趟**只取元数据、不取全文**：此时还不知道 PDF 真实页数，
+            // 没有页数就没法校验 Zotero 全文有没有错位，取了也可能白取。
+            // 真正的全文注册在 pdfOpened 那一趟（带着真实页数）。
+            void this.linkZoteroPaper(webviewPanel.webview, document.uri, undefined, false);
           } catch (err: any) {
             vscode.window.showErrorMessage(`加载 PDF 失败: ${err.message}`);
           }
+          break;
+        }
+
+        /**
+         * webview 加载完 PDF 后会把真实页数报上来。
+         * 为什么要它：Zotero 全文按页存，只有拿真实页数比才能发现"只索引了前 N 页"，
+         * 否则按页码取上下文会**静默错位**。宿主侧不去自己解析 PDF（多一份解析器就多一处不一致）。
+         */
+        case 'pdfOpened': {
+          const pages = Number(message.pageCount) || 0;
+          void this.linkZoteroPaper(webviewPanel.webview, document.uri, pages > 0 ? pages : undefined);
           break;
         }
 

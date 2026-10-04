@@ -829,3 +829,111 @@ span 的中心）。而 PDF 常把一条图注拆成多个窄 span：
   现在 1:1 对齐由 schema 保证，"误合并"只是一行显示两句（内容仍正确），
   而"误切分"会产生 `See Fig.` + `2 for details.` 这种肉眼可见的垃圾行。
 - `.vscode` 目录下仍留着旧的 0.1.0（注册表引用它，删除会把那块装坏）；实际使用不受影响。
+
+---
+
+## Zotero 只读联动（1.6.x）
+
+打开论文时自动去本机 Zotero 认领这篇文献：把规范著录信息（标题/作者/年份/会议/DOI）写进导出的精读稿，把 Zotero 已索引的逐页全文加进 AI 问答上下文（问"还没翻到的页"也能答），并读取该附件下的批注。**只读，绝不改动 Zotero 库。** 这一节按"怎么复现排查"写，不只写结论。
+
+### 一、为什么走本地 HTTP API，而不是直接读 zotero.sqlite / .zotero-ft-cache
+
+| 方案 | 实测 / 官方说法 | 结论 |
+|---|---|---|
+| 直读 `zotero.sqlite` | Zotero 官方明确警告：**运行时修改数据库极易损坏库**；schema 随版本漂移（本机 61 张表）；**实测** Zotero 运行中即使 `mode=ro` 也会 `database is locked`（同目录有 `zotero.sqlite-journal`），只有 `immutable=1` 才不碰锁 | 只留给离线探针，产品不做 |
+| 直读 `storage\<KEY>\.zotero-ft-cache` | 要自己定位 storage 目录、自己数 `\f` 切页；`itemAttachments.path` **实测读出 `None`**（值在 `itemData`，字段名 `path`），拿文件名还得再绕一层；拿不到 `indexedPages` / `totalPages` | 产品不做 |
+| `/api/`（`http://127.0.0.1:23119`） | Zotero 自己实现的官方**只读**接口，不碰文件锁；`/items/<附件KEY>/fulltext` 的 `content` 与 `.zotero-ft-cache` **逐字节一致**（实测），并附送页数元信息 | **采用** |
+
+怎么打开（本机 Zotero **9.0.6** 实测，四步可复现）：
+
+1. 默认是关的：开关是 pref `extensions.zotero.httpServer.localAPI.enabled`（Zotero 源码 `defaults/preferences/zotero.js`，默认 `false`）。
+2. 关着的时候探测：
+
+   ```powershell
+   (Invoke-WebRequest -Uri 'http://127.0.0.1:23119/api/' -UseBasicParsing).StatusCode
+   ```
+
+   → **403**，body 是 `Local API is not enabled`。注意：**不是**"需要 API key"（这条判断以前写错过，纠正过程见 [design-notes-zotero-source.md](design-notes-zotero-source.md) 第 2.1 节）。
+3. 打开：Zotero 设置 → 高级 → 勾选「允许本机其它程序与 Zotero 通信」，**重启 Zotero**。
+4. 打开之后本地读**不需要任何 key**（源码 `server_localAPI.js` 的 `_initInternal` 里没有鉴权分支）；9.0.6 **只有 GET**，写接口是 Zotero 10+ 才有 —— 所以这一版只读。
+
+读 pref 的坑：**"prefs.js 里没有这一行" ≠ "开关关着"** —— 用户从没改过这个开关时那一行根本不存在，必须回退到 Zotero 的默认值 `false`。`readBoolPref()` 因此返回三态（`true` / `false` / `null`），把"没写"当成"开了"会直接误导用户。
+
+### 二、三级匹配 + "认不出就不猜"
+
+| 级别 | 判据 | 为什么需要它 | 何时放弃 |
+|---|---|---|---|
+| ① 完整路径 | `links.enclosure.href` 解出的路径与本地 PDF 相同 | 库里指向的就是同一个文件（例如从 Zotero 同步目录打开） | —— |
+| ② 文件名 | 文件名（URL 解码 → 统一斜杠 → 转小写 → 压空白）相同 | 跨机器 / 换目录后仍然成立 | 同名多条 → 用文件大小消歧；仍不唯一 → **放弃** |
+| ③ 文件大小 | `enclosure.length` 与本地字节数相同，且**库里唯一** | **真实高频场景**：用户从浏览器下载的 `2103.10088.pdf` 拖进 Zotero 被改名成 `Yang 等 - Associating….pdf`，文件名毫无关系、字节数一模一样 | 不唯一 → **放弃** |
+
+- **全部不中 = 什么都不做**（`link: null`），而不是挑一个最像的。认错论文会把**别人的元数据、批注、全文**搬到这篇上，比不认更糟。
+- 每一步都记 `matchedBy`（`path` / `basename` / `size`），日志与界面上能说清"凭什么认成了这一条"。
+- 单测抓到的坑：早期版本在"文件大小"之外还要求"文件名主干相似"，结果**改名场景永远认不出来**（那条额外条件已删）。反过来，"库里有两个同字节数文件"必须放弃，不能取第一个。
+
+### 三、页数校验为什么必须有
+
+- Zotero 全文**按页存**，接口只给一整块 `content`，页分隔符是换页符 `\f`（实测 10 页 PDF = 10 段）。
+- 宿主**不自己解析 PDF**：多一份解析器就多一处不一致。真实页数由 webview 用 pdf.js 解析后回报（`pdfOpened` 消息）。
+- **触发时机**（看代码时别找错分支）：`webviewReady` 时先发一次不带页数的认领（为了尽早拿到元数据），`pdfOpened` 报出真实页数后**再发一次带 `expectedPages` 的认领** —— 页数结论以第二次为准。
+- 判据：切出的段数 ≠ 真实页数（优先用 webview 报的 `expectedPages`，否则用接口的 `totalPages`）→ `pageCountMismatch = true`。
+- 处理：**只发提示、不注册全文**。静默错位比没有上下文更坏 —— AI 会拿第 5 页的原文回答第 7 页的问题，用户完全看不出来。
+- 复现：单测里把 `expectedPages` 传成别的值即可（`content = 'A\fB'`、`expectedPages = 10` → `mismatch = true`）。
+- 顺带的收获：接口除了 `content` 还给 `indexedPages` / `totalPages`，所以"只索引了前 N 页"能被**显式说出来**，不用猜 —— 直读 `.zotero-ft-cache` 拿不到这个信息。
+
+### 四、三个实测坑（都能在单测里复现）
+
+| # | 坑 | 症状 | 根因 | 修法 |
+|---|---|---|---|---|
+| 1 | `parseFileUrl()` 返回**小写** storage key | 拿 `nqi6n4ap` 去拼 storage 目录 / 对附件 KEY 时对不上 | 归一化（URL 解码 + 转小写）是给**比对**用的，而 storage key 是**目录名**，大小写敏感 | 归一化后的串只用来比对；key 从**原始 href** 再取一次。单测抓出 |
+| 2 | 附件的**占位标题**被当成论文标题 | 界面上标题是 `PDF`，或单个字符 `T` | Zotero 导入 PDF 时附件 title 默认就是 `PDF` / `Full Text PDF` / `Snapshot`，用户手改过可能是单字符 | `isPlaceholderTitle()` + 标题回退链：父条目 `title` → 附件 `title`（非占位）→ `enclosure` 文件名（去 `.pdf`） |
+| 3 | 测试桩用 `url.includes()` 做路由 | 认领在"取父条目"那一步**静默失败**（元数据全空），断言却全绿 | 子串匹配不锚定：列表端点 `/items?itemType=attachment` 与单条目端点 `/items/<key>` 共享 `/items` 前缀，单条目请求被列表路由接走 → 返回数组 → 解析失败后按"取不到"处理 | 桩改用**锚定正则**（`/api/$`、`/items\?itemType=attachment`、`/items/PAPER001$`） |
+
+> 第 3 条是"**测试桩必须贴近真实语义**"这条老纪律的又一次应验（同类：v1.3.4 的"判据要落在值上"、双栏顺序那节的"审计工具必须与被测代码同源"）。顺带一条实测确认，写桩时别想当然：`?` 在子串匹配里只是普通字符、在正则里是量词，`/items?itemType=attachment` 两种写法都匹配不到 `/items/BBBB2222` —— 真正吞掉单条目请求的是更短的 `/items` 前缀。端点路由要么锚定全路径，要么用 `$` 收尾。
+
+### 五、Windows：`process.exit()` 撞 libuv 断言（测试全绿却判失败）
+
+**症状**：单测 37 条全部 ✅、失败明细为空，门禁却判失败；退出码是 **`0xC0000409`**。
+
+**排查过程**（可照抄）：
+
+1. 先看输出：失败明细是空的 → 不是断言失败，是**进程**出了问题。
+2. 拿退出码：跑完 `node scratch/zotero/zotero_client_test.js` 之后看 `$LASTEXITCODE`（PowerShell）→ `0xC0000409`（Windows 的 `STATUS_STACK_BUFFER_OVERRUN`，Node 崩溃时的表现）。
+3. 二分定位：真机联调那一段可以用环境变量跳过 ——
+
+   ```powershell
+   $env:ZOTERO_REAL_TEST='0'; node scratch/zotero/zotero_client_test.js; $LASTEXITCODE
+   ```
+
+   跳过之后退出码正常 → 变量是**那一段的输出量**，而不是网络请求本身（这个"输出量"的变量连查了三轮才定位到）。
+4. 看崩溃信息：`Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)` —— libuv 在关句柄时发现句柄**正在关闭**（重复关闭）。
+
+**根因**：`console.log` 是**异步写**（管道/文件），真机那一段输出量大，`process.exit()` 时写还没排空；而 `process.exit()` 会立刻拆掉事件循环并关句柄，与进行中的写/关闭竞争 → libuv 断言 → 进程崩溃。
+
+**修法**：结果用 `fs.writeSync(1, ...)` **同步写**，然后**只设 `process.exitCode`**，让 Node 自己排空后自然退出（绝不再调 `process.exit()`）。
+
+同一类坑的第二次：原生 `http` 那条兜底路径（给没有全局 `fetch` 的老 Electron 用）上挂 `AbortController`，退出时也会撞同一个 libuv 断言（Windows / Node 24）→ 改用 `http.request` 自带的 `timeout` 选项，等价且不引入信号量。
+
+> 纪律：**"测试全绿"只说明断言过了，不说明进程正常退出。** 门禁必须同时看退出码；CI 上出现"日志里没有失败明细、退出码却非零"时，先怀疑进程崩溃，而不是去改测试。
+
+### 六、代码位置与复现命令
+
+| 文件 | 内容 |
+|---|---|
+| `src/zoteroClient.ts` | 只读客户端（刻意不 `import vscode`，所以能进 Node 单测直接跑）：探测三态、三级匹配、元数据、逐页全文 + 页数校验、批注读取、坐标换算 |
+| `src/pdfEditorProvider.ts` | `linkZoteroPaper()`：不阻塞首屏（`void`，不 `await`）、页数一致才 `registerPageText`、换论文时清空上一篇的认领结果（否则 AI 会拿 A 论文的原文回答 B 论文的问题） |
+| `media/viewer.js` | `zoteroData` 消息 → 一行提示 + 标题 tooltip；导出精读稿写 `zotero_*` frontmatter 与引言块 |
+| `package.json` | `academicReader.zoteroIntegration`（默认 `true`；关掉则**不发任何本地请求**） |
+| `scratch/zotero/zotero_client_test.js` | 37 条单测（8 条桩 HTTP 端到端 + 1 条真机联调） |
+| `scratch/zotero/viewer_zotero_test.js` | webview 侧回归（真 jsdom + 真派发 `zoteroData` 消息）：异步到达的消息不能踩 TDZ、认领失败要给"怎么开"的指引 |
+
+```powershell
+npm run test:zotero          # 一次性：编译 + 客户端 + webview 侧两组单测
+# 需要二分定位时拆开跑：
+npx tsc src/zoteroClient.ts --outDir dist-test --module commonjs --target es2020 --skipLibCheck
+node scratch/zotero/zotero_client_test.js
+$LASTEXITCODE                                                          # 必须 0；0xC0000409 = 进程崩溃而非断言失败
+$env:ZOTERO_REAL_TEST='0'; node scratch/zotero/zotero_client_test.js   # 跳过真机联调做二分
+```
+
+批注坐标口径（`annotationPosition` 的 `rects` 是 PDF 用户空间点、原点左下、y 向上，画之前要 `top = pageHeightPdf - y2`）、判断"Zotero 能不能救坏字形"的逐字节证据、以及尚未实现的部分（批注导入、回写要 Zotero 10+），都在 [design-notes-zotero-source.md](design-notes-zotero-source.md)。

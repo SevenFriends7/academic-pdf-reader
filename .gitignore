@@ -46,3 +46,6 @@ scratch/llm-test/*.js.map
 scratch/vision/cmp_*.html
 scratch/vision/crop_*.png
 
+
+# Zotero 客户端单测的临时编译产物（由 npm run test:zotero 生成）
+dist-test/

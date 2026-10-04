@@ -61,6 +61,12 @@
   let currentTextContent = null;
   let paperData = { annotations: [], translations: {}, sentenceTranslations: {} };
   let currentParagraphs = [];
+  /**
+   * 当前论文在 Zotero 里的身份（宿主认领成功后才会有值）。
+   * 声明必须放在这里（文件顶部）：`zoteroData` 消息可能在 initPdfData 之前到达，
+   * 而 `let` 在声明前被访问会抛 ReferenceError —— 正是本仓库踩过的暂时性死区坑。
+   */
+  let zoteroInfo = null;
 
   /**
    * 每页段落快照 —— 「导出全文双语精读稿」的数据源。
@@ -683,6 +689,39 @@
         }
         break;
       }
+      /**
+       * Zotero 认领结果（宿主在打开文档后异步去查，可能比 initPdfData 晚到）。
+       *
+       * 这里只做"让用户知道认领到了什么"，不参与排版：
+       *   - 认领成功 → 一行提示带论文身份（标题/作者·年·会议），并写进标题栏 tooltip；
+       *   - 没认领到 → 说明原因（Zotero 没开 / 本地接口没开），但**不报错、不挡阅读**；
+       *   - 页数不一致 → 明确说"全文上下文已跳过"，因为错位的上下文比没有更坏（见宿主注释）。
+       */
+      case 'zoteroData': {
+        const link = msg.link;
+        const detect = msg.detect || {};
+        if (link && link.meta) {
+          zoteroInfo = { key: link.attachmentKey, meta: link.meta, matchedBy: link.matchedBy };
+          const bits = [link.meta.summary || link.meta.title].filter(Boolean).join(' · ');
+          let extra = '';
+          if (link.pageCountMismatch) {
+            extra = '（Zotero 只索引了部分页，全文上下文已跳过）';
+          } else if (link.fullTextPages > 0) {
+            extra = `（全书 ${link.fullTextPages} 页已加入问答上下文）`;
+          } else if (link.annotationCount > 0) {
+            extra = `（${link.annotationCount} 条批注）`;
+          }
+          showReaderToast(`已认领 Zotero 论文：${bits}${extra}`, 'info');
+          if (dom.paperTitle) {
+            dom.paperTitle.title = `${dom.paperTitle.title || dom.paperTitle.textContent}\nZotero：${link.meta.title}${link.meta.summary ? `（${link.meta.summary}）` : ''}`;
+          }
+        } else if (detect && detect.available === false && detect.reason === 'api-disabled') {
+          // 这一条要主动说：用户会以为"插件没反应"，其实只是 Zotero 里少勾了一个开关
+          showReaderToast(detect.message, 'warn');
+        }
+        break;
+      }
+
       case 'initPdfData': {
         if (msg.fileName) {
           dom.paperTitle.textContent = msg.fileName;
@@ -726,6 +765,14 @@
           dom.pageCount.textContent = totalPages;
           dom.pageNumberInput.max = totalPages;
           updateReadingProgress();
+
+          /*
+           * 把**真实页数**报给宿主：Zotero 全文是按页存的，宿主只有拿到这个数字才能校验
+           * "Zotero 是不是只索引了前 N 页"。页数对不上就必须判废 Zotero 全文——
+           * 按页码取上下文会静默错位（AI 会拿第 5 页的原文回答第 9 页的问题），比没有上下文更坏。
+           * 放在这里而不是 initPdfData 回包时：此时 pdf.js 已经解析出 numPages。
+           */
+          vscode.postMessage({ type: 'pdfOpened', pageCount: totalPages, fileName: msg.fileName || '' });
 
           // 打开即"适合窗口宽度"，并开始监听左栏尺寸变化
           setupAutoFitResize();
@@ -5215,10 +5262,29 @@
     md += `pages: ${formatPageRanges(pageList)}${totalPagesText ? ` / ${totalPagesText}` : ''}\n`;
     md += `annotations: ${annotations.length}\n`;
     md += `ai_qa: ${aiQa.length}\n`;
+    /*
+     * Zotero 认领到的规范著录信息写进 frontmatter。
+     * 为什么值得单独一段：导出稿本来只有 PDF 文件名（`Yang 等 - Associating….pdf`），
+     * 拿去做文献管理还要手工补条目；Zotero 侧的标题/作者/年份/会议名/DOI 是用户已经整理过的那份。
+     */
+    if (zoteroInfo && zoteroInfo.meta) {
+      const zm = zoteroInfo.meta;
+      if (zm.title) md += `zotero_title: "${String(zm.title).replace(/"/g, "'")}"\n`;
+      if (zm.creators) md += `zotero_authors: "${String(zm.creators).replace(/"/g, "'")}"\n`;
+      if (zm.year) md += `zotero_year: ${zm.year}\n`;
+      if (zm.venue) md += `zotero_venue: "${String(zm.venue).replace(/"/g, "'")}"\n`;
+      if (zm.doi) md += `zotero_doi: ${zm.doi}\n`;
+      md += `zotero_item: ${zoteroInfo.key}\n`;
+    }
     md += '---\n\n';
 
     md += `# ${baseName} · 双语精读稿\n\n`;
     md += `> 由「文献对照翻译阅读器」导出 · ${stamp}\n`;
+    if (zoteroInfo && zoteroInfo.meta && (zoteroInfo.meta.summary || zoteroInfo.meta.title)) {
+      md += `> Zotero：${[zoteroInfo.meta.title, zoteroInfo.meta.summary].filter(Boolean).join(' · ')}${
+        zoteroInfo.meta.doi ? ` · DOI ${zoteroInfo.meta.doi}` : ''
+      }\n`;
+    }
     md += `> 收录第 ${formatPageRanges(pageList)} 页${totalPagesText ? `（${totalPagesText}）` : ''}`;
     md += ` · 批注 ${annotations.length} 条 · AI 答疑 ${aiQa.length} 条`;
     md += engineText ? ` · ${engineText}\n` : '\n';

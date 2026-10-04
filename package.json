@@ -7,7 +7,7 @@
                           "color":  "#0b578a",
                           "theme":  "dark"
                       },
-    "version":  "1.6.0",
+    "version":  "1.6.1",
     "publisher":  "paper-reader",
     "license":  "MIT",
     "repository":  {
@@ -260,7 +260,12 @@
                                                                                                       "type":  "boolean",
                                                                                                       "default":  true,
                                                                                                       "description":  "翻页时是否自动预翻译当前页面段落"
-                                                                                                  }
+                                                                                                  },
+                                                                 "academicReader.zoteroIntegration":  {
+                                                                                                          "type":  "boolean",
+                                                                                                          "default":  true,
+                                                                                                          "description":  "【Zotero 联动】打开论文时自动去本机 Zotero 认领这篇文献：把规范著录信息（标题/作者/年份/会议/DOI）写进导出的精读稿，并把 Zotero 已索引的逐页全文加入 AI 问答上下文（问没翻到的页也能答）。只读，绝不改动你的 Zotero 库。需要 Zotero 设置 → 高级 → 勾选「允许本机其它程序与 Zotero 通信」。关掉则不发起任何本地请求。"
+                                                                                                      }
                                                              }
                                           }
                     },
@@ -285,7 +290,8 @@
                     "prevsix":  "node scratch/check_version.js",
                     "test:para":  "node scratch/para_rebuild_test.js",
                     "test:math":  "node scratch/math_layer_test.js",
-                    "test:zhmath":  "node scratch/zh_math_subst_test.js"
+                    "test:zhmath":  "node scratch/zh_math_subst_test.js",
+                    "test:zotero":  "npx tsc src/zoteroClient.ts --outDir dist-test --module commonjs --target es2020 --skipLibCheck --esModuleInterop \u0026\u0026 node scratch/zotero/zotero_client_test.js \u0026\u0026 node scratch/zotero/viewer_zotero_test.js"
                 },
     "devDependencies":  {
                             "@pdf-lib/fontkit":  "^1.1.1",
