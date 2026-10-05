@@ -2099,6 +2099,14 @@ body.theme-paper-dark .fluid-badge-zh {
 }
 
 /* ================== 段落/句子点击聚焦快捷工具条 ================== */
+/*
+ * 【为什么是竖条而不是横条】用户反馈"会遮住左右两边的字，因为太长了卡片，
+ * 你可以把它弄得窄一点、高一点"。
+ * 旧样式是 `display:flex; align-items:center` 的横向长条：6 个按钮 + 标签排成一行约 280px 宽，
+ * 而正文页边距只有几十像素——**无论停在哪一侧都会横着压住正文**。
+ * 改成纵向单列（约 96px 宽、约 200px 高）后，横向占位缩到页边距量级，
+ * 纵向变长反而更容易"落在两行之间/段落旁边"，不再横跨正文。
+ */
 .para-focus-bar {
   position: fixed;
   z-index: 99999;
@@ -2107,22 +2115,36 @@ body.theme-paper-dark .fluid-badge-zh {
   -webkit-backdrop-filter: blur(16px);
   border: 1px solid var(--floating-bar-border, rgba(0, 0, 0, 0.14));
   border-radius: 8px;
-  padding: 4px 8px;
+  padding: 6px 5px;
   display: flex;
-  align-items: center;
-  gap: 6px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  width: 96px;
+  box-sizing: border-box;
   box-shadow: var(--floating-bar-shadow, 0 8px 24px rgba(0, 0, 0, 0.18));
   animation: popIn 0.15s ease-out;
   user-select: none;
 }
 
+/* 标签与关闭按钮同处一行，省掉一整行的横向占用 */
+.para-focus-bar .focus-bar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 2px;
+}
+
 .focus-bar-label {
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 600;
   color: var(--accent-color, #0284c7);
   background: rgba(0, 152, 255, 0.12);
-  padding: 2px 6px;
+  padding: 2px 5px;
   border-radius: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .focus-action-btn {
@@ -2131,12 +2153,14 @@ body.theme-paper-dark .fluid-badge-zh {
   color: var(--floating-bar-text, #0f172a);
   font-size: 11.5px;
   font-weight: 500;
-  padding: 3px 8px;
+  padding: 4px 6px;
   border-radius: 5px;
   cursor: pointer;
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 3px;
+  white-space: nowrap;
   transition: all 0.12s ease;
 }
 

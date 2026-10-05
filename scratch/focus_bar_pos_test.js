@@ -30,12 +30,19 @@ const API = new Function(`${grab('computeFocusBarPlacement')}
 let pass = 0; let fail = 0;
 const check = (label, ok, extra) => { if (ok) pass++; else { fail++; console.log(`  ❌ ${label}${extra ? `   ${extra}` : ''}`); } };
 
-/** 一份"典型宽屏"几何：PDF 栏 0~1328，右侧面板 1328 起；句子在栏内偏右 */
+/** 一份"典型宽屏"几何：PDF 栏 0~1328，右侧面板 1328 起；1.6.8 起工具条是 96px 竖条 */
 const base = {
   anchorLeft: 300, anchorWidth: 400, anchorHeight: 16,
   pageLeft: 60, viewTop: 400,
   paneLeft: 0, paneRight: 1328, paneRightLimit: 1328,
-  barW: 280, barH: 34, winW: 1858, winH: 900
+  barW: 96, barH: 210, winW: 1858, winH: 900
+};
+/** 断言：工具条与选中句之间至少留了 GAP，绝不压字 */
+const GAP = 10;
+const noOverlap = (r, g) => {
+  const aL = g.pageLeft + g.anchorLeft;
+  const aR = aL + g.anchorWidth;
+  return r.left + g.barW <= aL - GAP + 0.5 || r.left >= aR + GAP - 0.5;
 };
 
 console.log('===== 工具条定位 =====');
@@ -49,23 +56,28 @@ console.log('===== 工具条定位 =====');
     `top=${r.top}`);
 }
 {
-  // 句子明显偏右（anchorMid 离右边界更近）→ 停右侧边缘
-  const r = API.computeFocusBarPlacement({ ...base, anchorLeft: 560, anchorWidth: 400 });
-  check('句子偏右时贴到可用右边界', r.left + base.barW + 12 === base.paneRightLimit, `left=${r.left} 右边界=${base.paneRightLimit}`);
+  // 句子明显偏右 → 停右侧（且必须让开句子，不能压字）
+  const g = { ...base, anchorLeft: 560, anchorWidth: 400 };
+  const r = API.computeFocusBarPlacement(g);
+  check('句子偏右时停右侧', r.left > g.pageLeft + g.anchorLeft, `left=${r.left}`);
+  check('偏右时也不压住句子', noOverlap(r, g), `left=${r.left} barW=${g.barW}`);
+}
+{
+  // 句子居中（两侧一样宽）→ 取左侧页边距，且必须让开句子
+  const r = API.computeFocusBarPlacement(base);
+  check('句子居中时取左侧页边距', r.left === base.paneLeft + 12, `left=${r.left}`);
+  check('居中时也不压住句子', noOverlap(r, base), `left=${r.left}`);
 }
 {
   /*
-   * 句子居中（两侧一样宽）→ 取左侧。
-   * 理由：左边缘是**页面左侧页边距**（纯空白）；右边缘在窄窗口下会顶到译文面板，
-   * 靠左更稳。要改这条行为必须同时改测试，不能让"压在正上方"那种位置悄悄回来。
+   * 句子紧贴左边（pageLeft 60 + anchorLeft 10 = 视口 x=70）：页边距只有 70px，
+   * 扣掉 GAP 后剩 60px < 96px 条宽 —— **几何上不可能完全让开**。
+   * 这时的正确行为是"尽可能靠左（夹角最小）+ 绝不溢出视口"，
+   * 而不是硬把条推到句子右边（那会把它甩到半个屏幕外，离用户视线更远）。
    */
-  const r = API.computeFocusBarPlacement(base);
-  check('句子居中时取左侧页边距', r.left === base.paneLeft + 12, `left=${r.left}`);
-}
-{
-  // 句子偏左 → 贴左边缘
-  const r = API.computeFocusBarPlacement({ ...base, anchorLeft: 10, anchorWidth: 120 });
-  check('句子偏左时贴到左边缘', r.left === 12, `left=${r.left}`);
+  const g = { ...base, anchorLeft: 10, anchorWidth: 400 };
+  const r = API.computeFocusBarPlacement(g);
+  check('页边距放不下时尽可能靠左且不出视口', r.left >= 4 && r.left <= 10, `left=${r.left}`);
 }
 {
   // 右侧面板占掉一大块 → 可用右边界要收缩到面板左边缘，不能压面板
@@ -75,7 +87,7 @@ console.log('===== 工具条定位 =====');
 {
   // 可用宽度不够放整条 → 靠左，保证整条可见
   const r = API.computeFocusBarPlacement({ ...base, paneRightLimit: 200, anchorLeft: 150, anchorWidth: 40 });
-  check('可用宽度不足时仍保证整条可见', r.left >= 12 && r.left + base.barW <= base.winW, `left=${r.left}`);
+  check('可用宽度不足时仍保证整条可见', r.left >= 4 && r.left + base.barW <= base.winW, `left=${r.left}`);
 }
 {
   // 顶部/底部夹取：句子贴近顶栏
@@ -87,7 +99,20 @@ console.log('===== 工具条定位 =====');
 {
   // 窗口很窄：仍然整条在窗口内
   const r = API.computeFocusBarPlacement({ ...base, winW: 420, paneRight: 420, paneRightLimit: 420, anchorLeft: 200 });
-  check('窄窗口下整条仍在窗口内', r.left >= 12 && r.left + base.barW <= 420, `left=${r.left}`);
+  check('窄窗口下整条仍在窗口内', r.left >= 4 && r.left + base.barW <= 420, `left=${r.left}`);
+}
+{
+  /*
+   * 【1.6.8 的硬要求：竖条必须真的窄】
+   * 用户反馈"太长了，遮住左右两边的字，弄窄一点、高一点"。
+   * 这里直接钉住"窄"这个指标——宽度不得超过 120px。要改宽必须同时改这条测试。
+   */
+  const css = require('fs').readFileSync(require('path').join(__dirname, '..', 'media', 'viewer.css'), 'utf8');
+  const m = /\.para-focus-bar\s*\{[\s\S]*?width:\s*(\d+)px/.exec(css);
+  const w = m ? Number(m[1]) : 0;
+  check('工具条是窄竖条（CSS 宽度 ≤120px）', w > 0 && w <= 120, `width=${w}`);
+  const col = /\.para-focus-bar\s*\{[\s\S]*?flex-direction:\s*column/.test(css);
+  check('工具条是纵向布局（按钮竖排）', col);
 }
 {
   /*

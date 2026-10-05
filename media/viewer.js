@@ -303,14 +303,21 @@
       focusBar.id = 'paraFocusBar';
       focusBar.className = 'para-focus-bar';
       focusBar.style.display = 'none';
+      /*
+       * 竖条布局：标签与关闭按钮挤在头顶一行，动作按钮纵向排开。
+       * 这样横向只占约 96px（页边距量级），不会再横着压住正文——见 viewer.css 里
+       * `.para-focus-bar` 的注释（用户反馈"太长了、遮住左右两边的字"）。
+       */
       focusBar.innerHTML = `
-        <span class="focus-bar-label" id="focusBarLabel">当前段落</span>
+        <div class="focus-bar-head">
+          <span class="focus-bar-label" id="focusBarLabel">当前段落</span>
+          <button id="btnCloseFocusBar" class="focus-close-btn" title="关闭">&times;</button>
+        </div>
         <button id="btnFocusHighlight" class="focus-action-btn" title="为此段落/句子添加高亮 (快捷键: H)">高亮</button>
         <button id="btnFocusNote" class="focus-action-btn" title="为此段落添加批注心得 (快捷键: N)">批注</button>
         <button id="btnFocusTranslate" class="focus-action-btn" title="查看对应中文译文 (快捷键: T)">翻译</button>
         <button id="btnFocusCopy" class="focus-action-btn" title="复制当前段落文本 (快捷键: C)">复制</button>
         <button id="btnFocusAi" class="focus-action-btn focus-ai-btn" title="就当前段落向AI导师提问 (快捷键: Q)">问AI</button>
-        <button id="btnCloseFocusBar" class="focus-close-btn" title="关闭">&times;</button>
       `;
       document.body.appendChild(focusBar);
     }
@@ -3744,6 +3751,9 @@
       winW, winH
     } = geom;
     const anchorMid = pageLeft + anchorLeft + anchorWidth / 2;
+    // 选中句在**视口坐标**下的左右边缘（pageLeft 是页面元素的视口 x）
+    const anchorLeftView = pageLeft + anchorLeft;
+    const anchorRight = anchorLeftView + anchorWidth;
     const EDGE = 12;
     const roomLeft = anchorMid - paneLeft;
     const roomRight = paneRightLimit - anchorMid;
@@ -3760,12 +3770,30 @@
     if (fitsRight && !fitsLeft) useRight = true;
     else if (fitsLeft && !fitsRight) useRight = false;
     else useRight = roomRight <= roomLeft;
-    const left = useRight ? (paneRightLimit - barW - EDGE) : (paneLeft + EDGE);
+    const GAP = 10; // 工具条与选中文字之间必须留出的空隙（不能贴着字）
+
+    /*
+     * 选定一侧之后，再按"别贴到字上"收敛一次：
+     *   靠左 → 整条的右边缘必须在句子左边缘左侧 GAP 之外；
+     *   靠右 → 整条的左边缘必须在句子右边缘右侧 GAP 之外。
+     * 因为工具条已经改成 96px 的竖条，页边距通常放得下；
+     * 实在放不下（极窄窗口）就让它稍微出界，也不许压字——
+     * 与"按钮被裁掉一点点"相比，"压住用户正在读的字"是严重得多的体验问题。
+     */
+    let left = useRight ? (paneRightLimit - barW - EDGE) : (paneLeft + EDGE);
+    if (useRight) {
+      const minLeft = anchorRight + GAP;
+      if (left < minLeft) left = minLeft;
+    } else {
+      const maxLeft = anchorLeftView - GAP - barW;
+      if (left > maxLeft) left = maxLeft;
+    }
     // 纵向对齐到这一句的中间（不再减去条高往上顶）
     let top = viewTop + anchorHeight / 2 - barH / 2;
     void paneRight;
 
-    const clampedLeft = Math.max(12, Math.min(winW - barW - 20, left));
+    // 左右夹取：左边界允许贴近 4（竖条很窄，出界也只裁掉一点边），右侧不许溢出
+    const clampedLeft = Math.max(4, Math.min(winW - barW - 20, left));
     const clampedTop = Math.max(50, Math.min(winH - barH - 12, top));
     return { left: Math.round(clampedLeft), top: Math.round(clampedTop) };
   }
