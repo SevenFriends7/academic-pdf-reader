@@ -3720,6 +3720,56 @@
    * 而原 PDF 里的高亮笔触是画在页面坐标系里的、会跟着滚——两者当场脱节。
    * 现在滚动/缩放时都按同一套公式重算；锚点完全移出可视区则隐藏，滚回来自动恢复。
    */
+  /**
+   * 计算"点句子浮出的工具条"该停在哪。
+   *
+   * 【为什么不再默认停在句子正上方】用户反馈"点击句子弹出的卡片还是在上方"。
+   * 旧规则是 `top = 句子顶部 - 条高 - 10`，即**故意压在选中句子的上一行**上；
+   * 而这条工具条宽约 280px、含 6 个按钮，正文行距只有十几像素——
+   * 无论怎么微调都会遮住上一行文字。
+   *
+   * 新规则：**贴到 PDF 阅读区的一侧边缘**，纵向对齐到这一句。
+   * 选哪侧：先看哪边离阅读区边缘更近（句子偏左就靠左、偏右就靠右）；
+   * 右侧还要避开译文/笔记面板（`.right-pane`），否则等于"跑到别的区域去压住译文"。
+   *
+   * 抽成纯函数是为了能写回归测试：这段逻辑只看数字，一旦被改回"压在正上方"，
+   * 测试会立刻失败（真实 DOM 里的表现没法用 jsdom 量，只能把算法本身钉住）。
+   *
+   * @returns {{left:number, top:number}}
+   */
+  function computeFocusBarPlacement(geom) {
+    const {
+      anchorLeft, anchorWidth, anchorHeight, pageLeft, viewTop,
+      paneLeft, paneRight, paneRightLimit, barW, barH,
+      winW, winH
+    } = geom;
+    const anchorMid = pageLeft + anchorLeft + anchorWidth / 2;
+    const EDGE = 12;
+    const roomLeft = anchorMid - paneLeft;
+    const roomRight = paneRightLimit - anchorMid;
+    // 贴着某一侧时，整条能不能放下
+    const fitsRight = (paneRightLimit - EDGE - barW) >= paneLeft;
+    const fitsLeft = (paneLeft + EDGE + barW) <= paneRightLimit;
+    /*
+     * 选边：
+     *   ① 只有一侧放得下 → 用那一侧；
+     *   ② 两侧都放得下 → 用**离句子更近**的一侧；正好居中（两边一样宽）时取右侧，
+     *      因为阅读区右缘本来就是空白，靠右边不会挡住正文行首。
+     */
+    let useRight;
+    if (fitsRight && !fitsLeft) useRight = true;
+    else if (fitsLeft && !fitsRight) useRight = false;
+    else useRight = roomRight <= roomLeft;
+    const left = useRight ? (paneRightLimit - barW - EDGE) : (paneLeft + EDGE);
+    // 纵向对齐到这一句的中间（不再减去条高往上顶）
+    let top = viewTop + anchorHeight / 2 - barH / 2;
+    void paneRight;
+
+    const clampedLeft = Math.max(12, Math.min(winW - barW - 20, left));
+    const clampedTop = Math.max(50, Math.min(winH - barH - 12, top));
+    return { left: Math.round(clampedLeft), top: Math.round(clampedTop) };
+  }
+
   function positionParaFocusBar() {
     const a = activeFocusAnchor;
     const bar = dom.paraFocusBar;
@@ -3744,6 +3794,14 @@
     const viewTop = pageRect.top + anchorRect.top;
     const viewBottom = viewTop + anchorRect.height;
 
+    // 可停靠范围：PDF 阅读区，右侧还要让开译文/笔记面板（否则会压住译文）
+    const paneRect = dom.pdfViewerContainer
+      ? dom.pdfViewerContainer.getBoundingClientRect()
+      : { left: 0, right: window.innerWidth };
+    const rpEl = document.querySelector('.right-pane');
+    const rpRect = rpEl ? rpEl.getBoundingClientRect() : null;
+    const paneRightLimit = rpRect && rpRect.width > 0 ? Math.min(paneRect.right, rpRect.left) : paneRect.right;
+
     // 可视区：优先用 PDF 滚动容器，拿不到就退回窗口
     const cRect = dom.pdfViewerContainer
       ? dom.pdfViewerContainer.getBoundingClientRect()
@@ -3759,12 +3817,22 @@
     const barW = bar.offsetWidth || 280;
     const barH = bar.offsetHeight || 34;
 
-    let left = pageRect.left + anchorRect.left + anchorRect.width / 2 - barW / 2;
-    let top = viewTop - barH - 10;
-    if (top < 58) top = viewBottom + 10;
-
-    left = Math.max(12, Math.min(window.innerWidth - barW - 20, left));
-    top = Math.max(50, Math.min(window.innerHeight - barH - 12, top));
+    const anchored = computeFocusBarPlacement({
+      anchorLeft: anchorRect.left,
+      anchorWidth: anchorRect.width,
+      anchorHeight: anchorRect.height,
+      pageLeft: pageRect.left,
+      viewTop,
+      paneLeft: paneRect.left,
+      paneRight: paneRect.right,
+      paneRightLimit,
+      barW,
+      barH,
+      winW: window.innerWidth,
+      winH: window.innerHeight
+    });
+    const left = anchored.left;
+    const top = anchored.top;
 
     bar.style.left = `${Math.round(left)}px`;
     bar.style.top = `${Math.round(top)}px`;
