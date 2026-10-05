@@ -3359,7 +3359,19 @@
     spanMap.forEach(({ minOffset, maxOffset }, span) => {
       const textNode = span.firstChild || span;
       const nodeLen = textNode.length !== undefined ? textNode.length : (textNode.textContent || '').length;
-      if (nodeLen === 0) return;
+      // 公式 span 没有文本节点 → 用 span 自己的矩形整块高光（否则公式那块永远没有高光）
+      if (nodeLen === 0) {
+        const own = span.getBoundingClientRect ? span.getBoundingClientRect() : null;
+        if (own && own.width > 1 && own.height > 1) {
+          rects.push({
+            left: Math.round(own.left - wrapperRect.left),
+            top: Math.round(own.top - wrapperRect.top),
+            width: Math.round(own.width),
+            height: Math.round(own.height)
+          });
+        }
+        return;
+      }
 
       const safeStart = Math.min(Math.max(0, minOffset), nodeLen);
       const safeEnd = Math.min(Math.max(safeStart, maxOffset + 1), nodeLen);
@@ -3411,7 +3423,24 @@
     spanMap.forEach(({ minOffset, maxOffset }, span) => {
       const textNode = span.firstChild || span;
       const nodeLen = textNode.length !== undefined ? textNode.length : (textNode.textContent || '').length;
-      if (nodeLen === 0) return;
+      /*
+       * 【公式 span 没有文本节点，必须整块高光】
+       * 数学 item 在文本层里是**零宽字形**（帽子、上下标）甚至完全空的 div，
+       * 于是 `nodeLen === 0` 直接 return —— 表现出来就是"公式那块没有高光"（用户反馈）。
+       * 这里退化成"用这个 span 自己的矩形"，把整块公式一起盖上。
+       */
+      if (nodeLen === 0) {
+        const own = span.getBoundingClientRect ? span.getBoundingClientRect() : null;
+        if (own && own.width > 1 && own.height > 1) {
+          rects.push({
+            left: Math.round(own.left - wrapperRect.left),
+            top: Math.round(own.top - wrapperRect.top),
+            width: Math.round(own.width),
+            height: Math.round(own.height)
+          });
+        }
+        return;
+      }
 
       const safeStart = Math.min(Math.max(0, minOffset), nodeLen);
       const safeEnd = Math.min(Math.max(safeStart, maxOffset + 1), nodeLen);
@@ -7246,6 +7275,25 @@
         }
       }
 
+      /*
+       * 【优先停到右侧（译文/笔记）面板上，别压着正文】
+       * 用户反馈"这个弹出的卡片能不能放在左右两边，现在这样有点遮挡上面的文字了"。
+       * 旧逻辑只做"夹进视口"，宽屏下选中的正文在中间偏右，弹窗就正好盖在正文上。
+       * 右侧面板本来就在看译文、且被弹窗遮住不影响阅读原文，所以：
+       *   ① 有右侧面板且能放下 → 整块放到面板里（横向居中于面板）
+       *   ② 放不下且选中块左边还有位置 → 停到选中块的左侧
+       *   ③ 都不行 → 保持原来的居中/夹取行为
+       */
+      const rightPane = document.querySelector('.right-pane');
+      const paneRect = rightPane ? rightPane.getBoundingClientRect() : null;
+      const GAP = 8;
+      if (paneRect && paneRect.width >= popW + 16) {
+        left = paneRect.left + (paneRect.width - popW) / 2;
+      } else if (anchorRect && anchorRect.width > 0 && anchorRect.left - popW - GAP >= 12) {
+        left = anchorRect.left - popW - GAP;
+        top = Math.max(52, Math.min(window.innerHeight - popH - 16, anchorRect.top - 24));
+      }
+
       left = Math.max(16, Math.min(window.innerWidth - popW - 16, left));
       top = Math.max(52, Math.min(window.innerHeight - popH - 16, top));
 
@@ -9836,10 +9884,27 @@ let aiPresetQuestion = '';
   function renderZhWithMath(text, para) {
     const src = String(text == null ? '' : text);
     if (!src) return '';
-    const table = (para && Array.isArray(para.localMath) ? para.localMath : [])
-      .map(x => ({ text: String(x && x.text ? x.text : ''), latex: String(x && x.latex ? x.latex : '').trim() }))
-      .filter(x => x.latex);
     const inline = para && Array.isArray(para.visionInline) ? para.visionInline : [];
+    /*
+     * 【两张表都要用，而且 visionInline 才是 ⟦…⟧ 的天然匹配项】
+     * `localMath` 里存的是"从原段落切出来的字符"，而**视觉模型的 `find` 就是残渣写法本身**
+     * （实测 `{find:"Y ̂ t", latex:"\\hat{Y}_t"}` 与模型抄进 ⟦…⟧ 的内容逐字一致）。
+     * 只查 localMath 会漏掉这层——用户截图里的 `maskY\hat t` 就是这么来的：
+     * 那一页段落 `localMath` 是空数组，于是退化成"把残渣当字面 LaTeX 渲染"，
+     * 而 `\hat` 在文本模式里被 KaTeX 当成 `\h`（水平间距）+ "at"，渲染出 `maskY t`。
+     */
+    const pairs = [];
+    inline.forEach(x => {
+      const f = String(x && x.find ? x.find : '').trim();
+      const l = String(x && x.latex ? x.latex : '').trim();
+      if (f && l) pairs.push({ key: residueKeyOf(f), latex: l });
+    });
+    (para && Array.isArray(para.localMath) ? para.localMath : []).forEach(x => {
+      const t = String(x && x.text ? x.text : '').trim();
+      const l = String(x && x.latex ? x.latex : '').trim();
+      if (t && l) pairs.push({ key: residueKeyOf(t), latex: l });
+    });
+
     /*
      * 【绝不能把"已渲染好的公式 HTML"再喂回 renderEnTextHtml】
      * 那条路径会先 escapeHtml 再找 `$...$`，于是拼进去的 `<span class="katex">`
@@ -9857,10 +9922,10 @@ let aiPresetQuestion = '';
       const inner = m[1];
       const pick = (() => {
         const k = residueKeyOf(inner);
-        const exact = table.find(x => residueKeyOf(x.text) === k);
+        const exact = pairs.find(x => x.key === k);
         if (exact) return exact.latex;
-        if (table.length) {
-          const byOrder = table[hit] || table[table.length - 1];
+        if (pairs.length) {
+          const byOrder = pairs[hit] || pairs[pairs.length - 1];
           return byOrder ? byOrder.latex : '';
         }
         return '';
@@ -9871,9 +9936,15 @@ let aiPresetQuestion = '';
           html: `<span class="local-math" data-math-source="local-zh" title="公式（本机按 PDF 字体与位置精确抽取）">${renderVisionMathHtml(pick, false)}</span>`
         });
       } else {
-        // 表里没有这条：把残渣**原样排版**（走字面 LaTeX），绝不丢掉内容
+        /*
+         * 表里没有这条：把残渣**按纯文字排版**。
+         * 【绝不能再走数学模式】`\hat` 在文本模式里会被 KaTeX 吃掉成 `\h`+`at`，
+         * 用户看到的就是 `maskY t`（实测）。残渣本来就该长得像残渣，
+         * 用等宽文字显示比"渲染成一条错的公式"诚实得多。
+         */
+        const safe = escHtml(inner).replace(/\s+/g, ' ');
         pieces.push({
-          html: `<span class="vision-residue-math" title="这条公式本地没抽到规范写法，按原文残渣显示">${renderVisionMathHtml(residueToLiteralLatex(inner), false)}</span>`
+          html: `<span class="vision-residue-math" title="这条公式本地没抽到规范写法，按原文残渣显示">${safe}</span>`
         });
       }
       cursor = m.index + m[0].length;
@@ -9883,6 +9954,13 @@ let aiPresetQuestion = '';
     return pieces.map(p => (p.html !== undefined ? p.html : renderEnTextHtml(p.text, inline))).join('');
   }
 
+  /** 极简 HTML 转义（viewer 里已有多份同名实现，这里给本函数用一份局部的，避免依赖顺序） */
+  function escHtml(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
   /**
    * 英文原文里的行内公式渲染（**只影响显示**：charMap 坐标与送翻译的原文都不变，
    * 所以划线高亮、点中文跳英文、逐句对齐一律不受影响）。
@@ -10289,7 +10367,16 @@ let aiPresetQuestion = '';
     wrap.scrollTop = wrap.scrollHeight;
   }
 
-  /** 流式增量：只更新最后一条回答，避免整段对话重排 */
+  /**
+   * "是否跟随回答自动滚动"。
+   * 提问时按用户当时的位置决定（见发起提问处），流式过程中只要用户自己往上滚过就立刻停掉，
+   * 滚回底部又会自动恢复——"想跟着看"和"想按住回看"两种情况都不会打架。
+   * 声明放在 updateStreamingTurn 之前：`let` 不提升，放后面会命中 TDZ。
+   */
+  let aiStickToBottom = true;
+
+  /**
+   * 流式增量：只更新最后一条回答，避免整段对话重排 */
   function updateStreamingTurn() {
     const wrap = dom.aiModalTranscript || document.getElementById('aiModalTranscript');
     if (!wrap) return;
@@ -10298,10 +10385,20 @@ let aiPresetQuestion = '';
     const body = el.querySelector('.ai-turn-body');
     if (!body) return;
     const text = aiStreamingTurn ? aiStreamingTurn.text : '';
+    /*
+     * 【不要再无条件吸到底部】用户明确反馈"AI 回答问题的时候不要跟随回答滚动"。
+     * 旧写法每次都 `scrollTop = scrollHeight`，回答一边生成一边把视口往下拽，
+     * 用户想回看上面刚读过的内容根本按不住。
+     * 现在的规矩（聊天界面的通行做法）：
+     *   ① 提问时就记下用户当时是不是贴在底部（aiStickToBottom）；
+     *   ② 流式过程中用户自己往上滚过 → 立刻不再跟随（阈值 120 给"差一点点"留余量）。
+     * 所以要在改动内容**之前**测量"改前是不是在底部"。
+     */
+    const stick = aiStickToBottom && wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 120;
     body.innerHTML = text
       ? renderMarkdownToHtml(text)
       : '<span class="ai-typing"><span></span><span></span><span></span></span>';
-    wrap.scrollTop = wrap.scrollHeight;
+    if (stick) wrap.scrollTop = wrap.scrollHeight;
   }
 
   let aiStreamingTurn = null;
@@ -10648,6 +10745,16 @@ let aiPresetQuestion = '';
     }
 
     if (input) input.value = '';
+
+    /*
+     * 记下"这次提问时用户是不是贴在对话底部"。
+     * 有历史记录时，用户多半是在回看旧回答（不在底部）→ 这次回答就**不要**再跟着滚，
+     * 否则会把他正在看的位置一路拽下去（用户反馈"不要跟随回答滚动"）。
+     */
+    {
+      const wrap = dom.aiModalTranscript || document.getElementById('aiModalTranscript');
+      aiStickToBottom = !wrap || wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 40;
+    }
 
     const history = buildAiHistory();
     aiConversation.push({ role: 'user', text: question });

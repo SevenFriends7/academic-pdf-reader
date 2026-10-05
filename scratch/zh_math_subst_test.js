@@ -40,7 +40,7 @@ let src = '';
 const need = ['looksLikeMath', 'looksLikeInlineMath', 'canRenderMath', 'decodeMathEntities', 'renderMathSpan',
   'residueToLatex', 'renderTextWithMath', 'normalizeForMatch', 'bigramDice', 'locateAnchorIndex', 'locateAnchorRange',
   'looksLikeMathResidue', 'renderVisionMathHtml', 'renderEnTextHtml', 'residueToLiteralLatex', 'residueKeyOf',
-  'renderZhWithMath'];
+  'escHtml', 'renderZhWithMath'];
 need.forEach(h => { try { src += grab(h) + '\n'; } catch (e) { console.log(`（跳过 ${h}）`); } });
 const API = new Function('escapeHtml', 'console', `${src}
   return { renderZhWithMath };`)(esc, { log() {}, warn() {}, error() {} });
@@ -113,6 +113,33 @@ console.log('===== 译文公式替换 =====');
   const zh = '这是一段没有公式的中文译文。';
   const html = API.renderZhWithMath(zh, { localMath: [], visionInline: [] });
   check('无公式译文原样输出', plain(html) === zh, plain(html));
+}
+
+{
+  /*
+   * 【用户截图的真实样本】cycle 第 5 页 id=0：
+   * 模型抄下来的是 `⟦Y ̂ t⟧`（帽子是组合字符 U+0302），而 **localMath 是空数组**，
+   * 只有 visionInline 里有 `{find:"Y ̂ t", latex:"\\hat{Y}_t"}`。
+   * 旧实现只查 localMath → 退化成"把残渣当字面 LaTeX 渲染"，
+   * 而 `\hat` 在数学模式里会被 KaTeX 当成 `\h`（水平间距）+ "at"，
+   * 界面上就出现 `maskY t`（用户截图右边的样子）。
+   */
+  const zh = '更准确的预测掩码 ⟦Y ̂ t⟧ 会为 ⟦Y1⟧ 带来更小的重建误差。';
+  const html = API.renderZhWithMath(zh, {
+    localMath: [],
+    visionInline: [{ find: 'Y ̂ t', latex: '\\hat{Y}_t' }, { find: 'Y 1', latex: 'Y_1' }]
+  });
+  const text = plain(html);
+  check('残渣 ⟦Y ̂ t⟧ 配到了 visionInline 的 \\hat{Y}_t（样本来自用户截图）',
+    html.includes('data-math-source="local-zh"') && html.includes('class="katex"'), text.slice(0, 80));
+  check('没有把 \\hat 渲染成字面 "hat" 文本', !/hat/.test(text.replace(/<[^>]*>/g, '')), text.slice(0, 90));
+  check('⟦Y1⟧ 也配到了 Y_1', (html.match(/class="katex"/g) || []).length >= 2, `KaTeX 数=${(html.match(/class="katex"/g) || []).length}`);
+}
+{
+  // 表里完全没有这条：退化成**纯文字**（等宽），绝不进数学模式（否则 \hat 会被吃掉）
+  const html = API.renderZhWithMath('这里 ⟦\\hat{Y}_t⟧ 没有表。', { localMath: [], visionInline: [] });
+  check('表里没有时退化成纯文字、不进数学模式',
+    html.includes('vision-residue-math') && !html.includes('class="katex"'), html.slice(0, 140));
 }
 
 console.log(`\n===== 结果: ${pass} 通过 / ${fail} 失败 =====`);

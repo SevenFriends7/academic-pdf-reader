@@ -2410,6 +2410,8 @@ body.theme-paper-dark .fluid-badge-zh {
   position: fixed;
   z-index: 999999;
   width: 380px;
+  /* 窄窗口（或右侧面板很窄）时不许超出可视宽度——否则又被夹回正文上面去 */
+  max-width: calc(100vw - 32px);
   background-color: var(--floating-bar-bg, #ffffff);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
