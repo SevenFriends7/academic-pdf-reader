@@ -9893,7 +9893,24 @@ let aiPresetQuestion = '';
    * 按"转义文字 + 塞回公式"处理；只有纯公式才整条进数学模式。
    */
   function renderVisionMathHtml(tex, displayMode) {
-    const src = String(tex == null ? '' : tex).trim();
+    /*
+     * 【必须先还原 HTML 实体，否则 KaTeX 会拒收、公式露出源码】
+     * 实测用户截图：译文里的 `Y_1` 在渲染管线里被 escapeHtml 成了 `Y&#95;1`
+     * （译文先进 AI 弹窗的 Markdown 转义再回填），KaTeX 不认 `&#95;`，
+     * `throwOnError:false` 就把它当普通文本排出来——用户看到的是 `Y_1` 字面、
+     * 以及 `Y\hat t` 这种"命令+变量"原样显示（同一个原因：`&#95;` 让整条式子解析失败）。
+     * 所以进 KaTeX 之前先把实体还原回 `_ { } \ & % #` 这些真实字符。
+     */
+    const raw = String(tex == null ? '' : tex)
+      .replace(/&#x([0-9a-f]+);/gi, (m, h) => String.fromCodePoint(parseInt(h, 16)))
+      .replace(/&#(\d+);/g, (m, d) => String.fromCodePoint(Number(d)))
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'")
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&');
+    const src = raw.trim();
     if (!src) return '';
     if (/\$|\\\(|\\\[/.test(src)) return renderTextWithMath(src);
     return renderMathSpan(src, displayMode);
