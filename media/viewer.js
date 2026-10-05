@@ -9965,6 +9965,25 @@ let aiPresetQuestion = '';
   }
 
   /**
+   * 括号里的东西**看起来像不像一条公式残渣**。
+   *
+   * 【为什么需要它】`⟦…⟧` 是提示词约定给"公式"用的，但模型偶尔会把表格、整行数据
+   * 也括起来（实测 cycle 第 6 页的整张表格）。若不加判断就按顺序给它配公式，
+   * 会把一张表格变成一串乱码公式——**比不替换坏得多**。
+   * 判据（都在真实样本上定过）：
+   *   ① 长度：公式残渣通常很短（`Y ̂ t`、`∈ R HW × C`），超过 24 个字符的几乎都是表格/正文；
+   *   ② 空格占比：表格是"每列一个值"，空格极密集；
+   *   ③ 必须含有数学字符（字母/数字/希腊字母/常见算子或括号），纯标点不算。
+   */
+  function looksLikeFormulaResidue(s) {
+    const t = String(s == null ? '' : s).trim();
+    if (!t || t.length > 24) return false;
+    const spaces = (t.match(/\s/g) || []).length;
+    if (spaces > t.length * 0.5) return false;
+    return /[A-Za-z0-9\u0370-\u03ff∈∉⊂⊃∪∩∑∏∫∂∇√≈≤≥≠×÷⋅+\-*/^_{}[\]()|<>′=]/.test(t);
+  }
+
+  /**
    * 译文里的公式：把模型抄下来的残渣换成**本地数学层抽出的规范 LaTeX**。
    *
    * 【为什么必须这么做】旧提示词要求模型"把公式转写成 LaTeX"，实测模型会转错——
@@ -10010,42 +10029,70 @@ let aiPresetQuestion = '';
      */
     const pieces = [];
     let cursor = 0;
-    let hit = 0;
-    const re = /⟦([^⟧]{1,200})⟧/g;
-    let m;
-    while ((m = re.exec(src))) {
-      if (m.index > cursor) pieces.push({ text: src.slice(cursor, m.index) });
-      const inner = m[1];
-      const pick = (() => {
+    const OPEN = '\u27e6';
+    const CLOSE = '\u27e7';
+    /*
+     * 【为什么手写扫描而不是一条正则】旧实现用 `/⟦([^⟧]{1,200})⟧/g`，
+     * 其中 200 是"公式不会太长"的假设——实测 cycle 第 6 页模型把整张表格括了起来
+     * （远超 200 字），于是**正则压根不匹配**，两个括号原样留在界面上，
+     * 用户看到的是 `⟦OL J (%) F (%) … 64.8 …⟧` 这么一坨协议符号。
+     * 现在改成"只要有开括号就一定处理到"：
+     *   找开括号 → 找它后面的闭括号；
+     *   · 找不到闭括号 → 直接把开括号删掉（不让协议符号露出来）
+     *   · 内容太短或长得不像公式 → 去掉括号、按原文文字显示（表格就是表格）
+     *   · 否则按公式处理（精确匹配 → 唯一表项兜底 → 退化文字）
+     */
+    for (;;) {
+      const start = src.indexOf(OPEN, cursor);
+      if (start < 0) break;
+      const end = src.indexOf(CLOSE, start + 1);
+      if (start > cursor) pieces.push({ text: src.slice(cursor, start) });
+      if (end < 0) {
+        /*
+         * 只有开括号、没有闭括号（模型把括号截断了）：**没法知道公式到哪儿结束**，
+         * 所以不去猜内容——只把这个协议符号去掉，后面的文字照常显示。
+         * 这里必须 push 已累积的文字（否则开括号前面那段会被吞掉）。
+         */
+        pieces.push({ text: src.slice(cursor, start) });
+        cursor = start + 1;
+        continue;
+      }
+      const inner = src.slice(start + 1, end);
+      const asPlainText = (txt, why) => {
+        pieces.push({
+          html: `<span class="vision-residue-math" title="${why}">${escHtml(txt).replace(/\s+/g, ' ')}</span>`
+        });
+      };
+      if (!looksLikeFormulaResidue(inner)) {
+        // 表格/正文被误括：去掉括号，原样显示文字（不要留给用户看 ⟦⟧）
+        asPlainText(inner, '这段不是公式，按原文显示');
+      } else {
         const k = residueKeyOf(inner);
         const exact = pairs.find(x => x.key === k);
-        if (exact) return exact.latex;
-        if (pairs.length) {
-          const byOrder = pairs[hit] || pairs[pairs.length - 1];
-          return byOrder ? byOrder.latex : '';
+        const latex = exact ? exact.latex : (pairs.length === 1 ? pairs[0].latex : '');
+        if (latex) {
+          pieces.push({
+            html: `<span class="local-math" data-math-source="local-zh" title="公式（本机按 PDF 字体与位置精确抽取）">${renderVisionMathHtml(latex, false)}</span>`
+          });
+        } else {
+          /*
+           * 表里没有这条：按**纯文字**排版（并去掉括号）。
+           * 【为什么不能走数学模式】`\hat` 在数学模式里会被 KaTeX 当成 `\h` + "at"，
+           * 用户看到 `maskY t`（实测）。残渣就该长得像残渣，用等宽文字显示最诚实。
+           */
+          asPlainText(inner, '这条公式本地没抽到规范写法，按原文残渣显示');
         }
-        return '';
-      })();
-      hit++;
-      if (pick) {
-        pieces.push({
-          html: `<span class="local-math" data-math-source="local-zh" title="公式（本机按 PDF 字体与位置精确抽取）">${renderVisionMathHtml(pick, false)}</span>`
-        });
-      } else {
-        /*
-         * 表里没有这条：把残渣**按纯文字排版**。
-         * 【绝不能再走数学模式】`\hat` 在文本模式里会被 KaTeX 吃掉成 `\h`+`at`，
-         * 用户看到的就是 `maskY t`（实测）。残渣本来就该长得像残渣，
-         * 用等宽文字显示比"渲染成一条错的公式"诚实得多。
-         */
-        const safe = escHtml(inner).replace(/\s+/g, ' ');
-        pieces.push({
-          html: `<span class="vision-residue-math" title="这条公式本地没抽到规范写法，按原文残渣显示">${safe}</span>`
-        });
       }
-      cursor = m.index + m[0].length;
+      cursor = end + 1;
     }
     if (cursor < src.length) pieces.push({ text: src.slice(cursor) });
+    /*
+     * 【必须用拼好的 pieces 拼回去，不能退回 renderEnTextHtml(src)】
+     * 这里有分支会改动原文（去掉孤儿 `⟦`、拆出纯文字片段）。旧写法在"没有任何公式片段"时
+     * 直接 `renderEnTextHtml(src, ...)`——那是**原始 src**，刚才去掉的协议符号又原样回来了
+     * （实测 `这里 ⟦半截的公式 然后正常文字` 里的 `⟦` 就是这么漏出来的）。
+     * 正确做法：pieces 拼起来就是结果；只要 pieces 非空就一定走拼接路径。
+     */
     if (pieces.length === 0) return renderEnTextHtml(src, inline);
     return pieces.map(p => (p.html !== undefined ? p.html : renderEnTextHtml(p.text, inline))).join('');
   }

@@ -40,7 +40,7 @@ let src = '';
 const need = ['looksLikeMath', 'looksLikeInlineMath', 'canRenderMath', 'decodeMathEntities', 'renderMathSpan',
   'residueToLatex', 'renderTextWithMath', 'normalizeForMatch', 'bigramDice', 'locateAnchorIndex', 'locateAnchorRange',
   'looksLikeMathResidue', 'renderVisionMathHtml', 'renderEnTextHtml', 'residueToLiteralLatex', 'residueKeyOf',
-  'escHtml', 'renderZhWithMath'];
+  'looksLikeFormulaResidue', 'escHtml', 'renderZhWithMath'];
 need.forEach(h => { try { src += grab(h) + '\n'; } catch (e) { console.log(`（跳过 ${h}）`); } });
 const API = new Function('escapeHtml', 'console', `${src}
   return { renderZhWithMath };`)(esc, { log() {}, warn() {}, error() {} });
@@ -140,6 +140,38 @@ console.log('===== 译文公式替换 =====');
   const html = API.renderZhWithMath('这里 ⟦\\hat{Y}_t⟧ 没有表。', { localMath: [], visionInline: [] });
   check('表里没有时退化成纯文字、不进数学模式',
     html.includes('vision-residue-math') && !html.includes('class="katex"'), html.slice(0, 140));
+}
+
+{
+  /*
+   * 【用户截图暴露的两个真 bug，都在这里钉住】
+   *
+   * ① 模型偶尔会把**整张表格**也括起来（cycle 第 6 页实测）：
+   *    `⟦OL J (%) F (%) J & F (%) FPSX 64.8 68.6 …⟧`，长达几百字。
+   *    旧实现的正则是 `/⟦([^⟧]{1,200})⟧/g`，**超过 200 字直接不匹配**，
+   *    结果两个括号原样留在界面上，用户看到一坨协议符号。
+   * ② 该段 localMath 里存的是单字符条目（`J`、`−` → `10^{-5}`），
+   *    若不判断"这像不像公式"就按顺序硬配，会把表格变成一串乱码公式。
+   */
+  const longTable = '验证集额外数据 ⟦' + Array.from({ length: 30 }, (_, i) => `X${i} 6${i}.8`).join(' ') + '⟧测试开发集';
+  const html = API.renderZhWithMath(longTable, {
+    localMath: [{ text: 'J', latex: 'J' }, { text: '−', latex: '10^{-5}' }],
+    visionInline: []
+  });
+  const text = plain(html);
+  check('超长（>200 字）的 ⟦…⟧ 也一定要被处理掉', !text.includes('⟦') && !text.includes('⟧'), text.slice(0, 80));
+  check('表格内容被误括时不硬配公式（不产生乱码公式）', !html.includes('class="katex"'), html.slice(0, 120));
+  check('表格原文不丢（去掉括号后照常显示）', text.includes('X0') && text.includes('测试开发集'), text.slice(0, 80));
+}
+{
+  /*
+   * 只有开括号、没有闭括号（模型把括号截断了）。
+   * 这时**没法知道公式到哪儿结束**，所以不去猜内容：只把协议符号去掉，原样保留文字。
+   * 注意 `⟦` 本身也是正文切段的一部分，去掉它之后文字要完整接上。
+   */
+  const html = API.renderZhWithMath('这里 ⟦半截的公式 然后正常文字', { localMath: [], visionInline: [] });
+  check('孤立的开括号不露给用户', !plain(html).includes('⟦'), plain(html).slice(0, 60));
+  check('孤括号后面的文字照常保留', plain(html).includes('然后正常文字'), plain(html).slice(0, 60));
 }
 
 console.log(`\n===== 结果: ${pass} 通过 / ${fail} 失败 =====`);
