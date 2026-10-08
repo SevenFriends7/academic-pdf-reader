@@ -7,7 +7,7 @@
                           "color":  "#0b578a",
                           "theme":  "dark"
                       },
-    "version":  "1.6.10",
+    "version":  "1.6.11",
     "publisher":  "paper-reader",
     "license":  "MIT",
     "repository":  {
@@ -288,6 +288,7 @@
                     "test:nonprose":  "node scratch/dstest/nonprose_fix_test.js",
                     "lint":  "npx --yes eslint@8 --no-eslintrc -c .eslintrc.json media/viewer.js",
                     "prevsix":  "node scratch/check_version.js",
+                    "test:migrate":  "npx tsc src/notesStorage.ts --outDir scratch/dstest/out-storage --module commonjs --target es2020 --skipLibCheck --esModuleInterop && node scratch/dstest/notes_migration_test.js",
                     "test:para":  "node scratch/para_rebuild_test.js",
                     "test:math":  "node scratch/math_layer_test.js",
                     "test:zhmath":  "node scratch/zh_math_subst_test.js",
