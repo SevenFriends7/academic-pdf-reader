@@ -13,7 +13,7 @@ npm install
 # 2. 编译代码
 npm run compile
 
-# 3. 一键打包并安装为 .vsix（会同时装到本机的 VS Code 与反重力 IDE）
+# 3. 一键打包并安装为 .vsix（自动装到本机的 VS Code）
 npm run package
 ```
 
@@ -23,7 +23,7 @@ npm run package
 | --- | --- |
 | `npm run compile` | 编译 `src/*.ts` → `dist/extension.js` |
 | `npm run watch` | 监听改动自动重编译（改 `src/` 时用） |
-| `npm run package` | **仅供本机安装**：打包 `*-local.vsix` 并装到本机两个 IDE |
+| `npm run package` | **仅供本机安装**：打包 `*-local.vsix` 并装到本机 VS Code |
 | `npm run vsix` | **用于上传商店**：用官方 `vsce` 打包标准 `.vsix` |
 | `npm run ls:pack` | 列出 `vsce` 实际会打包的文件（上传前自查） |
 
