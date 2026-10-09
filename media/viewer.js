@@ -1070,8 +1070,11 @@
         textContent.items.forEach((it, i) => {
           const div = textDivs[i];
           if (div) {
-            div._pdfX = it.transform[4];
-            div._pdfY = it.transform[5];
+            const m = it.transform || [1, 0, 0, 1, 0, 0];
+            const isRotated = Math.abs(m[1]) > 1e-3 || Math.abs(m[2]) > 1e-3 || m[0] === 0;
+            div._isRotated = isRotated;
+            div._pdfX = m[4];
+            div._pdfY = m[5];
             div._pdfH = it.height;
             div._pdfW = it.width;
             div._pdfIdx = i;
@@ -2056,6 +2059,14 @@
         if (/^\d+$/.test(t) && sh < 12) return false;
       }
 
+      // 过滤旋转/竖排文本（如 arXiv 边距水印、出版物边距标记，绝不能混入横排正文）
+      if (span._isRotated) {
+        const sx = span._pdfX !== undefined ? span._pdfX : 0;
+        if (sx < 45 || sx > pagePdfW - 45 || /arxiv|doi|copyright|licensed|rights\s+reserved/i.test(t)) {
+          return false;
+        }
+      }
+
       return true;
     });
 
@@ -2137,8 +2148,16 @@
         if (arr.length < 5) return 0;
         const s = [...arr].sort((a, b) => a - b);
         const med = s[Math.floor(s.length / 2)];
-        if (!(med > 0)) return 0;
-        return arr.filter(e => Math.abs(e - med) <= med * 0.08).length / arr.length;
+        const tfMed = med > 0 ? arr.filter(e => Math.abs(e - med) <= med * 0.08).length / arr.length : 0;
+        const p80 = s[Math.floor(s.length * 0.8)];
+        const tfP80 = p80 > 0 ? arr.filter(e => Math.abs(e - p80) <= p80 * 0.08).length / arr.length : 0;
+        let peakCount = 0;
+        for (let val of s) {
+          const c = arr.filter(e => Math.abs(e - val) <= Math.max(3.0, val * 0.02)).length;
+          if (c > peakCount) peakCount = c;
+        }
+        const tfPeak = peakCount >= 12 ? 0.65 : (peakCount / arr.length);
+        return Math.max(tfMed, tfP80, tfPeak);
       };
       const median = arr => {
         const s = [...arr].sort((a, b) => a - b);
@@ -2237,8 +2256,18 @@
         });
         if (!(minStartRight > maxEndLeft)) continue; // 两栏文字贴在一起 → 没有可用的空白带
 
+        // 寻找 leftEnds 的强峰值（处理表格混排时 median 被稀释的情况）
+        let peakLeftEnd = median(leftEnds);
+        let bestPeakCount = 0;
+        for (const val of leftEnds) {
+          const c = leftEnds.filter(e => Math.abs(e - val) <= Math.max(3.0, val * 0.02)).length;
+          if (c > bestPeakCount && c >= 10) {
+            bestPeakCount = c;
+            peakLeftEnd = val;
+          }
+        }
         best = {
-          score, gutterX: (median(leftEnds) + rightStart) / 2, leftN, rightN,
+          score, gutterX: (peakLeftEnd + rightStart) / 2, leftN, rightN,
           gutterStart: maxEndLeft, gutterEnd: minStartRight
         };
       }
@@ -2315,9 +2344,14 @@
       const w = s._pdfW !== undefined ? s._pdfW : 0;
       const sMin = x;
       const sMax = x + w;
+      if (s._isRotated) {
+        lineGroups.push({ y, minX: sMin, maxX: sMax, spans: [s], isRotated: true });
+        return;
+      }
 
       let host = null;
       for (const g of lineGroups) {
+        if (g.isRotated) continue;
         if (Math.abs(g.y - y) > RUN_Y_TOL) continue;
         const adjacent = g.spans.some(o => {
           /*
@@ -2497,18 +2531,26 @@
       let inCaption = false;
       let lastY = null;
       let capH = 9;
+      let isTableCap = false;
       crossCaptionLines.forEach(line => {
         const text = line.spans.map(s => (s.textContent || '').trim()).join(' ').trim();
         if (captionLabelRegex.test(text)) {
           line.section = 'caption';
           inCaption = true;
+          isTableCap = /^(?:(?:Extended\s+Data|Supplement(?:ary|al)?|SI)\s+)?(?:Tab(?:\.|le)?|TABLE|Box|Algorithm|Scheme)\b/i.test(text);
           lastY = line.y;
           capH = line.h;
+          if (isTableCap && /[.!?。！？]\s*$/.test(text)) {
+            inCaption = false;
+          }
           return;
         }
         if (inCaption && lastY !== null && Math.abs(lastY - line.y) <= Math.max(capH, 9) * 1.8) {
           line.section = 'caption';
           lastY = line.y;
+          if (isTableCap && /[.!?。！？]\s*$/.test(text)) {
+            inCaption = false;
+          }
           return;
         }
         inCaption = false;
@@ -2601,6 +2643,8 @@
       const textOf = line => line.spans.map(s => (s.textContent || '').trim()).join(' ').trim();
       const heads = orderedLines.filter(l => l.section === 'caption' && captionLabelRegex.test(textOf(l)));
       heads.forEach(head => {
+        const isTableHead = /^(?:(?:Extended\s+Data|Supplement(?:ary|al)?|SI)\s+)?(?:Tab(?:\.|le)?|TABLE|Box|Algorithm|Scheme)\b/i.test(textOf(head));
+        if (isTableHead) return; // 表格注下方是表格数据（由 markFigureRegions 识别为 figure-label），绝不能当成图注折行吞进 caption
         const below = orderedLines.filter(l => l !== head && l.y < head.y).sort((a, b) => b.y - a.y);
         let lastY = head.y;
         let capH = head.h;
@@ -2644,7 +2688,9 @@
     // 一遇到"确定是正文"的行就停下——用"满行宽度"来识别正文，因为正文行是两端对齐的满行，
     // 而图表标签是零散的短行。这样既能整片吃掉图表区域，又不会误伤图注上方的正文段落。
     (function markFigureRegions() {
-      const FIG_BAND = 320; // 从图注往上扫多远（pt）
+      const FIG_BAND = 360; // 从图注向外扫多远（pt）
+      const pw = typeof pagePdfW !== 'undefined' ? pagePdfW : 612;
+      const ph = typeof pagePdfH !== 'undefined' ? pagePdfH : 792;
 
       const textOf = line => line.spans.map(s => (s.textContent || '').trim()).join(' ').trim();
 
@@ -2659,11 +2705,14 @@
         if (!colMaxExtent[l.section] || w > colMaxExtent[l.section]) colMaxExtent[l.section] = w;
       });
 
-      /** 这一行能不能确定是正文？（能确定就停止向上扩展图表区域） */
+      /** 这一行能不能确定是正文？（能确定就停止扩展图表区域） */
       const definitelyBody = line => {
         const t = textOf(line);
         if (!t) return false;
-        if (t.length > 80) return true; // 长行必是正文
+        // 表格特征（会议、年份、多重引用、表格竖线）绝非正文句子
+        if (/\b(ICLR|CVPR|ICCV|ECCV|NeurIPS|ICML|EMNLP|arXiv|AAAI|ACL)\b/i.test(t)) return false;
+        if (/\[\d+\]\s+.*?\b20\d\d\b/.test(t) || t.includes('|')) return false;
+
         if (/^(\d+(\.\d+)*\.?|[IVXLC]+\.)\s+[A-Z]/.test(t)) return true; // 章节标题
         if (
           /^(abstract|introduction|related work|background|method|methods|methodology|approach|experiments?|results?|discussion|conclusions?|references)\b/i.test(
@@ -2672,23 +2721,18 @@
         ) {
           return true;
         }
+        // 正文行核心特征：栏对齐的满行（两端对齐），宽度接近栏宽（>=82%），且词数丰富
+        const w = line.maxX - line.minX;
+        const colWidth = (line.section === 'cross') ? (pw * 0.82) : (colMaxExtent[line.section] || pw * 0.42);
         const letters = (t.match(/[A-Za-z]/g) || []).length;
         const words = (t.match(/[A-Za-z][A-Za-z'\-]*/g) || []).length;
-        // 以句末标点收尾 **且确实像句子** 才算正文。
-        // 不能只看标点：图表标签里常有 "concat." 这种以句号结尾的短标签，
-        // 一旦被当成正文就会让向上扫描提前中断，图表内容又漏回正文里。
-        if (/[.!?。！？]\s*$/.test(t) && (t.length >= 30 || words >= 5)) return true;
-        // 满行（两端对齐的正文行）→ 正文；但必须"以字母为主"且用词不重复——
-        // 图里的标签行（如 "Key Value Key Value Key Value"）宽度也接近满栏，
-        // 只靠几何无法区分，而正文行的用词几乎不重复。
-        const w = line.maxX - line.minX;
-        const m = colMaxExtent[line.section];
-        if (m && w >= 150 && w >= m * 0.8 && letters / Math.max(1, t.length) > 0.5) {
+        if (w >= colWidth * 0.82 && words >= 8 && letters / Math.max(1, t.length) > 0.6) {
           const wordList = t.toLowerCase().match(/[a-z][a-z'\-]*/g) || [];
           const uniq = new Set(wordList).size;
-          const repetitive = wordList.length >= 3 && uniq / wordList.length < 0.7;
-          if (!repetitive) return true;
+          if (uniq / wordList.length >= 0.75) return true;
         }
+        // 极长且非表格的段落行
+        if (t.length > 90 && !t.includes('|')) return true;
         return false;
       };
 
@@ -2698,16 +2742,36 @@
       );
 
       captionHeads.forEach(cap => {
-        const above = orderedLines
-          .filter(l => l !== cap && l.y > cap.y && l.y - cap.y <= FIG_BAND)
-          .filter(l => !(l.maxX < cap.minX - 20 || l.minX > cap.maxX + 20)) // 横向需与图注范围重叠
-          .sort((a, b) => a.y - b.y); // 由近及远向上
+        const capText = textOf(cap);
+        const isTable = /^(?:(?:Extended\s+Data|Supplement(?:ary|al)?|SI)\s+)?(?:Tab(?:\.|le)?|TABLE|Box|Algorithm|Scheme)\b/i.test(capText);
+        const isTopCross = (cap.maxX - cap.minX > pw * 0.45 || cap.section === 'cross' || (cap.minX > pw * 0.25 && cap.maxX < pw * 0.75)) && cap.y > ph * 0.55;
 
-        for (const line of above) {
-          if (line.section === 'caption') continue; // 绝不把图注本身吃掉
-          if (line.section === 'header' || line.section === 'metadata') break;
-          if (definitelyBody(line)) break;
-          line.section = 'figure-label';
+        if (isTable) {
+          // 表格注通常在表格上方：向下扫描表格内容行，标为 figure-label
+          const below = orderedLines
+            .filter(l => l !== cap && l.y < cap.y && cap.y - l.y <= (isTopCross ? ph : FIG_BAND))
+            .filter(l => isTopCross || !(l.maxX < cap.minX - 25 || l.minX > cap.maxX + 25))
+            .sort((a, b) => b.y - a.y); // 由近及远向下
+
+          for (const line of below) {
+            if (captionLabelRegex.test(textOf(line))) break;
+            if (line.section === 'footnote') break;
+            if (definitelyBody(line)) break;
+            line.section = 'figure-label';
+          }
+        } else {
+          // 插图注通常在插图下方：向上扫描图形内部标签与流程图文字，标为 figure-label
+          const above = orderedLines
+            .filter(l => l !== cap && l.y > cap.y && l.y - cap.y <= (isTopCross ? ph : FIG_BAND))
+            .filter(l => isTopCross || !(l.maxX < cap.minX - 25 || l.minX > cap.maxX + 25))
+            .sort((a, b) => a.y - b.y); // 由近及远向上
+
+          for (const line of above) {
+            if (line.section === 'caption') continue;
+            if (line.section === 'header' || line.section === 'metadata') break;
+            if (!isTopCross && definitelyBody(line)) break;
+            line.section = 'figure-label';
+          }
         }
       });
     })();
@@ -3224,9 +3288,9 @@
         // 换一篇论文就完全失效，会把正文误判或漏判）
         const isAbstractStart = pageNum === 1 && /^abstract\b/i.test(text);
         const isKeywordLine =
-          text.includes('|') ||
           /^(keywords|index terms|key words)\b/i.test(text) ||
-          /^(keywords|index terms)\s*[:：]/i.test(text);
+          /^(keywords|index terms)\s*[:：]/i.test(text) ||
+          (pageNum === 1 && text.includes('|') && /keywords|index terms/i.test(text));
         const isSignificanceHeading = /^significance\b/i.test(text);
 
         const hasDropCap = line.spans.some(s => {
@@ -3415,7 +3479,8 @@
   function splitEnglishSentencesSmart(text) {
     if (!text) return [];
     const out = [];
-    const endRegex = /([.?!]["'”’)\]]?)(\s+|$)/g;
+    // 允许公式序号跟随在句号/标点或分号/逗号后，如 "V. (1)"、"Attention(...). (4)"、"; (2)"：序号属于公式，不漏到下一句
+    const endRegex = /([.?!]["'”’)\]]?(?:\s*\((?:[1-9]\d{0,2}|[A-Z]?\d+(?:\.\d+)*)\))?|[,;]\s*\((?:[1-9]\d{0,2}|[A-Z]?\d+(?:\.\d+)*)\))(\s+|$)/g;
     // 注意：这里**故意不包含** "\b[A-Z]\.$"（单个大写字母 + 句号）。
     // 旧版把它当"作者姓名缩写"，但 ML/数学论文里 "the set S." / "denoted X." / "matrix W."
     // 极其常见，结果是整段被吞成一句、逐句对齐彻底失效。
@@ -3431,25 +3496,46 @@
     let searchFrom = 0;
     let match;
     while ((match = endRegex.exec(text)) !== null) {
-      const endPos = match.index + match[1].length;
-      const raw = text.slice(searchFrom, endPos);
-      const body = raw.trim();
+      let endPos = match.index + match[1].length;
+      let body = text.slice(searchFrom, endPos).trim();
 
       if (!body) {
         searchFrom = match.index + match[0].length;
         continue;
       }
 
-      // 命中常见学术缩写 → 这里不是句子边界，继续往后找
-      if (ABBREV_RE.test(body)) continue;
+      // 检查是否有公式序号被粘在末尾：形如 "... . (3)"
+      const trailingEqMatch = body.match(/([.?!]["'”’)\]]?)\s*(\((?:[1-9]\d{0,2}|[A-Z]?\d+(?:\.\d+)*)\))$/);
+      if (trailingEqMatch) {
+        const mainSentence = body.slice(0, body.length - trailingEqMatch[0].length) + trailingEqMatch[1];
 
-      // 序号/列表标记（"1." "(2)" "III." "a)"）不能单独成句：
-      // 否则会出现"序号"和"句子"被拆成两行、分别翻译的难看结果。
+        // 1) 若主句末尾命中学术缩写（如 "Smith et al. (2020)"）→ (2020) 是年份非公式，且 et al. 不是句末，继续往后找
+        if (ABBREV_RE.test(mainSentence.trim())) {
+          continue;
+        }
+
+        // 2) 若主句不含数学公式特征（= / \approx 等），而后面紧跟大写字母，说明括号数字是后续列表编号（如 "(2) ... frames. (3) The..."）
+        const hasMathSymbol = /[-=+\\/_′'⊤√*^<>≈≤≥~·]|Attention|softmax|MultiHead/i.test(mainSentence);
+        const remaining = text.slice(endPos).trimStart();
+        const nextIsCapitalWord = /^[A-Z][a-z]/.test(remaining);
+        if (!hasMathSymbol && nextIsCapitalWord) {
+          // 将 (3) 吐回给下一句，当前句截断在标点处
+          endPos = match.index + trailingEqMatch[1].length;
+          body = text.slice(searchFrom, endPos).trim();
+        }
+      } else {
+        if (ABBREV_RE.test(body)) continue;
+      }
+
       if (LIST_MARKER_RE.test(body)) continue;
 
+      const raw = text.slice(searchFrom, endPos);
       const lead = raw.length - raw.trimStart().length;
       out.push({ text: body, startIdx: searchFrom + lead, endIdx: endPos });
-      searchFrom = match.index + match[0].length;
+      searchFrom = endPos;
+      while (searchFrom < text.length && /\s/.test(text[searchFrom])) {
+        searchFrom++;
+      }
     }
 
     const tailRaw = text.slice(searchFrom);
@@ -3463,7 +3549,65 @@
       });
     }
 
-    return out;
+    // 二次清理：剥离句首残留的孤立公式标号与分母残渣（如 "(1) dk The logic..."、"(4) Here..."、"in which..." 前的公式片段）
+    const finalOut = [];
+    for (let i = 0; i < out.length; i++) {
+      const cur = out[i];
+
+      // 1) 句首带公式序号与残渣：如 "(1) dk The..."、"dk The..."
+      // 仅当上一句是公式、或本句以公式编号+公式残渣开头，且后跟真正以大写字母开头的正文句时剥离，
+      // 绝不误伤普通正文跨段碎片（如 "target object [2,34] ..."）或列表序号（如 "(2) The encoder ..."）。
+      let leadEqMatch = null;
+      if (finalOut.length > 0) {
+        const prev = finalOut[finalOut.length - 1];
+        const prevIsMath = /[-=+\\/_′'⊤√*^<>≈≤≥~·]|Attention|softmax|MultiHead|\([1-9]\d{0,2}\)$/i.test(prev.text);
+        if (prevIsMath) {
+          leadEqMatch = cur.text.match(/^((?:\((?:[1-9]\d{0,2}|[A-Z]?\d+(?:\.\d+)*)\)\s*)?(?:[-a-z0-9_′'⊤√+*^/]{1,5}\s+)+)([A-Z“"'].*)$/);
+        }
+      } else {
+        // 第一句：若明确带 "(1) dk The..." 公式序号+残渣，且后跟大写正文单词
+        leadEqMatch = cur.text.match(/^(\((?:[1-9]\d{0,2}|[A-Z]?\d+(?:\.\d+)*)\)\s*(?:[-a-z0-9_′'⊤√+*^/]{1,5}\s+)+)([A-Z“"'].*)$/);
+      }
+      if (leadEqMatch && leadEqMatch[1].trim() && leadEqMatch[2]) {
+        const prefix = leadEqMatch[1];
+        if (finalOut.length > 0) {
+          const prev = finalOut[finalOut.length - 1];
+          prev.endIdx = cur.startIdx + prefix.length;
+          while (prev.endIdx > prev.startIdx && /\s/.test(text[prev.endIdx - 1])) {
+            prev.endIdx--;
+          }
+          prev.text = text.slice(prev.startIdx, prev.endIdx);
+        }
+        cur.startIdx = cur.startIdx + prefix.length;
+        while (cur.startIdx < cur.endIdx && /\s/.test(text[cur.startIdx])) {
+          cur.startIdx++;
+        }
+        cur.text = text.slice(cur.startIdx, cur.endIdx);
+      }
+
+      // 2) 句首在公式分母等数字后紧接引导从句（如 "10000 d model in which pos denotes..."）
+      const clauseSplit = cur.text.match(/^((?:.+?\s+)?(?:\d+\s+)?(?:d\s+model\s+)+)(in\s+which|where|with)\b(.*)$/i);
+      if (clauseSplit && clauseSplit[1].trim()) {
+        const mathPrefix = clauseSplit[1];
+        if (finalOut.length > 0) {
+          const prev = finalOut[finalOut.length - 1];
+          prev.endIdx = cur.startIdx + mathPrefix.length;
+          while (prev.endIdx > prev.startIdx && /\s/.test(text[prev.endIdx - 1])) {
+            prev.endIdx--;
+          }
+          prev.text = text.slice(prev.startIdx, prev.endIdx);
+        }
+        cur.startIdx = cur.startIdx + mathPrefix.length;
+        while (cur.startIdx < cur.endIdx && /\s/.test(text[cur.startIdx])) {
+          cur.startIdx++;
+        }
+        cur.text = text.slice(cur.startIdx, cur.endIdx);
+      }
+
+      finalOut.push(cur);
+    }
+
+    return finalOut;
   }
 
   function splitChineseSentences(text) {

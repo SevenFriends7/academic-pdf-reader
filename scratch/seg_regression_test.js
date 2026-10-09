@@ -147,14 +147,30 @@ async function pageSpans(doc, pageNum) {
   const page = await doc.getPage(pageNum);
   const tc = await page.getTextContent();
   const view = page.view;
+  const pagePdfW = view[2] - view[0];
   const spans = tc.items
     .filter(it => typeof it.str === 'string' && it.str.trim().length > 0)
-    .map((it, idx) => ({
-      textContent: it.str,
-      _pdfX: it.transform[4], _pdfY: it.transform[5], _pdfW: it.width, _pdfH: it.height,
-      _pdfIdx: idx, setAttribute() {}
-    }));
-  return { spans, pagePdfW: view[2] - view[0] };
+    .map((it, idx) => {
+      const m = it.transform || [1, 0, 0, 1, 0, 0];
+      const isRotated = Math.abs(m[1]) > 1e-3 || Math.abs(m[2]) > 1e-3 || m[0] === 0;
+      return {
+        textContent: it.str,
+        _pdfX: m[4], _pdfY: m[5], _pdfW: it.width, _pdfH: it.height,
+        _isRotated: isRotated,
+        _pdfIdx: idx, setAttribute() {}
+      };
+    })
+    .filter(span => {
+      if (span._isRotated) {
+        const sx = span._pdfX !== undefined ? span._pdfX : 0;
+        const t = span.textContent || '';
+        if (sx < 45 || sx > pagePdfW - 45 || /arxiv|doi|copyright|licensed|rights\s+reserved/i.test(t)) {
+          return false;
+        }
+      }
+      return true;
+    });
+  return { spans, pagePdfW };
 }
 
 /** 只保留"纯正文行"的 span（去掉页眉/页码/图注），用来验证折行词距 */
@@ -182,6 +198,30 @@ function bodyOnly(paras) {
     const crossing = r.paras.filter(p => p.minX < 200 && p.maxX > 400);
     check('没有任何段落横跨左右两栏', crossing.length === 0,
       crossing.slice(0, 2).map(p => `x=[${p.minX.toFixed(0)},${p.maxX.toFixed(0)}] ${p.cleanText.slice(0, 40)}`).join(' | '));
+
+    // 用户截图 1 痛点：BERT 这一段不能漏掉 "Encoder Representations from Transformers), which pre-trains a"
+    const bertPara = r.paras.find(p => p.cleanText.includes('BERT') && p.cleanText.includes('Devlin et al.'));
+    check('第 1 页 BERT 段落完整识别', !!bertPara);
+    if (bertPara) {
+      check('第 1 页 BERT 段落未漏行 (Encoder Representations...)',
+        bertPara.cleanText.includes('Encoder Representations from Transformers), which pre-trains a'));
+    }
+  }
+
+  // ---- ①.1 大表格混排页面（第 3 页）结构判定与左右栏隔离 ----
+  {
+    const { spans: s3, pagePdfW: w3 } = await pageSpans(doc, 3);
+    const r3 = segment(s3, w3, 3);
+    const col3 = r3.colStruct;
+    check('第 3 页（混排 Table 1）正确判定为双栏', col3.twoColumn === true);
+    check('第 3 页量到两栏空白带', col3.gutterStart > 0 && col3.gutterEnd > col3.gutterStart,
+      `${col3.gutterStart}~${col3.gutterEnd}`);
+
+    // 双栏判定成功后，左栏与右栏在分流阶段严格隔离，不会因同行基线相同而横向串栏
+    const leftSpans = s3.filter(s => s._pdfX < col3.gutterX);
+    const rightSpans = s3.filter(s => s._pdfX >= col3.gutterX);
+    check('第 3 页左栏文字未混入右栏图注', !leftSpans.some(s => (s.textContent || '').includes('The image is from')));
+    check('第 3 页右栏文字未混入左栏公式 (2)/(3)', !rightSpans.some(s => (s.textContent || '').includes('(2)') || (s.textContent || '').includes('(3)')));
   }
 
   // ---- ② 折行处不许粘词（用户存档里逐字出现的坏串）----
