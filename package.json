@@ -1,312 +1,313 @@
 {
-    "name":  "academic-pdf-reader",
-    "displayName":  "Bilingual Paper Reader",
-    "description":  "给学术论文用的 PDF 阅读插件：左右对照翻译、划词即译、划线高亮与便签批注、全文双语精读稿导出（含 AI 答疑）（Bilingual reading for academic papers）",
-    "icon":  "media/icon.png",
-    "galleryBanner":  {
-                          "color":  "#0b578a",
-                          "theme":  "dark"
-                      },
-    "version":  "1.6.11",
-    "publisher":  "paper-reader",
-    "license":  "MIT",
-    "repository":  {
-                       "type":  "git",
-                       "url":  "https://github.com/SevenFriends7/academic-pdf-reader.git"
-                   },
-    "homepage":  "https://github.com/SevenFriends7/academic-pdf-reader#readme",
-    "bugs":  {
-                 "url":  "https://github.com/SevenFriends7/academic-pdf-reader/issues"
-             },
-    "engines":  {
-                    "vscode":  "^1.80.0"
-                },
-    "categories":  [
-                       "Other",
-                       "Education"
-                   ],
-    "keywords":  [
-                     "pdf",
-                     "translate",
-                     "translation",
-                     "bilingual",
-                     "paper",
-                     "academic",
-                     "literature",
-                     "reader",
-                     "annotation",
-                     "notes",
-                     "论文",
-                     "文献",
-                     "翻译",
-                     "对照",
-                     "双语",
-                     "批注",
-                     "笔记",
-                     "学术"
-                 ],
-    "activationEvents":  [
-                             "onCustomEditor:academicReader.pdfEditor",
-                             "onCommand:academicReader.openPdf",
-                             "onCommand:academicReader.openSettings",
-                             "onCommand:academicReader.setGeminiApiKey",
-                             "onCommand:academicReader.pickModel",
-                             "onCommand:academicReader.exportNotesMarkdown",
-                             "onStartupFinished"
-                         ],
-    "main":  "./dist/extension.js",
-    "contributes":  {
-                        "customEditors":  [
-                                              {
-                                                  "viewType":  "academicReader.pdfEditor",
-                                                  "displayName":  "文献对照翻译阅读器",
-                                                  "selector":  [
-                                                                   {
-                                                                       "filenamePattern":  "*.pdf"
-                                                                   }
-                                                               ],
-                                                  "priority":  "option"
-                                              }
-                                          ],
-                        "commands":  [
-                                         {
-                                             "command":  "academicReader.openSettings",
-                                             "title":  "配置学术翻译引擎与 API Key (Gemini / DeepSeek / 内置免费)",
-                                             "category":  "文献阅读 (Academic Reader)"
-                                         },
-                                         {
-                                             "command":  "academicReader.setGeminiApiKey",
-                                             "title":  "设置 Google Gemini API Key（并自动校验可用性）",
-                                             "category":  "文献阅读 (Academic Reader)"
-                                         },
-                                         {
-                                             "command":  "academicReader.pickModel",
-                                             "title":  "从可用模型列表中选择翻译 / AI 问答模型",
-                                             "category":  "文献阅读 (Academic Reader)"
-                                         },
-                                         {
-                                             "command":  "academicReader.exportNotesMarkdown",
-                                             "title":  "导出全文双语精读稿（原文 + 译文 + 批注 + AI 答疑）",
-                                             "category":  "文献阅读 (Academic Reader)"
-                                         },
-                                         {
-                                             "command":  "academicReader.exportAnnotatedPdf",
-                                             "title":  "导出高光批注 PDF（全篇原文 + 译文与笔记附录）",
-                                             "category":  "文献阅读 (Academic Reader)"
-                                         },
-                                         {
-                                             "command":  "academicReader.openPdf",
-                                             "title":  "在双栏对照器中打开 PDF",
-                                             "category":  "文献阅读 (Academic Reader)"
-                                         }
-                                     ],
-                        "menus":  {
-                                      "explorer/context":  [
-                                                               {
-                                                                   "command":  "academicReader.openPdf",
-                                                                   "when":  "resourceExtname == .pdf",
-                                                                   "group":  "navigation"
-                                                               }
-                                                           ]
-                                  },
-                        "configuration":  {
-                                              "title":  "学术文献阅读器 (Academic Reader)",
-                                              "properties":  {
-                                                                 "academicReader.targetLanguage":  {
-                                                                                                       "type":  "string",
-                                                                                                       "default":  "zh-CN",
-                                                                                                       "enum":  [
-                                                                                                                    "zh-CN",
-                                                                                                                    "zh-TW",
-                                                                                                                    "en",
-                                                                                                                    "ja",
-                                                                                                                    "ko",
-                                                                                                                    "de",
-                                                                                                                    "fr"
-                                                                                                                ],
-                                                                                                       "enumDescriptions":  [
-                                                                                                                                "简体中文",
-                                                                                                                                "繁体中文",
-                                                                                                                                "English",
-                                                                                                                                "日本語",
-                                                                                                                                "한국어",
-                                                                                                                                "Deutsch",
-                                                                                                                                "Français"
-                                                                                                                            ],
-                                                                                                       "description":  "目标翻译语言"
-                                                                                                   },
-                                                                 "academicReader.translationService":  {
-                                                                                                           "type":  "string",
-                                                                                                           "default":  "gemini",
-                                                                                                           "enum":  [
-                                                                                                                        "gemini",
-                                                                                                                        "openai-compatible",
-                                                                                                                        "built-in"
-                                                                                                                    ],
-                                                                                                           "enumDescriptions":  [
-                                                                                                                                    "Google Gemini 官方 API (顶级学术翻译质量，推荐)",
-                                                                                                                                    "自定义大模型 (DeepSeek / OpenAI / Kimi 等兼容接口)",
-                                                                                                                                    "内置免费翻译 (无需 Key，网络直连)"
-                                                                                                                                ],
-                                                                                                           "description":  "翻译引擎选择"
-                                                                                                       },
-                                                                 "academicReader.geminiApiKey":  {
-                                                                                                     "type":  "string",
-                                                                                                     "default":  "",
-                                                                                                     "description":  "Google Gemini API 密钥 (可在 Google AI Studio 免费申请)"
-                                                                                                 },
-                                                                 "academicReader.geminiModel":  {
-                                                                                                    "type":  "string",
-                                                                                                    "default":  "gemini-3.6-flash",
-                                                                                                    "description":  "翻译使用的 Gemini 模型。建议用命令「从可用模型列表中选择」来挑选——不同 API Key 有配额的模型不同。模型名写错/下线/无配额时会自动回退到有配额的模型，并在译文卡片上如实提示。"
-                                                                                                },
-                                                                 "academicReader.aiModel":  {
-                                                                                                "type":  "string",
-                                                                                                "default":  "",
-                                                                                                "description":  "AI 学术问答使用的模型（翻译与问答共用所选引擎）。留空则沿用当前的翻译模型。Gemini 引擎填 Gemini 模型名（想用推理更强的模型问答、同时让翻译继续用 flash 就填这里）；OpenAI 兼容引擎填该端点的模型名（如 deepseek-reasoner）。注意：无配额的模型会返回 429，Gemini 引擎下插件会自动回退到有配额的模型。"
-                                                                                            },
-                                                                 "academicReader.translationThinkingBudget":  {
-                                                                                                                  "type":  "number",
-                                                                                                                  "default":  0,
-                                                                                                                  "description":  "翻译时的 Gemini 思考预算（thinkingBudget）。默认 0 = 关闭思考（实测默认思考会让首字延迟从 ~1s 涨到 ~19s 且多烧约 1000 token，翻译并不需要）。设为 -1 使用模型默认值。"
-                                                                                                              },
-                                                                 "academicReader.aiThinkingBudget":  {
-                                                                                                         "type":  "number",
-                                                                                                         "default":  0,
-                                                                                                         "description":  "AI 问答的思考预算（仅 Gemini 引擎有效）。默认 0 = 关闭思考：思考 token 计入账单且会显著拉长等待，日常问答收益有限。遇到需要深度推理的问题可临时设为 -1 交给模型决定。"
-                                                                                                     },
-                                                                 "academicReader.aiTemperature":  {
-                                                                                                      "type":  "number",
-                                                                                                      "default":  0.4,
-                                                                                                      "description":  "AI 问答温度。越低越保守严谨（推荐 0.2~0.5），越高越发散。"
-                                                                                                  },
-                                                                 "academicReader.translateConcurrency":  {
-                                                                                                             "type":  "number",
-                                                                                                             "default":  3,
-                                                                                                             "description":  "同时进行的翻译请求数上限（1~8）。整页翻译时降低此值可避免触发 API 限流（429）。"
-                                                                                                         },
-                                                                 "academicReader.aiAnswerStyle":  {
-                                                                                                      "type":  "string",
-                                                                                                      "default":  "standard",
-                                                                                                      "enum":  [
-                                                                                                                   "standard",
-                                                                                                                   "concise",
-                                                                                                                   "expert"
-                                                                                                               ],
-                                                                                                      "enumDescriptions":  [
-                                                                                                                               "标准（默认）：结论 + 前置概念解释，一般 300~700 字，需要时展开",
-                                                                                                                               "极简速读：200 字内讲清，最省 token",
-                                                                                                                               "专家：通读论文全文后不限篇幅深度作答（更慢、更费 token）"
-                                                                                                                           ],
-                                                                                                      "description":  "AI 问答的回答风格",
-                                                                                                      "markdownDescription":  "AI 问答的回答风格。**默认 standard**：会先解释术语与前置概念（假设读者基础一般），一般 300~700 字。想最省 token 可切 `concise`；想要更长的审稿式分析用 `reviewer`。三种风格都有硬性输出上限（1024 / 3072 / 4096 token）。"
-                                                                                                  },
-                                                                 "academicReader.apiEndpoint":  {
-                                                                                                    "type":  "string",
-                                                                                                    "default":  "https://api.deepseek.com/v1",
-                                                                                                    "description":  "大模型 API 端点 (用于自定义大模型翻译)"
-                                                                                                },
-                                                                 "academicReader.apiKey":  {
-                                                                                               "type":  "string",
-                                                                                               "default":  "",
-                                                                                               "description":  "大模型 API 密钥 (用于自定义大模型翻译)"
-                                                                                           },
-                                                                 "academicReader.modelName":  {
-                                                                                                  "type":  "string",
-                                                                                                  "default":  "deepseek-chat",
-                                                                                                  "description":  "大模型名称 (例如 deepseek-chat, gpt-4o-mini 等)"
-                                                                                              },
-                                                                 "academicReader.pdfExportFontPath":  {
-                                                                                                          "type":  "string",
-                                                                                                          "default":  "",
-                                                                                                          "description":  "导出高光批注 PDF 时嵌进 PDF 的中文字体文件（.ttf/.otf）。留空则自动探测系统字体（Windows 黑体/宋体、macOS Arial Unicode、Linux Noto）。指定时请填单体字体文件的绝对路径——.ttc 字体集合无法嵌入。"
-                                                                                                      },
-                                                                 "academicReader.pdfExportIncludeTranslation":  {
-                                                                                                                    "type":  "boolean",
-                                                                                                                    "default":  true,
-                                                                                                                    "description":  "导出高光批注 PDF 时是否附上「高光译文」：true = 每条高光在左页边距标序号，并在该原文页后紧跟一页给出 原文摘录 / 译文 / 我的批注 / AI 答疑；false = 只导出高光后的原文（体积更小，且不需要中文字体）。每次导出都会先问你一次，并把选择记在这里。"
-                                                                                                                },
-                                                                 "academicReader.visionModel":  {
-                                                                                                    "type":  "string",
-                                                                                                    "default":  "",
-                                                                                                    "description":  "【视觉分割】用于判断版面结构（哪些是正文/图注/公式、阅读顺序、该合该拆）的模型。必须支持图片输入：DeepSeek 用 deepseek-flash，通义用 qwen-vl-max，智谱用 glm-4v，OpenAI 用 gpt-4o 等。留空则沿用 AI 问答模型；若它是纯文本模型（如 deepseek-chat）会明确报错提示你填这里。翻译仍用原来的文本模型，互不影响。"
-                                                                                                },
-                                                                 "academicReader.segmentationEngine":  {
-                                                                                                           "type":  "string",
-                                                                                                           "default":  "vision",
-                                                                                                           "enum":  [
-                                                                                                                        "vision",
-                                                                                                                        "auto",
-                                                                                                                        "local"
-                                                                                                                    ],
-                                                                                                           "enumDescriptions":  [
-                                                                                                                                    "视觉优先（推荐）：每页都请视觉模型判断版面结构（本地结果先显示，视觉回来后校正并刷新）；同一页只算一次，结果会缓存",
-                                                                                                                                    "按需视觉：只在本地判据可疑的页（三栏以上 / 图注占比异常 / 段落数突变）才请求视觉",
-                                                                                                                                    "只用本地：完全离线、零成本，用代码解析文本层与分栏"
-                                                                                                                                ],
-                                                                                                           "description":  "版面分割引擎：由谁决定「段落怎么切、每段是什么类型、阅读顺序」。无论选哪个，**划线与高亮的坐标始终来自本地文本层**（视觉只判断结构，不给坐标）。没有手动重排按钮——`vision` 会为每一页自动做视觉判断；想重判本页就换一个视觉模型（缓存会自动判废）。"
-                                                                                                       },
-                                                                 "academicReader.visionSurgery":  {
-                                                                                                      "type":  "boolean",
-                                                                                                      "default":  true,
-                                                                                                      "description":  "【视觉分割】是否允许视觉模型真的改写分段：把被错误切开的续句合并、把「正文+公式+正文」混在一起的一段拆开、把图内文字剔出正文。**默认每一页都套用视觉重排**；关掉它就只做类型/阅读顺序/丢弃的校正（1.2.0 的行为），段落边界完全由本地代码决定。"
-                                                                                                  },
-                                                                 "academicReader.visionMaxTokens":  {
-                                                                                                        "type":  "number",
-                                                                                                        "default":  16000,
-                                                                                                        "description":  "【视觉分割】单页请求的最大输出 token。注意 deepseek-flash 是推理型模型：预算给小了会把 token 全花在推理上、回答变成空的（实测同一页 8000 时 100% 空、且那 8000 推理 token 照样计费；16000 才稳定给出结果）。若仍遇到空回答，插件会自动加倍重试一次（上限 16000）。"
-                                                                                                    },
-                                                                 "academicReader.autoTranslate":  {
-                                                                                                      "type":  "boolean",
-                                                                                                      "default":  true,
-                                                                                                      "description":  "翻页时是否自动预翻译当前页面段落"
-                                                                                                  },
-                                                                 "academicReader.zoteroIntegration":  {
-                                                                                                          "type":  "boolean",
-                                                                                                          "default":  true,
-                                                                                                          "description":  "【Zotero 联动】打开论文时自动去本机 Zotero 认领这篇文献：把规范著录信息（标题/作者/年份/会议/DOI）写进导出的精读稿，并把 Zotero 已索引的逐页全文加入 AI 问答上下文（问没翻到的页也能答）。只读，绝不改动你的 Zotero 库。需要 Zotero 设置 → 高级 → 勾选「允许本机其它程序与 Zotero 通信」。关掉则不发起任何本地请求。"
-                                                                                                      }
-                                                             }
-                                          }
-                    },
-    "scripts":  {
-                    "vscode:prepublish":  "node esbuild.js --minify",
-                    "compile":  "node esbuild.js",
-                    "watch":  "node esbuild.js --watch",
-                    "package":  "node package-vsix.js",
-                    "vsix":  "npx --yes @vscode/vsce package --no-dependencies",
-                    "ls:pack":  "npx --yes @vscode/vsce ls",
-                    "login":  "npx --yes @vscode/vsce login paper-reader",
-                    "publish:patch":  "npx --yes @vscode/vsce publish patch --no-dependencies",
-                    "publish:minor":  "npx --yes @vscode/vsce publish minor --no-dependencies",
-                    "publish:major":  "npx --yes @vscode/vsce publish major --no-dependencies",
-                    "test":  "node scratch/llm-test/viewer-unit.js",
-                    "test:init":  "node scratch/smoke_init.js",
-                    "test:html":  "node scratch/host_html_smoke.js",
-                    "test:pdf":  "node scratch/pdf_export_test.js",
-                    "test:gate":  "node scratch/dstest/gate_test.js",
-                    "test:nonprose":  "node scratch/dstest/nonprose_fix_test.js",
-                    "lint":  "npx --yes eslint@8 --no-eslintrc -c .eslintrc.json media/viewer.js",
-                    "prevsix":  "node scratch/check_version.js",
-                    "test:migrate":  "npx tsc src/notesStorage.ts --outDir scratch/dstest/out-storage --module commonjs --target es2020 --skipLibCheck --esModuleInterop && node scratch/dstest/notes_migration_test.js",
-                    "test:para":  "node scratch/para_rebuild_test.js",
-                    "test:math":  "node scratch/math_layer_test.js",
-                    "test:zhmath":  "node scratch/zh_math_subst_test.js",
-                    "test:zotero":  "npx tsc src/zoteroClient.ts --outDir dist-test --module commonjs --target es2020 --skipLibCheck --esModuleInterop \u0026\u0026 node scratch/zotero/zotero_client_test.js \u0026\u0026 node scratch/zotero/viewer_zotero_test.js \u0026\u0026 node scratch/zotero/vision_index_test.js \u0026\u0026 node scratch/zotero/highlight_map_test.js",
-                    "test:barpos":  "node scratch/focus_bar_pos_test.js",
-                    "test:zhreal":  "node scratch/zh_render_real_test.js",
-                    "test:entity":  "node scratch/math_entity_test.js"
-                },
-    "devDependencies":  {
-                            "@pdf-lib/fontkit":  "^1.1.1",
-                            "@types/node":  "^20.11.0",
-                            "@types/vscode":  "^1.80.0",
-                            "esbuild":  "^0.20.0",
-                            "eslint":  "^8.57.1",
-                            "jsdom":  "^24.1.3",
-                            "katex":  "^0.16.11",
-                            "pdf-lib":  "^1.17.1",
-                            "pdfjs-dist":  "3.11.174",
-                            "typescript":  "^5.3.3"
-                        }
+  "name": "academic-pdf-reader",
+  "displayName": "Bilingual Paper Reader",
+  "description": "给学术论文用的 PDF 阅读插件：左右对照翻译、划词即译、划线高亮与便签批注、全文双语精读稿导出（含 AI 答疑）（Bilingual reading for academic papers）",
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#0b578a",
+    "theme": "dark"
+  },
+  "version": "1.6.12",
+  "publisher": "paper-reader",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SevenFriends7/academic-pdf-reader.git"
+  },
+  "homepage": "https://github.com/SevenFriends7/academic-pdf-reader#readme",
+  "bugs": {
+    "url": "https://github.com/SevenFriends7/academic-pdf-reader/issues"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other",
+    "Education"
+  ],
+  "keywords": [
+    "pdf",
+    "translate",
+    "translation",
+    "bilingual",
+    "paper",
+    "academic",
+    "literature",
+    "reader",
+    "annotation",
+    "notes",
+    "论文",
+    "文献",
+    "翻译",
+    "对照",
+    "双语",
+    "批注",
+    "笔记",
+    "学术"
+  ],
+  "activationEvents": [
+    "onCustomEditor:academicReader.pdfEditor",
+    "onCommand:academicReader.openPdf",
+    "onCommand:academicReader.openSettings",
+    "onCommand:academicReader.setGeminiApiKey",
+    "onCommand:academicReader.pickModel",
+    "onCommand:academicReader.exportNotesMarkdown",
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "academicReader.pdfEditor",
+        "displayName": "文献对照翻译阅读器",
+        "selector": [
+          {
+            "filenamePattern": "*.pdf"
+          }
+        ],
+        "priority": "option"
+      }
+    ],
+    "commands": [
+      {
+        "command": "academicReader.openSettings",
+        "title": "配置学术翻译引擎与 API Key (Gemini / DeepSeek / 内置免费)",
+        "category": "文献阅读 (Academic Reader)"
+      },
+      {
+        "command": "academicReader.setGeminiApiKey",
+        "title": "设置 Google Gemini API Key（并自动校验可用性）",
+        "category": "文献阅读 (Academic Reader)"
+      },
+      {
+        "command": "academicReader.pickModel",
+        "title": "从可用模型列表中选择翻译 / AI 问答模型",
+        "category": "文献阅读 (Academic Reader)"
+      },
+      {
+        "command": "academicReader.exportNotesMarkdown",
+        "title": "导出全文双语精读稿（原文 + 译文 + 批注 + AI 答疑）",
+        "category": "文献阅读 (Academic Reader)"
+      },
+      {
+        "command": "academicReader.exportAnnotatedPdf",
+        "title": "导出高光批注 PDF（全篇原文 + 译文与笔记附录）",
+        "category": "文献阅读 (Academic Reader)"
+      },
+      {
+        "command": "academicReader.openPdf",
+        "title": "在双栏对照器中打开 PDF",
+        "category": "文献阅读 (Academic Reader)"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "academicReader.openPdf",
+          "when": "resourceExtname == .pdf",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "学术文献阅读器 (Academic Reader)",
+      "properties": {
+        "academicReader.targetLanguage": {
+          "type": "string",
+          "default": "zh-CN",
+          "enum": [
+            "zh-CN",
+            "zh-TW",
+            "en",
+            "ja",
+            "ko",
+            "de",
+            "fr"
+          ],
+          "enumDescriptions": [
+            "简体中文",
+            "繁体中文",
+            "English",
+            "日本語",
+            "한국어",
+            "Deutsch",
+            "Français"
+          ],
+          "description": "目标翻译语言"
+        },
+        "academicReader.translationService": {
+          "type": "string",
+          "default": "gemini",
+          "enum": [
+            "gemini",
+            "openai-compatible",
+            "built-in"
+          ],
+          "enumDescriptions": [
+            "Google Gemini 官方 API (顶级学术翻译质量，推荐)",
+            "自定义大模型 (DeepSeek / OpenAI / Kimi 等兼容接口)",
+            "内置免费翻译 (无需 Key，网络直连)"
+          ],
+          "description": "翻译引擎选择"
+        },
+        "academicReader.geminiApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Google Gemini API 密钥 (可在 Google AI Studio 免费申请)"
+        },
+        "academicReader.geminiModel": {
+          "type": "string",
+          "default": "gemini-3.6-flash",
+          "description": "翻译使用的 Gemini 模型。建议用命令「从可用模型列表中选择」来挑选——不同 API Key 有配额的模型不同。模型名写错/下线/无配额时会自动回退到有配额的模型，并在译文卡片上如实提示。"
+        },
+        "academicReader.aiModel": {
+          "type": "string",
+          "default": "",
+          "description": "AI 学术问答使用的模型（翻译与问答共用所选引擎）。留空则沿用当前的翻译模型。Gemini 引擎填 Gemini 模型名（想用推理更强的模型问答、同时让翻译继续用 flash 就填这里）；OpenAI 兼容引擎填该端点的模型名（如 deepseek-reasoner）。注意：无配额的模型会返回 429，Gemini 引擎下插件会自动回退到有配额的模型。"
+        },
+        "academicReader.translationThinkingBudget": {
+          "type": "number",
+          "default": 0,
+          "description": "翻译时的 Gemini 思考预算（thinkingBudget）。默认 0 = 关闭思考（实测默认思考会让首字延迟从 ~1s 涨到 ~19s 且多烧约 1000 token，翻译并不需要）。设为 -1 使用模型默认值。"
+        },
+        "academicReader.aiThinkingBudget": {
+          "type": "number",
+          "default": 0,
+          "description": "AI 问答的思考预算（仅 Gemini 引擎有效）。默认 0 = 关闭思考：思考 token 计入账单且会显著拉长等待，日常问答收益有限。遇到需要深度推理的问题可临时设为 -1 交给模型决定。"
+        },
+        "academicReader.aiTemperature": {
+          "type": "number",
+          "default": 0.4,
+          "description": "AI 问答温度。越低越保守严谨（推荐 0.2~0.5），越高越发散。"
+        },
+        "academicReader.translateConcurrency": {
+          "type": "number",
+          "default": 3,
+          "description": "同时进行的翻译请求数上限（1~8）。整页翻译时降低此值可避免触发 API 限流（429）。"
+        },
+        "academicReader.aiAnswerStyle": {
+          "type": "string",
+          "default": "standard",
+          "enum": [
+            "standard",
+            "concise",
+            "expert"
+          ],
+          "enumDescriptions": [
+            "标准（默认）：结论 + 前置概念解释，一般 300~700 字，需要时展开",
+            "极简速读：200 字内讲清，最省 token",
+            "专家：通读论文全文后不限篇幅深度作答（更慢、更费 token）"
+          ],
+          "description": "AI 问答的回答风格",
+          "markdownDescription": "AI 问答的回答风格。**默认 standard**：会先解释术语与前置概念（假设读者基础一般），一般 300~700 字。想最省 token 可切 `concise`；想要更长的审稿式分析用 `reviewer`。三种风格都有硬性输出上限（1024 / 3072 / 4096 token）。"
+        },
+        "academicReader.apiEndpoint": {
+          "type": "string",
+          "default": "https://api.deepseek.com/v1",
+          "description": "大模型 API 端点 (用于自定义大模型翻译)"
+        },
+        "academicReader.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "大模型 API 密钥 (用于自定义大模型翻译)"
+        },
+        "academicReader.modelName": {
+          "type": "string",
+          "default": "deepseek-chat",
+          "description": "大模型名称 (例如 deepseek-chat, gpt-4o-mini 等)"
+        },
+        "academicReader.pdfExportFontPath": {
+          "type": "string",
+          "default": "",
+          "description": "导出高光批注 PDF 时嵌进 PDF 的中文字体文件（.ttf/.otf）。留空则自动探测系统字体（Windows 黑体/宋体、macOS Arial Unicode、Linux Noto）。指定时请填单体字体文件的绝对路径——.ttc 字体集合无法嵌入。"
+        },
+        "academicReader.pdfExportIncludeTranslation": {
+          "type": "boolean",
+          "default": true,
+          "description": "导出高光批注 PDF 时是否附上「高光译文」：true = 每条高光在左页边距标序号，并在该原文页后紧跟一页给出 原文摘录 / 译文 / 我的批注 / AI 答疑；false = 只导出高光后的原文（体积更小，且不需要中文字体）。每次导出都会先问你一次，并把选择记在这里。"
+        },
+        "academicReader.visionModel": {
+          "type": "string",
+          "default": "",
+          "description": "【视觉分割】用于判断版面结构（哪些是正文/图注/公式、阅读顺序、该合该拆）的模型。必须支持图片输入：DeepSeek 用 deepseek-flash，通义用 qwen-vl-max，智谱用 glm-4v，OpenAI 用 gpt-4o 等。留空则沿用 AI 问答模型；若它是纯文本模型（如 deepseek-chat）会明确报错提示你填这里。翻译仍用原来的文本模型，互不影响。"
+        },
+        "academicReader.segmentationEngine": {
+          "type": "string",
+          "default": "vision",
+          "enum": [
+            "vision",
+            "auto",
+            "local"
+          ],
+          "enumDescriptions": [
+            "视觉优先（推荐）：每页都请视觉模型判断版面结构（本地结果先显示，视觉回来后校正并刷新）；同一页只算一次，结果会缓存",
+            "按需视觉：只在本地判据可疑的页（三栏以上 / 图注占比异常 / 段落数突变）才请求视觉",
+            "只用本地：完全离线、零成本，用代码解析文本层与分栏"
+          ],
+          "description": "版面分割引擎：由谁决定「段落怎么切、每段是什么类型、阅读顺序」。无论选哪个，**划线与高亮的坐标始终来自本地文本层**（视觉只判断结构，不给坐标）。没有手动重排按钮——`vision` 会为每一页自动做视觉判断；想重判本页就换一个视觉模型（缓存会自动判废）。"
+        },
+        "academicReader.visionSurgery": {
+          "type": "boolean",
+          "default": true,
+          "description": "【视觉分割】是否允许视觉模型真的改写分段：把被错误切开的续句合并、把「正文+公式+正文」混在一起的一段拆开、把图内文字剔出正文。**默认每一页都套用视觉重排**；关掉它就只做类型/阅读顺序/丢弃的校正（1.2.0 的行为），段落边界完全由本地代码决定。"
+        },
+        "academicReader.visionMaxTokens": {
+          "type": "number",
+          "default": 16000,
+          "description": "【视觉分割】单页请求的最大输出 token。注意 deepseek-flash 是推理型模型：预算给小了会把 token 全花在推理上、回答变成空的（实测同一页 8000 时 100% 空、且那 8000 推理 token 照样计费；16000 才稳定给出结果）。若仍遇到空回答，插件会自动加倍重试一次（上限 16000）。"
+        },
+        "academicReader.autoTranslate": {
+          "type": "boolean",
+          "default": true,
+          "description": "翻页时是否自动预翻译当前页面段落"
+        },
+        "academicReader.zoteroIntegration": {
+          "type": "boolean",
+          "default": true,
+          "description": "【Zotero 联动】打开论文时自动去本机 Zotero 认领这篇文献：把规范著录信息（标题/作者/年份/会议/DOI）写进导出的精读稿，并把 Zotero 已索引的逐页全文加入 AI 问答上下文（问没翻到的页也能答）。只读，绝不改动你的 Zotero 库。需要 Zotero 设置 → 高级 → 勾选「允许本机其它程序与 Zotero 通信」。关掉则不发起任何本地请求。"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "node esbuild.js --minify",
+    "compile": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "package": "node package-vsix.js",
+    "vsix": "npx --yes @vscode/vsce package --no-dependencies",
+    "ls:pack": "npx --yes @vscode/vsce ls",
+    "login": "npx --yes @vscode/vsce login paper-reader",
+    "publish:patch": "npx --yes @vscode/vsce publish patch --no-dependencies",
+    "publish:minor": "npx --yes @vscode/vsce publish minor --no-dependencies",
+    "publish:major": "npx --yes @vscode/vsce publish major --no-dependencies",
+    "test": "node scratch/llm-test/viewer-unit.js",
+    "test:init": "node scratch/smoke_init.js",
+    "test:html": "node scratch/host_html_smoke.js",
+    "test:pdf": "node scratch/pdf_export_test.js",
+    "test:gate": "node scratch/dstest/gate_test.js",
+    "test:nonprose": "node scratch/dstest/nonprose_fix_test.js",
+    "lint": "npx --yes eslint@8 --no-eslintrc -c .eslintrc.json media/viewer.js",
+    "prevsix": "node scratch/check_version.js",
+    "test:para": "node scratch/para_rebuild_test.js",
+    "test:math": "node scratch/math_layer_test.js",
+    "test:zhmath": "node scratch/zh_math_subst_test.js",
+    "test:zotero": "npx tsc src/zoteroClient.ts --outDir dist-test --module commonjs --target es2020 --skipLibCheck --esModuleInterop && node scratch/zotero/zotero_client_test.js && node scratch/zotero/viewer_zotero_test.js && node scratch/zotero/vision_index_test.js && node scratch/zotero/highlight_map_test.js",
+    "test:barpos": "node scratch/focus_bar_pos_test.js",
+    "test:zhreal": "node scratch/zh_render_real_test.js",
+    "test:entity": "node scratch/math_entity_test.js",
+    "test:seg": "node scratch/seg_regression_test.js",
+    "test:migrate": "npx tsc src/notesStorage.ts --outDir scratch/dstest/out-storage --module commonjs --target es2020 --skipLibCheck --esModuleInterop && node scratch/dstest/notes_migration_test.js"
+  },
+  "devDependencies": {
+    "@pdf-lib/fontkit": "^1.1.1",
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.80.0",
+    "esbuild": "^0.20.0",
+    "eslint": "^8.57.1",
+    "jsdom": "^24.1.3",
+    "katex": "^0.16.11",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "3.11.174",
+    "typescript": "^5.3.3"
+  }
 }

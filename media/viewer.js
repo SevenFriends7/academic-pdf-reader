@@ -1188,6 +1188,19 @@
    * 全部列在 scratch/_math_chars_agg.txt 里；pdf.js 已经把 CM 字体的字符按 ToUnicode 解成了
    * Unicode（`∈`、`⊂`、`⋃`、`λ`、`̂`），所以"逐字符查表 + 上下标由几何还原"就是精确的，
    * 不需要任何启发式猜测。
+   *
+   * 【`√` 为什么原样透传，不映射成 `\sqrt{}`】
+   * 旧映射是 `'√': '\\sqrt{\\,} '`——**被开方数永远是空的**，因为"哪个字符是被开方数"
+   * 需要结构信息，逐字符查表根本拿不到。实测后果（用户真实存档 pageArchive[2][12].localMath）：
+   * 第 2 页 Attention 那条式子被切成多个 run，孤立的 `√` 被当成 `Q` 的下标，
+   * 生成 `Q_{\sqrt{\,}}\cdot K^{⊤}` —— **渲染成功、内容全错**：
+   * 屏幕上就是一个"套在 Q 右下角、里面只有一个空根号"的怪东西。
+   * 而译文卡片里 `⟦√⟧` 找不到配对的规范 LaTeX 时，会退化成裸 `√` 直接贴在中文句子里
+   * （「为梯度稳定性对得分进行归一化√，即…」），同样来自这条空被开方数映射。
+   * 所以这里改成**原样透传**：`√` 作为普通数学字符参与渲染，
+   * KaTeX 在数学模式里能正常显示它，但**不会再伪造一个"被开方数是对的"的假象**。
+   * 真要还原 `√d_k`，必须等结构层把根号与它的被开方数配成一组（见 math layer 的 run 分组），
+   * 那是另一处改动，不能靠在字符表里编一个 `\,` 冒充被开方数。
    */
   function mathCharToLatex(ch) {
     if (MATH_ESCAPE_MAP[ch]) return MATH_ESCAPE_MAP[ch];
@@ -1199,7 +1212,7 @@
       '⇒': '\\Rightarrow ', '⇔': '\\Leftrightarrow ', '→': '\\to ', '←': '\\leftarrow ',
       '↔': '\\leftrightarrow ', '↦': '\\mapsto ',
       '∑': '\\sum ', '∏': '\\prod ', '∫': '\\int ', '∮': '\\oint ', '∂': '\\partial ',
-      '∇': '\\nabla ', '√': '\\sqrt{\\,} ', '∞': '\\infty ', '≈': '\\approx ', '≃': '\\simeq ',
+      '∇': '\\nabla ', '√': '√', '∞': '\\infty ', '≈': '\\approx ', '≃': '\\simeq ',
       '≅': '\\cong ', '≤': '\\leq ', '≥': '\\geq ', '≠': '\\neq ', '≡': '\\equiv ',
       '∼': '\\sim ', '∝': '\\propto ', '±': '\\pm ', '∓': '\\mp ', '×': '\\times ', '÷': '\\div ',
       '⋅': '\\cdot ', '·': '\\cdot ', '∘': '\\circ ', '⊕': '\\oplus ', '⊗': '\\otimes ',
@@ -2192,13 +2205,49 @@
 
         // 两侧正文行越均衡，越像真正的双栏
         const score = Math.min(leftN, rightN);
-        if (!best || score > best.score) {
-          best = { score, gutterX: (median(leftEnds) + rightStart) / 2, leftN, rightN };
-        }
+        if (score <= (best ? best.score : -1)) continue;
+
+        /*
+         * 【关键】把这个候选分栏点两侧**真实的空白带**量出来，而不是只记一个"分栏线"。
+         *
+         * 为什么必须量：分栏线 gutterX 是"左栏行尾中位数 与 右栏行首"的中点，
+         * 但**栏内文字的实际起止边**并不等于那条线（实测本文左栏行尾在 x=300、
+         * 右栏行首在 x=312，空白带只有 12pt；而 gutterX 算出来是 306，
+         * 正落在这 12pt 里）。后续"判断两个 span 是否属于同一行"必须拿这条**空白带**
+         * 去比：落在这条带子里的间隙才是"两栏之间的空白"。
+         * 早先的写法是"间隙中心离 gutterX 不超过 0.04 页宽"——0.04*612=24.5pt，
+         * 比真实的 12pt 空白带还宽，于是判据永远无法成立（改完毫无效果）。
+         *
+         * 【范围】必须和上面 leftEnds/rightEnds 用同一组判据：**只统计不跨越分割点的片段**。
+         * 通栏的标题行、页脚行会横跨分割点，若把它们也算进来，
+         * minStartRight 会被标题的左端（x≈97）拉低、maxEndLeft 被页脚右端（x≈511）抬高，
+         * 于是"没有空白带"成立 → 整个候选被 continue 掉 → 双栏页被降级成单栏
+         * （实测第 1 页因此变成"单栏 56 行"，整页文字被并成一段）。
+         */
+        let maxEndLeft = 0;   // 左栏文字的右边界（取所有行的最大行尾）
+        let minStartRight = Infinity; // 右栏文字的左边界（取所有行的最小行首）
+        rows.forEach(r => {
+          r.segs.forEach(sg => {
+            if (sg.minX <= leftClusterEnd + 8 && sg.maxX < rightStart - 10) {
+              if (sg.maxX > maxEndLeft) maxEndLeft = sg.maxX;
+            } else if (sg.minX >= rightStart - 8) {
+              if (sg.minX < minStartRight) minStartRight = sg.minX;
+            }
+          });
+        });
+        if (!(minStartRight > maxEndLeft)) continue; // 两栏文字贴在一起 → 没有可用的空白带
+
+        best = {
+          score, gutterX: (median(leftEnds) + rightStart) / 2, leftN, rightN,
+          gutterStart: maxEndLeft, gutterEnd: minStartRight
+        };
       }
 
       if (!best) return FALLBACK;
-      return { twoColumn: true, gutterX: best.gutterX, leftN: best.leftN, rightN: best.rightN };
+      return {
+        twoColumn: true, gutterX: best.gutterX, leftN: best.leftN, rightN: best.rightN,
+        gutterStart: best.gutterStart, gutterEnd: best.gutterEnd
+      };
     };
 
     const colStruct = detectColumnStructure(spans, pagePdfW);
@@ -2207,8 +2256,41 @@
     const isSingleColumnPage = !isTwoColumnPage;
     // 单栏时把"分栏线"推到页面之外，使所有 span 都归入同一栏
     const effectiveGutterX = isSingleColumnPage ? pagePdfW * 2 : gutterX;
+    /*
+     * 两栏之间的**空白带**（量出来的实际间隙，见 detectColumnStructure 结尾的说明）。
+     * 只有落在带子里的间隙才被认定为"这是左右栏各一行，不是同一行"。
+     * 空白带缺失（单栏页、或两栏贴在一起）时退化成"不可用"，该判据自动失效。
+     */
+    const gutterBandStart = isSingleColumnPage ? Infinity : colStruct.gutterStart;
+    const gutterBandEnd = isSingleColumnPage ? Infinity : colStruct.gutterEnd;
+    /*
+     * 页面基准字号（正文行高）——用**所有 span 高度的中位数**估计，取 5~13pt 的正文区间。
+     * 【为什么要它】"这个字形属于哪一行"的容差必须跟着字号走，不能再写死 3.5pt（见 spansToLines）。
+     */
+    const baseFontSize = (() => {
+      const hs = spans
+        .map(s => (s._pdfH !== undefined ? s._pdfH : 0))
+        .filter(h => h > 5 && h < 13)
+        .sort((a, b) => a - b);
+      return hs.length ? hs[Math.floor(hs.length / 2)] : 9.5;
+    })();
+    /**
+     * 同一行的纵向容差。
+     *
+     * 【为什么必须放宽到 0.62em】`_pdfY` 是**基线**，而 pdf.js 给 `√`、`⊤` 这类字形的
+     * y 是**外框底边**，天生比正文基线高 3.6~3.8pt（实测第 2 页：`√` 基线 237.27 对整行 241.08
+     * 差 3.81pt；`⊤` 256.23 对 252.62 差 3.61pt）。旧容差写死 3.5pt，于是这些字形
+     * **被判成独立的一行**，插在上下两行之间：
+     *   `line y=256.23 : "⊤"` 夹在 `y=264.17` 与 `y=252.63` 之间。
+     * 后果就是用户看到的 `…different input vectors ⊤ withS = Q · K` 与
+     * `…stability of gradient √ withSn = S / dk`——公式的根号/转置符号漂到了正文行里。
+     * 0.62em（9.5pt 字号 ≈5.9pt）能收下这些 3.6~3.8pt 的偏移，又远小于正文行距（实测 11.5~12pt），
+     * 不会把相邻两行并起来。
+     */
+    const LINE_Y_TOL = Math.max(3.5, baseFontSize * 0.62);
     console.log(
-      `[Viewer] 版面：${isSingleColumnPage ? '单栏' : `双栏(分栏线 x=${gutterX.toFixed(0)})`}` +
+      `[Viewer] 版面：${isSingleColumnPage ? '单栏' : `双栏(分栏线 x=${gutterX.toFixed(0)}` +
+        ` 空白带 ${Number(gutterBandStart).toFixed(0)}~${Number(gutterBandEnd).toFixed(0)})`}` +
         `  左${colStruct.leftN || 0}/右${colStruct.rightN || 0}  页宽${pagePdfW.toFixed(0)}`
     );
 
@@ -2238,14 +2320,44 @@
       for (const g of lineGroups) {
         if (Math.abs(g.y - y) > RUN_Y_TOL) continue;
         const adjacent = g.spans.some(o => {
+          /*
+           * 【同一行的两个 span 绝不能横跨两栏之间的空白——这是"左右栏串栏"的总根源】
+           *
+           * 双栏论文灌满版面后，**左右两栏逐行共享基线**（左栏第 1 行与右栏第 1 行同高，
+           * 第 2 行同高……），所以"同 y"完全不足以判定"同一行"。
+           * 于是一旦某行的左右两栏片段间隙落进 RUN_GAP_TOL(≈pageW*0.041) 以内，
+           * 它就被并成一个 x=[48,564] 的通栏行；并完之后 lineCenterX≈307 正好压在
+           * 分栏线 x=306 上，第 4 步"按 center 分左右栏"对整行只能二选一 →
+           * **整页正文被切成左右交错的怪段**（实测 arXiv 2012.12556 第 1 页：
+           * "1 INTRODUCTION" 的正文段一路吃到右栏，卡片里出现「Theseof networks.」这种残句）。
+           *
+           * 判据：**用"两栏之间那条空白带"本身**（见 detectColumnStructure 量出的 gutterStart/gutterEnd），
+           * 而不是用"间隙宽度"。为什么不能用间隙宽度：
+           *   · 本页真实空白带只有 12pt，而 RUN_GAP_TOL 是 25.1pt，靠它拦不住；
+           *   · 正文里合法的大间隙反而能到 12.0pt（词距、公式与正文的分离）；
+           * 任何"阈值"都夹在这两条之间，换一篇论文立刻失效。
+           * 而"空白带落在哪"是**从本页文字的实际起止边量出来的**：真正的沟槽里一个字形都没有，
+           * 表格列、公式、词距都不会刚好把整栏的边让开。
+           * 单栏页 gutterBandStart/End 退化成 Infinity，此判据自动失效。
+           */
           const oMin = o._pdfX !== undefined ? o._pdfX : 0;
           const oMax = oMin + (o._pdfW !== undefined ? o._pdfW : 0);
           const gapStart = Math.min(oMax, sMax);
           const gapEnd = Math.max(oMin, sMin);
+          if (gapStart <= gutterBandEnd && gapEnd >= gutterBandStart) {
+            return false; // 间隙落在两栏空白带上 → 这是左右栏各一行，不是同一行
+          }
           const gap = gapEnd - gapStart;
           if (gap > RUN_GAP_TOL) return false;
-          // 用 effectiveGutterX：单栏页时它被推到页面之外，沟槽规则自动失效
-          if (gap > GUTTER_GAP_MIN && gapStart < effectiveGutterX && gapEnd > effectiveGutterX) return false;
+          /*
+           * 兜底：即使间隙很小，"同一行"也不该跨越超过一行行距的纵向距离。
+           * g.y 只记录**建组时第一个 span** 的 y，与后续 span 可以差到 RUN_Y_TOL(3.5pt)，
+           * 已足以跨过一条正文行的行距（实测本文 9.5pt 字号、11.5pt 行距），
+           * 所以这里逐对比较基线，不能拿组首 y 代替。
+           */
+          const oy = o._pdfY !== undefined ? o._pdfY : 0;
+          const oh = Math.max(o._pdfH !== undefined ? o._pdfH : 0, s._pdfH !== undefined ? s._pdfH : 0) || 9;
+          if (Math.abs(oy - y) > Math.max(RUN_Y_TOL, oh * 0.5)) return false;
           return true;
         });
         if (adjacent) {
@@ -2326,7 +2438,9 @@
     });
 
     // 5. 栏内单行组装函数 (按 Y 降序自上而下，同一行按 X 升序自左向右)
-    function spansToLines(spanList) {
+    // yTol 由调用方传入（= LINE_Y_TOL，按页面基准字号算），不再写死 3.5pt——原因见 LINE_Y_TOL 的注释
+    function spansToLines(spanList, yTol) {
+      const tol = yTol || 3.5;
       const sorted = [...spanList].sort((a, b) => {
         const ya = a._pdfY !== undefined ? a._pdfY : 0;
         const yb = b._pdfY !== undefined ? b._pdfY : 0;
@@ -2335,7 +2449,7 @@
         const effYa = (ha > 18 && (a.textContent || '').trim().length === 1) ? ya + ha - 9 : ya;
         const effYb = (hb > 18 && (b.textContent || '').trim().length === 1) ? yb + hb - 9 : yb;
 
-        if (Math.abs(effYa - effYb) > 3.5) return effYb - effYa;
+        if (Math.abs(effYa - effYb) > tol) return effYb - effYa;
         const xa = a._pdfX !== undefined ? a._pdfX : 0;
         const xb = b._pdfX !== undefined ? b._pdfX : 0;
         return xa - xb;
@@ -2349,7 +2463,7 @@
         const sh = span._pdfH !== undefined ? span._pdfH : 9;
         const sw = span._pdfW !== undefined ? span._pdfW : 0;
 
-        if (!curLine || Math.abs(curLine.y - sy) > 3.5) {
+        if (!curLine || Math.abs(curLine.y - sy) > tol) {
           curLine = { y: sy, h: sh, minX: sx, maxX: sx + sw, spans: [span] };
           lines.push(curLine);
         } else {
@@ -2363,12 +2477,12 @@
     }
 
     // 6. 分别独立对左栏和右栏组行（彻底杜绝左右栏同行被捏成一句话！）
-    const headerLines = spansToLines(topHeaders);
-    const metadataLines = spansToLines(metadataSpans);
-    const col1LinesRaw = spansToLines(col1Spans);
-    const col2LinesRaw = spansToLines(col2Spans);
-    const crossCaptionLines = spansToLines(crossColumnCaptionSpans);
-    const footnoteLines = spansToLines(footnoteSpans);
+    const headerLines = spansToLines(topHeaders, LINE_Y_TOL);
+    const metadataLines = spansToLines(metadataSpans, LINE_Y_TOL);
+    const col1LinesRaw = spansToLines(col1Spans, LINE_Y_TOL);
+    const col2LinesRaw = spansToLines(col2Spans, LINE_Y_TOL);
+    const crossCaptionLines = spansToLines(crossColumnCaptionSpans, LINE_Y_TOL);
+    const footnoteLines = spansToLines(footnoteSpans, LINE_Y_TOL);
 
     headerLines.forEach(l => l.section = 'header');
     metadataLines.forEach(l => l.section = 'metadata');
@@ -2939,16 +3053,40 @@
             ) {
               needSpace = true;
               const gap = segmentGap(prevSeg.items, seg.items);
+              const prevItem = (prevSeg.items || [])[(prevSeg.items || []).length - 1];
+              const curItem = (seg.items || [])[0];
               const size = (() => {
-                const it2 = (seg.items || [])[0] || (prevSeg.items || [])[(prevSeg.items || []).length - 1];
+                const it2 = curItem || prevItem;
                 return it2 && it2.transform ? Math.abs(it2.transform[3]) || 10 : 10;
               })();
-              // 两侧都是字母数字，且几何上就是紧贴（间隙 <0.28em）→ 属于同一串，不插空格
+              /*
+               * 只有**在同一条基线上**才谈得上"这两个片段是不是同一个词"。
+               *
+               * 【必须的前提】segmentGap 只算 x 差（`b.x - (a.x + a.width)`），完全不看 y。
+               * 于是**换行处**它给出一个恒为负的荒谬值：实测第 1 页左栏行尾 x=564、
+               * 下一行行首 x=48 → gap = −516 ← 必然小于任何阈值，
+               * 于是"同一串"成立 → **不插空格** → 每次折行都粘出一个词：
+               * `Theseof`、`intothree`、`theattention`、`asfollows`、`softmaxfunctionP`、
+               * `downstreamDDifferent`（这些串逐字出现在用户的真实存档
+               * paper_827f0364…json 的 pageArchive[1]/[2] 里）。
+               */
+              const sameBaseline =
+                !!prevItem && !!curItem && !!prevItem.transform && !!curItem.transform &&
+                Math.abs(prevItem.transform[5] - curItem.transform[5]) <= Math.max(1.5, size * 0.3);
+              /*
+               * 同基线时的"紧贴"阈值取 0.10em，**不能取 0.28em**。
+               *
+               * 【实测】本页真实词距最小只有 2.11pt（"…query vector" + "q"）、
+               * 2.66pt（"with" + "S"）、2.77pt（"softmax" 前），而 0.28em 在 9.5pt 字号下是 2.79pt
+               * ——阈值比真实词距还大，方向就是反的（PDF 两端对齐会把词距压到 0.2em 出头）。
+               * 0.10em ≈ 0.95pt，只兜住"真的贴在一起"（同一串被切成多个 item，间隙≈0）。
+               */
               if (
+                sameBaseline &&
                 gap !== null &&
                 /[A-Za-z0-9]/.test(prevLastChar) &&
                 /[A-Za-z0-9]/.test(curFirstChar) &&
-                gap < size * 0.28
+                gap < size * 0.10
               ) {
                 needSpace = false;
               }
@@ -3213,7 +3351,7 @@
         } else {
           a.cleanText = `${a.cleanText} ${b.cleanText}`;
         }
-        a.charMap = a.charMap.concat(b.charMap);
+        a.charMap = (a.charMap || []).concat(b.charMap || []);
         b.rawSpans.forEach(span => {
           a.rawSpans.push(span);
           span.setAttribute('data-para-id', `${a.id}`);
@@ -4157,7 +4295,7 @@
            * 现在公式导出成 `$$...$$`、正文里的行内公式按替换表写成 `$...$`（见 buildReadingDocMarkdown）。
            */
           visionLatex: String(p.visionLatex || '').trim(),
-          visionInline: Array.isArray(p.visionInline) ? p.visionInline.slice(0, 8) : [],
+          visionInline: Array.isArray(p.visionInline) ? p.visionInline.slice(0, 64) : [],
           /*
            * 本地数学层的产物也要跟着快照走：
            *   localLatex —— 整段/整条公式的规范 LaTeX（由 PDF 字体+几何确定性生成）
@@ -4185,7 +4323,16 @@
                 seen.push({ text: String(s.text || '').slice(0, 120), latex: tex.slice(0, 600) });
               });
             }
-            return seen.slice(0, 8);
+            /*
+             * 【上限 8 条是错的，实测直接毁掉重开文档后的公式显示】
+             * 第 2 页那段 Attention 正文活对象里有 39 条行内公式，落盘只留前 8 条；
+             * 重开文档后 renderZhWithMath 拿这份**残缺表**去配 ⟦…⟧，
+             * 于是 ⟦√⟧、⟦Sn = S / dk⟧ 全部匹配不到 → 退化成裸残渣贴在中文句子里
+             * （用户真实存档中「为梯度稳定性对得分进行归一化√，即Sn = S / dk；」就是这样来的）。
+             * 单条 Formula 已经被 text 120 字 / latex 600 字截断，整页 40 条也就几十 KB，
+             * 与 pageArchive 里本来就存的 cleanText/sentencesEn 相比完全可以接受，所以放到 64 条。
+             */
+            return seen.slice(0, 64);
           })(),
           // 记下缓存键，宿主可以据此**精确**回查（不必重算指纹、猜引擎标识）
           cacheKey: getParaCacheKey(pageNum, p)
@@ -10029,12 +10176,13 @@ let aiPresetQuestion = '';
     inline.forEach(x => {
       const f = String(x && x.find ? x.find : '').trim();
       const l = String(x && x.latex ? x.latex : '').trim();
-      if (f && l) pairs.push({ key: residueKeyOf(f), latex: l });
+      // raw 保留**原始大小写**的残渣写法，供"精确匹配"这一档使用（见下面 k/exact 的注释）
+      if (f && l) pairs.push({ key: residueKeyOf(f), raw: f, latex: l });
     });
     (para && Array.isArray(para.localMath) ? para.localMath : []).forEach(x => {
       const t = String(x && x.text ? x.text : '').trim();
       const l = String(x && x.latex ? x.latex : '').trim();
-      if (t && l) pairs.push({ key: residueKeyOf(t), latex: l });
+      if (t && l) pairs.push({ key: residueKeyOf(t), raw: t, latex: l });
     });
 
     /*
@@ -10085,8 +10233,26 @@ let aiPresetQuestion = '';
         asPlainText(inner, '这段不是公式，按原文显示');
       } else {
         const k = residueKeyOf(inner);
-        const exact = pairs.find(x => x.key === k);
-        const latex = exact ? exact.latex : (pairs.length === 1 ? pairs[0].latex : '');
+        /*
+         * 【必须先精确匹配，再"唯一候选"兜底——不能直接大小写不敏感地撞】
+         *
+         * residueKeyOf 末尾有 `.toLowerCase()`，把它直接当精确键用会出现**语义级误配**：
+         * 模型把矩阵 `⟦Q⟧`/`⟦K⟧`/`⟦V⟧` 括起来，键变成 `q`/`k`/`v`，
+         * 于是配到了向量 `q`/`k`/`v` 的 LaTeX（用户真实存档里译文就变成「即q、k和v。」）。
+         * 大小写在数学里是有意义的（矩阵 vs 向量），不能抹掉。
+         * 所以分两档：
+         *   ① 精确（键含大小写）命中 → 用它，语义可靠；
+         *   ② 否则只在**忽略大小写后唯一命中**时才用（例如 `√` 这类无大小写之分的记号），
+         *      有歧义就老老实实按残渣显示，绝不猜。
+         */
+        const norm = s => String(s == null ? '' : s).replace(/\s+/g, '');
+        const exact = pairs.find(x => norm(x.raw) === norm(inner));
+        let latex = exact ? exact.latex : '';
+        if (!latex) {
+          const ci = pairs.filter(x => x.key === k);
+          if (ci.length === 1) latex = ci[0].latex;
+        }
+        if (!latex && pairs.length === 1) latex = pairs[0].latex;
         if (latex) {
           pieces.push({
             html: `<span class="local-math" data-math-source="local-zh" title="公式（本机按 PDF 字体与位置精确抽取）">${renderVisionMathHtml(latex, false)}</span>`

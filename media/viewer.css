@@ -1637,6 +1637,26 @@ body.theme-paper-dark .fluid-badge-zh {
   font-weight: 550;
 }
 
+/*
+ * 公式"残渣"（本地没抽到规范 LaTeX 时按原文原样排版的那一段）。
+ *
+ * 【为什么必须补上这条】viewer.js 的 asPlainText() 一直在往 DOM 里写
+ * `<span class="vision-residue-math">`，但 css 里**从来没有这个类**（实测 grep 无命中）。
+ * 后果是残渣沿用正文的字体与字距：`√ withSn = S / dk` 里的 `√`、
+ * `⊤`、`Sn` 看起来和正文一模一样，用户根本分不出"这是公式没认出来"，
+ * 只觉得"符号和公式错乱"。
+ * 现在明确标成等宽、略小、带底色，一眼能看出是"字符层残渣"而不是正式公式。
+ */
+.vision-residue-math {
+  font-family: "Cambria Math", "Latin Modern Math", "DejaVu Sans Mono", Consolas, monospace;
+  font-size: 0.94em;
+  padding: 0 2px;
+  border-radius: 3px;
+  background: var(--residue-math-bg, rgba(148, 163, 184, 0.16));
+  color: var(--residue-math-color, inherit);
+  white-space: nowrap;
+}
+
 /* 逐句行右侧：一条固定的 22px 窄图标条。
    演进过程：原来 6 个按钮常驻占 150px（正文被挤成细长条）→ 改成悬停浮层（但浮层会盖住中文译文）
    → 现在是常驻窄条 + 图标，宽度只剩 22px，既不吃正文宽度，也绝不遮挡任何文字。 */
