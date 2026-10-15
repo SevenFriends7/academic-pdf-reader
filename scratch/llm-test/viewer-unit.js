@@ -876,8 +876,14 @@ console.log('\n===== T11 图表区域后处理（真实页面数据） =====');
 console.log('\n===== T12 图注折行补齐（真实数据） =====');
 (function captionExtendTest() {
   const start = code.indexOf('(function extendCaptionBlocks() {');
-  const end = code.indexOf('})();', start);
-  if (start < 0 || end < 0) {
+  /*
+   * 【右锚点不能用 indexOf('})();', start)】`})();` 在这个 IIFE 内部也出现过
+   * （heads.forEach 的收尾），indexOf 会切在中间 → 抽出来的片段括号不配对 →
+   * `SyntaxError: Unexpected end of input`。这里改用**紧跟其后的那行注释**当右锚点。
+   */
+  const nextMark = code.indexOf('// 8.5 图表区域后处理', start);
+  const end = code.lastIndexOf('})();', nextMark);
+  if (start < 0 || nextMark < 0 || end < start) {
     checkTrue('从产物中抽出 extendCaptionBlocks', false, '未找到该片段');
     return;
   }
@@ -930,6 +936,80 @@ console.log('\n===== T12 图注折行补齐（真实数据） =====');
     '第 6 页：表格数据行没有被图注吞并（行距相对判据生效）',
     r6[4].section !== 'caption' && r6[5].section !== 'caption' && r6[6].section !== 'caption',
     `460=${r6[4].section} 443=${r6[5].section} 431=${r6[6].section}`
+  );
+})();
+
+// ---------- 12b. 通栏图注不得吞掉正文与公式碎片（真实 Xu 2020 第 4 页几何） ----------
+console.log('\n===== T12b 通栏图注的下探边界（真实数据） =====');
+(function captionCrossColumnTest() {
+  const start = code.indexOf('(function extendCaptionBlocks() {');
+  // 右锚点见 T12 的注释：`})();` 在 IIFE 内部也有，必须用后一行注释定位
+  const nextMark = code.indexOf('// 8.5 图表区域后处理', start);
+  const end = code.lastIndexOf('})();', nextMark);
+  if (start < 0 || nextMark < 0 || end < start) {
+    checkTrue('从产物中抽出 extendCaptionBlocks', false, '未找到该片段');
+    return;
+  }
+  const snippet = code.slice(start, end + 5);
+  const re = /^(?:[(\[](?:[a-h]|\d{1,2})[)\]]\s+)?(?:(?:Extended\s+Data|Supplement(?:ary|al)?|SI)\s+)?(?:Fig(?:\.|ure)?|Tab(?:\.|le)?|Box|Algorithm|Scheme|Chart|Exhibit|TABLE)\s*\.?\s*(?:\d+|[IVXLCDM]+)(?:\s*[.:：)—–-])?/i;
+  /*
+   * 【为什么要传 col1Spans / col2Spans】这一段新增的"占栏比例"判据正是靠它们量栏宽的：
+   * 通栏图注头的 minX/maxX 几乎等于整页宽度，光看"是否横向相交"任何一行都算"在范围内"。
+   * 不传这两个数组时判据会**主动失效**（fill = 1），于是这条测试就测不到东西了 ——
+   * 必须按真实页面的栏宽喂进去。
+   */
+  // eslint-disable-next-line no-new-func
+  const run = new Function('orderedLines', 'captionLabelRegex', 'col1Spans', 'col2Spans', `${snippet}\n return orderedLines;`);
+  const mk = (y, minX, maxX, text, section) => ({ y, minX, maxX, h: 9, spans: [{ textContent: text }], section });
+
+  /*
+   * Xu 等 - 2020（Decentralized Visual-Inertial-UWB Fusion）第 4 页的真实坐标：
+   *   图 3 在图**上方**，图注通栏 2 行（y=585.8 / 576.9，x=[54,558]）；
+   *   它下面左栏是正文（第一句 "• The tightly-coupled VIO results …" 起于 y=553.7），
+   *   右栏是**公式**（"tion:" 起于 y=553.7，只有 18pt 宽 = 右栏的 7%）。
+   * 旧行为：图注头 x=[54,558] 把整页都算作"横向在范围内"，于是一路吞到 y=536.7 ——
+   * 卡片上出现「图 3。…红色箭头… • 紧耦合 VIO 结果 ⟦Viz t Pi⟧ 来自自体的状态估计：{ …」，
+   * 一句完整的话被从中间劈开，公式残渣（`∥ ∑ ∥ ∥ 2 ∥ V`）也串进了图注。
+   */
+  const L = [
+    mk(585.8, 54, 558, 'Fig. 3. An illustration of the sliding window relative state estimation. The notations are stated in Sec. III-A.', 'caption'),
+    mk(576.9, 54, 558, 'between the poses, which are provided VIO; the blue arrows indicate the relative distance measurements from the UWB modules.', 'caption'),
+    mk(567.9, 54, 280, 'the relative 3-D translation from the result of detection and tracking.', 'col1'),
+    mk(553.7, 64, 299, '• The tightly-coupled VIO results V i z t P i from the ego', 'col1'),
+    mk(553.7, 313, 331, 'tion:', 'col2'),
+    mk(545.3, 348, 356, '{', 'col2'),
+    mk(541.8, 74, 299, 'state estimation of individual aerial platforms using', 'col1'),
+    mk(539.7, 491, 496, '∥', 'col2'),
+    mk(537.7, 366, 500, '∑ ∥ ∥ 2', 'col2'),
+    mk(536.7, 424, 434, '∥ V', 'col2'),
+    mk(532.4, 445, 448, 't', 'col2'),
+    mk(529.8, 74, 299, 'VINS-Fusion [15], which is treated as “VIO measure-', 'col1')
+  ];
+  // 真实栏宽：左栏正文行最宽 235pt，右栏正文行最宽 245pt（用真实 span 宽度喂）
+  const col1 = [{ textContent: 'x', _pdfW: 235 }, { textContent: 'y', _pdfW: 221 }];
+  const col2 = [{ textContent: 'x', _pdfW: 245 }, { textContent: 'y', _pdfW: 200 }];
+
+  const out = run(L, re, col1, col2);
+  checkTrue(
+    '图注折行（较窄但占满左栏的尾行）仍被收进图注',
+    out[2].section === 'caption',
+    `尾行 section=${out[2].section}（应为 caption）`
+  );
+  checkTrue(
+    '通栏图注不再吞掉左栏正文（正文前半句留在正文里）',
+    out[3].section === 'col1',
+    `"• The tightly-coupled VIO results…" section=${out[3].section}（应为 col1）`
+  );
+  checkTrue(
+    '通栏图注不再吞掉右栏公式碎片（tion: / { / ∥ / ∑ ∥ ∥ 2 / ∥ V / t）',
+    out[4].section === 'col2' && out[5].section === 'col2' && out[7].section === 'col2' &&
+      out[8].section === 'col2' && out[9].section === 'col2' && out[10].section === 'col2',
+    `tion:=${out[4].section} {=${out[5].section} ∥=${out[7].section} ∑=${out[8].section} ∥V=${out[9].section} t=${out[10].section}`
+  );
+  checkTrue(
+    '图注的吸收在第 10 行（公式碎片）就停下，不再继续下探到"状态估计"那行',
+    out[6].section === 'col1',
+    `"state estimation…" section=${out[6].section}`
   );
 })();
 
@@ -1272,6 +1352,33 @@ console.log('\n===== T14 跨栏续接（真实数据） =====');
   ];
   run(p2, false, 297, split);
   checkTrue('右栏是大写开头的新句子 → 不合并', p2.length === 2, `剩 ${p2.length} 段`);
+
+  // 反例 5（真实 Xu 2020 第 4 页）：左栏以 "formula-" 结尾，右栏开头是编号式子的残渣
+  //   "tion: { ∑ ∥ ∥ 2 ∥ V …"。旧实现只看"小写开头"就把它粘成 "formulation: { ∥ ∑ …"，
+  //   顺带把右栏整段正文并进这一栏 → 整段横跨两栏。
+  const pFormula = [
+    mkPara(0, 'body', 'The optimization is expressed as the following formula-', 64, 299),
+    mkPara(1, 'body', 'tion: { ∥ ∑ ∥ ∥ 2 ∥ V t tk min ∥ x V z t − x ˆ ∥ i k j', 313, 558),
+    mkPara(2, 'body', 'where L is the set of all distance measurements.', 313, 558)
+  ];
+  run(pFormula, false, 305, split);
+  checkTrue(
+    '折词续接遇到公式残渣 → 不合并（不许把式子粘到词尾上）',
+    pFormula.length === 3,
+    `剩 ${pFormula.length} 段；首段尾=${JSON.stringify(pFormula[0].cleanText.slice(-40))}`
+  );
+
+  // 正例（真实 Xu 2020 第 4 页同页）：右栏开头确实是那个词的后半截 → 必须合并
+  const pWordTail = [
+    mkPara(0, 'body', 'The optimization is expressed as the following formula-', 64, 299),
+    mkPara(1, 'body', 'tion: where L is the set of all distance measurements.', 313, 558)
+  ];
+  run(pWordTail, false, 305, split);
+  checkTrue(
+    '折词续接遇到真正的词尾 → 照旧合并成 formulation',
+    pWordTail.length === 1 && /following formulation:/.test(pWordTail[0].cleanText),
+    `${pWordTail.length} 段；${JSON.stringify((pWordTail[0] || {}).cleanText || '').slice(-50)}`
+  );
 
   // 反例 3：单栏论文不该触发
   const p3 = [mkPara(0, 'body', 'ends without punctuation', 50, 545), mkPara(1, 'body', 'continuation here', 50, 545)];

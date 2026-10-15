@@ -2641,6 +2641,54 @@
     // 这里从图注块往下按行距继续吸收折行，遇到行距变大或章节标题就停。
     (function extendCaptionBlocks() {
       const textOf = line => line.spans.map(s => (s.textContent || '').trim()).join(' ').trim();
+      /*
+       * 【栏宽】给"横向要在图注的范围内"这条判据补上**占比**口径。
+       *
+       * 【为什么必须有】只看"是否与图注头横向相交"对**通栏**图注毫无约束力：
+       * 通栏图注的 minX/maxX 几乎就是整页宽度，于是页面上任何一行都"在范围内"。
+       * 实测 Xu 2020 第 4 页（图 3 的图注在图上方、通栏两行，其下左栏是正文、
+       * 右栏是**公式**）：
+       *   图注头 x=[54,558] → 右栏的 "tion:" 片段（x=[313,331]，只占右栏 7%）被判为
+       *   "图注折行"，于是图注吞下右栏公式残渣 `∥ ∑ ∥ ∥ 2 ∥ V`，
+       *   而正文前半句（左栏 x=[64,299]）也被吞掉 —— 卡片上就是
+       *   「图 3。…红色箭头… • 紧耦合 VIO 结果 ⟦Viz t Pi⟧ 来自自体的状态估计：{ 使用 ⟦∥ ∑ ∥ ∥ 2 ∥ V⟧…」
+       *   一句完整的话被从中间劈开、前半句跑进图注（用户反馈的"图注吞正文+公式串进图注"）。
+       *
+       * 【判据】真正的图注折行会**占满它所在的栏**（图注是整段文字，不是碎片）。
+       * 【口径必须是"分流后的栏"】栏宽只能从 col1Spans/col2Spans 量：
+       * 行聚类（lineGroups）会把**同一 y 上的左右栏片段并成一条通栏行**（本页图注首行
+       * "Fig. 3. An illustration…" 与右栏正文同高 → 并成 x=[54,558]），拿它当栏宽会得到
+       * 504pt —— 于是左栏正文的占比算成 0.47（用的是通栏分母），判据完全失效（实测踩过）。
+       * 所以下面用 col1Spans/col2Spans 的真实跨度当栏宽：
+       *   · 占比 < 0.22 → 不是折行，跳过（`tion:` 18pt / 右栏 245pt = 7%；`{`、`∥`、`∑ ∥ ∥ 2` 同理）；
+       *   · 占比够 → 交给上面那条"固定行距上限"决定吸收还是中止（见下）。
+       * 单栏页、或某一栏量不到宽度时该判据自动失效（fill = 1）。
+       */
+      const spanExtent = (list) => {
+        let w = 0;
+        (Array.isArray(list) ? list : []).forEach(s => {
+          const sw = (s._pdfW !== undefined ? s._pdfW : 0);
+          if (sw > w) w = sw;
+        });
+        return w;
+      };
+      /*
+       * 【取不到就退化成"判据失效"】col1Spans / col2Spans 是这一段的**前置变量**，
+       * 而本仓库的单测是把这一个 IIFE 单独抽出来跑的（见 viewer-unit 的 T12）——
+       * 那里没有这两个数组。所以：量不到栏宽时判据一律返回 1（= 不参与判定），
+       * 而不是抛 ReferenceError（实测直接炸掉了整个测试文件）。
+       */
+      const colExtent = {
+        col1: typeof col1Spans !== 'undefined' ? spanExtent(col1Spans) : 0,
+        col2: typeof col2Spans !== 'undefined' ? spanExtent(col2Spans) : 0
+      };
+      /** 这一行占它所在栏宽的比例（取不到栏宽时返回 1 = 判据失效） */
+      const fillRatioOf = (line) => {
+        const colW = (line.section === 'col2' ? colExtent.col2 : colExtent.col1) || Math.max(colExtent.col1, colExtent.col2);
+        if (!colW || !isFinite(colW) || colW <= 0) return 1;
+        return (line.maxX - line.minX) / colW;
+      };
+
       const heads = orderedLines.filter(l => l.section === 'caption' && captionLabelRegex.test(textOf(l)));
       heads.forEach(head => {
         const isTableHead = /^(?:(?:Extended\s+Data|Supplement(?:ary|al)?|SI)\s+)?(?:Tab(?:\.|le)?|TABLE|Box|Algorithm|Scheme)\b/i.test(textOf(head));
@@ -2648,20 +2696,67 @@
         const below = orderedLines.filter(l => l !== head && l.y < head.y).sort((a, b) => b.y - a.y);
         let lastY = head.y;
         let capH = head.h;
-        let prevGap = null; // 图注自身的行距（自适应基准）
+        /*
+         * 【图注折行的行距上限怎么定】老口径是 `prevGap * 1.6`（**连乘**）并且每吸收一行
+         * 都把 capH 更新成"当前行的 h"。两个错误叠在一起，就是"通栏图注把下方正文整段吞掉"
+         * 的直接原因（Xu 2020 第 4 页实测）：
+         *   · 连乘：图注内部行距 8.9pt 一轮就把上限抬到 14.4pt，而"另起一段"的正文行只差 14.2pt
+         *     —— 正好从门缝里挤进来；
+         *   · capH 长大：这一行的 h 是**整行所有 span 的最大值**，同一条基线上右栏还有公式，
+         *     于是 h 变成 10pt，上限跟着涨到 16pt，更深处的正文也被吞进来。
+         * 现在上限取「本页行距中位数 × 1.1」与「图注头字号 × 1.5」的较大者：
+         *   · 图注内部行距（实测本页 8.9 / 9.0pt）稳过；
+         *   · 另起一段的正文行（14.2pt = 行距 + 一个段间空行）被拒；
+         *   · 公式行里的极小间隙（实测 1.0pt）也不会把上限压塌 —— 老口径在 STM 第 6 页
+         *     正是靠"连乘放大"与"塌缩"两种错误互相抵消才勉强通过，不能依赖。
+         *
+         * 【为什么自己算行距】normalLineHeight / baseFontSize 都定义在别处，
+         * 单测把这一段单独抽出来跑时引用它们会直接 ReferenceError（实测连着踩两次）；
+         * 而 orderedLines 本来就是这个函数要遍历的东西，自给自足。
+         */
+        const gapLimit = (() => {
+          const pitch = (() => {
+            const perCol = { col1: [], col2: [] };
+            orderedLines.forEach(l => {
+              if (l.section === 'col1' || l.section === 'col2') perCol[l.section].push(l.y);
+            });
+            const gaps = [];
+            Object.keys(perCol).forEach(k => {
+              const ys = perCol[k].sort((a, b) => b - a);
+              for (let i = 1; i < ys.length; i++) {
+                const d = ys[i - 1] - ys[i];
+                if (d >= 4 && d <= 30) gaps.push(d); // 4pt 以下=同一行的碎片，30pt 以上=段落间隔
+              }
+            });
+            if (!gaps.length) return 0;
+            gaps.sort((a, b) => a - b);
+            return gaps[Math.floor(gaps.length / 2)];
+          })();
+          return Math.max(Math.max(head.h, 9) * 1.5, pitch * 1.1);
+        })();
         for (const line of below) {
           const gap = lastY - line.y;
-          // 行距上限用"图注已有行距"的 1.6 倍相对判断，而不是靠字号：
-          // 字号偏大时 1.8×字号 会松到把下一张表的数据行也吞进来。
-          const limit = prevGap !== null ? prevGap * 1.6 : Math.max(capH, 9) * 1.8;
-          if (gap > limit) break;
+          if (gap > gapLimit) break;
           if (line.section === 'caption') {
-            prevGap = gap > 0 ? gap : prevGap;
             lastY = line.y;
-            capH = line.h;
             continue;
           }
           if (line.section === 'header' || line.section === 'metadata') continue;
+          /*
+           * 【栏别判据】行已经在别的栏里 → 不可能是这条图注的折行。
+           *
+           * 为什么必须有：双栏页上，同一 y 附近左右栏各有文字是很正常的，
+           * 而图注头只属于其中一栏。实测 Xu 2020 第 4 页第二个图注头
+           * （"Fig. 3. In practice, the maximum size…"，x=[54,299]，左栏）：
+           * 右栏同一高度上的正文 "represents the residual of VIO results, ensuring the local"
+           * 与图注头的行距只有 3.9pt（比图注自身行距 12pt 还小），**行距判据拿它没办法**
+           * —— 只看"横向是否相交"时它会连带后面几行一起被吞进图注，
+           * 卡片上就出现「图 3。… and robust performance. represents the residual of VIO results…」。
+           * 加上这条判据后：右栏的行一个都进不来，左栏的折行照旧被吸收。
+           * 通栏图注（自己横跨分栏线）不受影响。
+           */
+          const headCross = head.maxX - head.minX > (typeof pagePdfW !== 'undefined' ? pagePdfW : 612) * 0.45;
+          if (!headCross && line.section !== head.section) continue;
           // 横向要在图注的范围内
           if (line.maxX < head.minX - 10 || line.minX > head.maxX + 10) continue;
           const t = textOf(line);
@@ -2670,10 +2765,22 @@
           // 表格数据行（一行里三个以上数字）不是图注文字
           const numCount = (t.match(/(?:^|[^\w.])\d+(?:\.\d+)?/g) || []).length;
           if (numCount >= 3) break;
+          /*
+           * 占栏比例判据（见上方说明）：
+           *   fill < 0.22 → **碎片**，不是折行，跳过。
+           *
+           * 【为什么只留这一条、不再加"满栏且像正文就 break"】试过，是错的：
+           * 图注**尾行**本身常常就是满栏的完整句子——本页尾行
+           * "the relative 3-D translation from the result of detection and tracking."
+           * 占左栏 96%、71 字、10 个多字母词，任何"像正文"的词数门限都会把它判成正文，
+           * 于是尾行被留在正文里（老 bug 的镜像，实测整整绕了两轮才定位）。
+           * 真正把"尾行"和"另起一段的正文"分开的是上面那条**固定行距上限**：
+           * 尾行与图注上一行只差 9.0pt（同一段的正常行距），而正文行差 14.2pt（跳过一整行）。
+           */
+          const fill = fillRatioOf(line);
+          if (fill < 0.22) continue;
           line.section = 'caption';
-          prevGap = gap > 0 ? gap : prevGap;
           lastY = line.y;
-          capH = line.h;
         }
       });
     })();
@@ -3407,6 +3514,27 @@
         const b = paras[j];
         if (colOf(a) !== 'col1' || colOf(b) !== 'col2') continue;
         if (endsSentence(a.cleanText) || !looksContinuation(b.cleanText)) continue;
+        /*
+         * 【折词续接的额外闸门】左栏**以连字符结尾**时，"续上"意味着要把右栏开头直接粘到词尾上。
+         * 这一步比"续一句"激进得多（会真的改写词形），所以必须确认右栏开头**确实是那个词的后半截**。
+         *
+         * 【实测反例 Xu 2020 第 4 页】左栏最后一行是
+         *   "The optimization is expressed as the following formula-"
+         * 右栏开头是编号式子的尾巴（"tion:" 后面紧跟 `{ ∑ ∥ ∥ 2 ∥ V …`）。
+         * 只看"小写开头"就合并，会把右栏那串公式残渣直接粘到 "formula" 后面：
+         * 卡片上成了「The optimization is expressed as the following formulation: { ∥ ∑ ∥ ∥ 2 …」，
+         * 右栏的正文解释也被并进这一段（整段横跨两栏）。
+         *
+         * 判据用两条都与内容有关的、不看字号/坐标的：
+         *   ① 右栏开头的第一个字必须是**小写字母**（词的后半截一定是小写续写，不可能另起大写）；
+         *   ② 再往后 36 个字符里**不能混进数学符号**（`∑ ∥ ∈ { }` 这类）——真词的后半截是纯字母，
+         *      而拼接式子的开头一定是符号密度极高的残渣。
+         * 第 ① 条其实已经被 looksContinuation 覆盖，这里显式写出来是为了读代码时不必回头查它。
+         */
+        if (/-$/.test(a.cleanText)) {
+          const tailPiece = (b.cleanText || '').trim().slice(0, 36);
+          if (!/^[a-z]/.test(tailPiece) || /[∑∏∫√≤≥≠≈∞∈∂∇∧∨{}∥]/.test(tailPiece)) continue;
+        }
 
         // 合并：左栏尾部 + 右栏开头的续句
         if (/-$/.test(a.cleanText)) {
