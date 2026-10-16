@@ -934,7 +934,7 @@
 
       case 'visionSegmentationError': {
         visionPending.delete(Number(msg.page));
-        showVisionBadge(`视觉重排失败：${msg.errorText || '未知错误'}`, 'error');
+        console.warn(`[Viewer] 视觉重排未执行 (page ${msg.page}):`, msg.errorText);
         break;
       }
 
@@ -1991,6 +1991,78 @@
     });
 
     return { items, runs, byIndex };
+  }
+
+  /*
+   * ============ 段落形状判据（必须在 buildAcademicLayout **之前**）============
+   *
+   * 【为什么放在这里】这两条判据被 buildAcademicLayout 里的 commitParagraph /
+   * joinAcrossColumnBreak 调用；而本仓库的单测是把 buildAcademicLayout 这一段
+   * **单独抽出来跑**的（viewer-unit 的 T12/T12b），抽不到定义就会
+   * `ReferenceError: looksLikeDisplayFormula is not defined`（实测踩过）。
+   * 放在它前面，抽取范围自然带得上，函数声明也照样提升。
+   */
+
+  /** 数学符号（与 isFormulaLikePara 的口径一致，另加 ∑∏√∥∫） */
+  const MATH_SYMBOL_RE = /[=+\-*/^_{}[\]()<>≤≥≈≠∈∑∏∫√∥∂∇×·|\\]/g;
+
+  /**
+   * 【连字符续写的"折半词"段】以「一个字母 + 连字符」或「一个字母 + 空格 + 一个小写字母」结尾的段落，
+   * 是被排版折行切开的词：实测 Xu 2020 第 4 页左栏最后一行
+   * `The optimization is expressed as the following formula-`
+   * 与右栏首行 `tion:` 本是同一个词（formula|tion），跨栏续接把两半拼起来是对的。
+   * 这类段落结尾本来就不会有句末标点，所以跨栏续接里"上一段已结束就不合并"的判据必须放行。
+   */
+  function endsWithSplitWord(text) {
+    const t = String(text || '').replace(/\s+$/, '');
+    return /[A-Za-z]-$/.test(t) || /\b[A-Za-z]\s+[a-z]$/.test(t);
+  }
+
+  /**
+   * 【独立公式段（编号式子）】专治"公式被当散文送去翻译"：
+   * 译文回来的是一坨「该优化问题表示为如下公式：⟦t k min ∥ x V z t …⟧ 其中 L 为所有距离测量的集合…」，
+   * 卡片上中英与数学符号糊在一起 —— 用户截图里那个"明显有问题"就是它（Xu 2020 第 4 页式(5)）。
+   *
+   * 【为什么不能只靠字体层】式(5) 的字符来自 CMMI/CMSY/CMEX 这些数学字体，可数学层的字体名
+   * **只有在真实渲染时才拿得到**（viewer 从 page.commonObjs 取）；拿不到时整页"没有公式"，
+   * 于是这条式子退化成普通正文、被送进翻译队列。这里给一条**只看文本**的兜底判据。
+   *
+   * 三条信号任一成立即判为公式：
+   *   ① 段落**从半个词开始**（本页是 "tion:"）—— 后半截词开头的段绝不可能是正常散文；
+   *   ② 正文文字极少（字母数 − 数字数 ≤ 35）而数学符号很多（≥ 60）且符号/字母 ≥ 1.2；
+   *   ③ 带式子编号 `(5)` / `[12]`，且符号 ≥ 25、字母 − 数字 ≤ 90。
+   * ②③ 另加一条**数字闸门**：`数字 ≤ 12 或 数字/符号 ≤ 0.3`。
+   *
+   * 【数字闸门是被真实数据逼出来的】加它之前，数表的数据行被整片误判成公式
+   * （实测 AOT 第 7 页 "(a) YouTube-VOS Seen Unseen Methods J & F …"、
+   *   STM 第 6 页 "OL J Mean F Mean Time S2S (+YV) …"、cycle 第 6 页表格数据行），
+   * 因为它们同样是"字母少、符号多"。区别在于**表格的数字又多又密**（一屏几十个），
+   * 而编号式子的数字只有编号与少数下标（本页式(5)：数字 24、符号 372 → 24/372 = 0.06）。
+   * 加上这条之后，上述三处全部回到原来的分类。
+   *
+   * 【阈值怎么来的】拿本页真实数据反推（把公式和它后面的解释并成一段时共 907 字）：
+   *   字母 273、数字 24、符号 372 → ① 命中；符号/字母 = 372/(273−24) = 1.49，② 也命中。
+   * 必须不能误伤的正文：
+   *   `For drone k, a frame is selected to be a keyframe…` 字母 274、数字 2、符号 9 → ② 差得远；
+   *   `Simply solving Eq. 5 can directly provide the result…` 字母 400+、符号 20 出头 → 也差得远。
+   * 阈值因此留了很宽的余量：宁可漏判（退化成原来的行为），也不误伤正文与表格。
+   */
+  function looksLikeDisplayFormula(text) {
+    const s = String(text || '');
+    if (s.length < 30) return false;
+    if (/[\u4e00-\u9fff]/.test(s)) return false; // 已经是中文（或译文），不参与判定
+    if (/^[a-z]{1,10}[:：]/.test(s.trimStart())) return true; // ① 从半个词开始
+
+    const letters = (s.match(/[A-Za-z]/g) || []).length;
+    const digits = (s.match(/\d/g) || []).length;
+    const symbols = (s.match(MATH_SYMBOL_RE) || []).length;
+    const proseLetters = letters - digits; // 数字不是"正文文字"
+    /** 数字太多 = 数表数据行，不是式子 */
+    const tooNumeric = digits > 12 && digits / Math.max(1, symbols) > 0.3;
+
+    if (!tooNumeric && proseLetters <= 35 && symbols >= 60 && symbols / Math.max(1, proseLetters) >= 1.2) return true; // ②
+    if (!tooNumeric && /\(\s*\d{1,2}\s*\)|\[\s*\d{1,2}\s*\]/.test(s) && symbols >= 25 && proseLetters <= 90) return true; // ③
+    return false;
   }
 
   // ====================== 核心：学术文献双栏高保真版面解析器 ======================
@@ -3335,6 +3407,16 @@
         } else if (mathSegs.length > 0) {
           para.localMath = mathSegs.map(s => ({ text: String(s.text || ''), latex: String(s.latex || '').trim() }));
         }
+        /*
+         * 【字体层没认出公式时的兜底】见 looksLikeDisplayFormula 的注释：
+         * 编号式子常常整段都是普通字符（数学层拿不到真实字体名时不认账），
+         * 于是被当散文送进翻译队列，回来的译文是一坨符号与中文糊在一起的东西。
+         * 这里按**文本形状**再兜一层：只把"明显是一条式子"的段落改成不可翻译。
+         */
+        if (para.type !== 'formula' && typeof looksLikeDisplayFormula === 'function' && looksLikeDisplayFormula(para.cleanText)) {
+          para.type = 'formula';
+          para.formulaByShape = true;
+        }
         para.sentencesEn = splitEnglishSentencesSmart(para.cleanText);
         paras.push(para);
       }
@@ -3513,7 +3595,27 @@
         if (j < 0) continue;
         const b = paras[j];
         if (colOf(a) !== 'col1' || colOf(b) !== 'col2') continue;
-        if (endsSentence(a.cleanText) || !looksContinuation(b.cleanText)) continue;
+        /*
+         * 【折半词必须放行】左栏尾段以「一个字母 + 连字符」（如 `…the following formula-`）
+         * 或「一个字母 + 空格 + 一个小写字母」结尾时，右栏开头就是这个词的后半截。
+         * 这种段落结尾**本来就不可能有句末标点**，若仍按 endsSentence(a) 拦下，
+         * 那个词就会永远断在两栏之间（卡片上是「…as the following formula-」+「tion: …」两段）。
+         * 实测 Xu 2020 第 4 页就是这个形状。
+         *
+         * 【为什么要 typeof 兜底】本仓库的单测会把这一段 IIFE **单独抽出来跑**
+         * （viewer-unit 的 T14），那时 endsWithSplitWord 不在作用域里 ——
+         * 直接调用会 `TypeError: endsWithSplitWord is not a function`（实测踩到）。
+         * 兜底用同一个正则现场判，语义一致，只是少了提取范围耦合。
+         */
+        const isSplitWordTail = t => {
+          const s = String(t || '').replace(/\s+$/, '');
+          return /[A-Za-z]-$/.test(s) || /\b[A-Za-z]\s+[a-z]$/.test(s);
+        };
+        const tailIsSplitWord = typeof endsWithSplitWord === 'function'
+          ? endsWithSplitWord(a.cleanText)
+          : isSplitWordTail(a.cleanText);
+        if (!tailIsSplitWord && (endsSentence(a.cleanText) || !looksContinuation(b.cleanText))) continue;
+        if (tailIsSplitWord && !looksContinuation(b.cleanText)) continue;
         /*
          * 【折词续接的额外闸门】左栏**以连字符结尾**时，"续上"意味着要把右栏开头直接粘到词尾上。
          * 这一步比"续一句"激进得多（会真的改写词形），所以必须确认右栏开头**确实是那个词的后半截**。
@@ -4445,7 +4547,7 @@
 
   function getParaCacheKey(pageNum, para) {
     const sig = getParaSig(para.cleanText || para.text || '');
-    // 缓存键里带上引擎标识：换引擎（Gemini ↔ DeepSeek）后旧译文自动失效，
+    // 缓存键里带上引擎标识：换引擎后旧译文自动失效，
     // 否则会继续复用上一个引擎翻出来的结果，让人以为"换了引擎没用"。
     const tag = currentEngineTag ? `${currentEngineTag}_` : '';
     return sig ? `${pageNum}_${tag}${sig}` : `${pageNum}_${para.id}`;
@@ -4921,30 +5023,8 @@
       return;
     }
 
-    const shot = await capturePageImage(pageNum);
-    if (!shot) return;
-    const base64 = String(shot.dataUrl).split(',')[1] || '';
-    if (!base64) return;
-
-    visionPending.add(pageNum);
-    showVisionBadge('正在请视觉模型判断版面…（坐标仍来自文本层）');
-    try {
-      vscode.postMessage({
-        type: 'requestVisionSegmentation',
-        page: pageNum,
-        imageBase64: base64,
-        mimeType: 'image/jpeg',
-        segments: paragraphs.map(p => ({
-          id: p.id,
-          type: p.type || 'body',
-          text: (p.cleanText || '').slice(0, 1500)
-        }))
-      });
-    } catch (e) {
-      visionPending.delete(pageNum);
-      showVisionBadge('视觉请求发送失败', 'error');
-      vscode.postMessage({ type: 'showInfo', message: `视觉请求发送失败：${(e && e.message) || e}` });
-    }
+    // 视觉重排已停用，不向扩展发起视觉大模型请求
+    return;
   }
 
   /**
@@ -4959,20 +5039,8 @@
    */
   function showVisionBadge(text, level) {
     let el = document.getElementById('visionStatusBadge');
-    if (!text) {
-      if (el) el.remove();
-      return;
-    }
-    if (!el) {
-      el = document.createElement('div');
-      el.id = 'visionStatusBadge';
-      el.className = 'vision-status-badge';
-      const host = dom.transListContainer || document.getElementById('transListContainer');
-      if (host && host.parentNode) host.parentNode.insertBefore(el, host);
-      else document.body.appendChild(el);
-    }
-    el.textContent = text;
-    el.classList.toggle('vision-status-error', level === 'error');
+    if (el) el.remove();
+    return;
   }
 
   // ============ 视觉手术：真的按模型的判断合并 / 拆分 / 改类型（坐标仍来自文本层） ============
@@ -11496,14 +11564,12 @@ let aiPresetQuestion = '';
       versionEl.textContent = ver ? `v${ver}` : 'v?';
     }
     if (!tag) return;
-    // 提示文案跟随引擎：OpenAI 兼容接口走的是 apiKey + modelName，不该提示"设置 Gemini API Key"
+    // 提示文案跟随状态：提示配置 API Key
     const settingsCmd = '配置学术翻译引擎与 API Key';
     if (!msg.hasKey) {
       tag.textContent = '未配置 API Key';
       tag.classList.add('ai-model-tag-warn');
-      tag.title = aiEngineIsOpenAI
-        ? `请执行命令「${settingsCmd}」填入自定义大模型 API Key（academicReader.apiKey）`
-        : `请执行命令「${settingsCmd}」填入 Google Gemini API Key（academicReader.geminiApiKey）`;
+      tag.title = `请执行命令「${settingsCmd}」填入大模型 API Key（academicReader.apiKey）`;
     } else if (msg.listError) {
       tag.textContent = aiLastModel || '模型未知';
       tag.classList.add('ai-model-tag-warn');
@@ -11511,11 +11577,7 @@ let aiPresetQuestion = '';
     } else {
       tag.textContent = aiLastModel || '默认模型';
       tag.classList.remove('ai-model-tag-warn');
-      tag.title = aiEngineIsOpenAI
-        ? `当前使用 OpenAI 兼容接口的模型 ${aiLastModel || '(未设置)'}（端点在设置里配置，点击右上角翻译设置可修改）`
-        : `该 Key 下可用于 generateContent 的模型共 ${
-            msg.available ? msg.available.length : 0
-          } 个（点击右上角的翻译设置可切换）`;
+      tag.title = `当前使用模型 ${aiLastModel || '(未设置)'}（可在设置中配置）`;
     }
   }
 

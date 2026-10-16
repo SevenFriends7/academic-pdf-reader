@@ -1013,6 +1013,69 @@ console.log('\n===== T12b 通栏图注的下探边界（真实数据） =====');
   );
 })();
 
+// ---------- 16. 公式段形状判据（真实数据：Xu 2020 式(5) 与三篇论文的数表行） ----------
+console.log('\n===== T16 公式段形状判据（真实数据） =====');
+(function displayFormulaShapeTest() {
+  const start = code.indexOf('  function looksLikeDisplayFormula(text) {');
+  const end = code.indexOf('\n  }\n', start);
+  if (start < 0 || end < 0) {
+    checkTrue('从产物中抽出 looksLikeDisplayFormula', false, '未找到该片段');
+    return;
+  }
+  // MATH_SYMBOL_RE 定义在它前面，一起抽出来（函数体要用）
+  const symStart = code.lastIndexOf('  const MATH_SYMBOL_RE =', start);
+  const snippet = code.slice(symStart, end + 4);
+  // eslint-disable-next-line no-new-func
+  const fn = new Function(`${snippet}\n return looksLikeDisplayFormula;`)();
+
+  // 真值：Xu 2020 第 4 页式(5)——跨栏续接后整段（公式 + 后面的符号解释）
+  const xuEq5 =
+    'tion: { ∥ ∑ ∥ ∥ 2 ∥ V t tk min ∥ x V z t − x ˆ ∥ i k j ∥ 2 ∥ ij − ∥ ˆ X ∥ k d (i,j,t) ∈L () ∥ ∑ ∥ 2 + ' +
+    '∥ ∥ (Vk P ˆ t − 1 b i) Vk P ˆ t j − i zDT t ∥ j ∥ (5) (i,j,t) ∈D T } ∑ ∥ () − 1 ()∥ t − V 1 − 1 t ∥ 2 Vk P ˆ + ' +
+    '∥ ∥ z t δ P k i (P ˆ i ∥ i) (i,t) ∈S where L is the set of all distance measurements, D is the set of all ' +
+    'detection measurements, S is ∥ the set of all VIO ego motion measurements.';
+  checkTrue('式(5)（段首 "tion:" + 符号密集）被判为公式', fn(xuEq5) === true, `len=${xuEq5.length}`);
+
+  // 必须**不能**误判的三类：正文 / 数表数据行 / 噪声
+  const cases = [
+    ['正文（真），第 4 页',
+      'For drone k, a frame is selected to be a keyframe if one of the following criteria is satisfied: • The frame contain new drones.',
+      false],
+    ['正文（真），第 4 页',
+      'Instead of directly solving Eq.1, a bundle adjustment formulation is adopted for the optimization of the relative states. By minimizing the Mahalanobis norm of the residuals of the measurements, a maximum a posterior estimation can be obtained.',
+      false],
+    ['公式后紧跟的解释句（真），第 4 页',
+      '∥ 2 ∥ is the residual of distance measurements; (i, j) present the pair of successful detection and tracking of drone j detected by drone i.',
+      false],
+    ['数表数据行（真），AOT 第 7 页',
+      '(a) YouTube-VOS Seen Unseen Methods J & F J F J & F FPS Ours 81.0 82.4 76.0 76.1 79.7 78.3 75.7 77.0 79.1',
+      false],
+    ['数表数据行（真），STM 第 6 页',
+      'OL J Mean F Mean Time S2S (+YV) [38] X 79.1 - 9 s MSK [26] X 79.7 75.4 12 s OSMN [40] 51.2 60.0 52.5 57.1 20 s',
+      false],
+    ['纯数字/编号噪声', '(5)', false]
+  ];
+  cases.forEach(([label, text, want]) => {
+    checkTrue(`不误判：${label}`, fn(text) === want, `got=${fn(text)} want=${want}`);
+  });
+})();
+
+// ---------- 16b. 跨栏续接必须放行"折半词"（真实 Xu 2020 第 4 页） ----------
+console.log('\n===== T16b 折半词跨栏续接（真实数据） =====');
+(function splitWordJoinTest() {
+  const start = code.indexOf('  function endsWithSplitWord(text) {');
+  const end = code.indexOf('\n  }\n', start);
+  if (start < 0 || end < 0) {
+    checkTrue('从产物中抽出 endsWithSplitWord', false, '未找到该片段');
+    return;
+  }
+  // eslint-disable-next-line no-new-func
+  const fn = new Function(`${code.slice(start, end + 4)}\n return endsWithSplitWord;`)();
+  checkTrue('「…the following formula-」结尾被判为折半词', fn('The optimization is expressed as the following formula-') === true);
+  checkTrue('正常句号结尾不算折半词', fn('This sentence ends properly.') === false);
+  checkTrue('正常单词结尾不算折半词', fn('at the end of the sentence') === false);
+})();
+
 // ---------- 13. 同一条图注必须连在一起（真实第 3 页几何） ----------
 console.log('\n===== T13 图注行聚合（真实数据） =====');
 (function captionReorderTest() {
@@ -1295,12 +1358,20 @@ console.log('\n===== T14 跨栏续接（真实数据） =====');
     checkTrue('从产物中抽出 joinAcrossColumnBreak', false, '未找到该片段');
     return;
   }
+  /*
+   * endsWithSplitWord 定义在 buildAcademicLayout 之前（模块级），抽这一段 IIFE 带不进来，
+   * 必须当参数喂进去 —— 否则 `ReferenceError: endsWithSplitWord is not defined`（实测踩到）。
+   */
+  const splitWordFn = new Function(
+    `${code.slice(code.indexOf('  function endsWithSplitWord(text) {'), code.indexOf('\n  }\n', code.indexOf('  function endsWithSplitWord(text) {')) + 4)}\n return endsWithSplitWord;`
+  )();
   // eslint-disable-next-line no-new-func
   const run = new Function(
     'paras',
     'isSingleColumnPage',
     'gutterX',
     'splitEnglishSentencesSmart',
+    'endsWithSplitWord',
     `${code.slice(start, end + 5)}`
   );
   const spanStub = () => ({ setAttribute() {} });
@@ -1326,7 +1397,7 @@ console.log('\n===== T14 跨栏续接（真实数据） =====');
   );
   const rightHead = mkPara(1, 'body', 'target object [2,34,26,14,26,11,18] during the test time.', 309, 545);
   const paras = [leftTail, rightHead];
-  run(paras, false, 297, split);
+  run(paras, false, 297, split, splitWordFn);
   checkTrue('续句被合并（残句消失）', paras.length === 1, `合并后剩 ${paras.length} 段`);
   checkTrue(
     '合并后是完整句子（…appearance of the target object … during the test time.）',
@@ -1342,7 +1413,7 @@ console.log('\n===== T14 跨栏续接（真实数据） =====');
     mkPara(0, 'body', 'This sentence ends properly.', 50, 286),
     mkPara(1, 'body', 'another paragraph starts here.', 309, 545)
   ];
-  run(p1, false, 297, split);
+  run(p1, false, 297, split, splitWordFn);
   checkTrue('左栏已完整结束 → 不合并', p1.length === 2, `剩 ${p1.length} 段`);
 
   // 反例 2：右栏首段是大写开头的新句子 → 不许合并
@@ -1350,7 +1421,7 @@ console.log('\n===== T14 跨栏续接（真实数据） =====');
     mkPara(0, 'body', 'the appearance of the', 50, 286),
     mkPara(1, 'body', 'While the online learning improves accuracy, it is expensive.', 309, 545)
   ];
-  run(p2, false, 297, split);
+  run(p2, false, 297, split, splitWordFn);
   checkTrue('右栏是大写开头的新句子 → 不合并', p2.length === 2, `剩 ${p2.length} 段`);
 
   // 反例 5（真实 Xu 2020 第 4 页）：左栏以 "formula-" 结尾，右栏开头是编号式子的残渣
@@ -1361,7 +1432,7 @@ console.log('\n===== T14 跨栏续接（真实数据） =====');
     mkPara(1, 'body', 'tion: { ∥ ∑ ∥ ∥ 2 ∥ V t tk min ∥ x V z t − x ˆ ∥ i k j', 313, 558),
     mkPara(2, 'body', 'where L is the set of all distance measurements.', 313, 558)
   ];
-  run(pFormula, false, 305, split);
+  run(pFormula, false, 305, split, splitWordFn);
   checkTrue(
     '折词续接遇到公式残渣 → 不合并（不许把式子粘到词尾上）',
     pFormula.length === 3,
@@ -1373,7 +1444,7 @@ console.log('\n===== T14 跨栏续接（真实数据） =====');
     mkPara(0, 'body', 'The optimization is expressed as the following formula-', 64, 299),
     mkPara(1, 'body', 'tion: where L is the set of all distance measurements.', 313, 558)
   ];
-  run(pWordTail, false, 305, split);
+  run(pWordTail, false, 305, split, splitWordFn);
   checkTrue(
     '折词续接遇到真正的词尾 → 照旧合并成 formulation',
     pWordTail.length === 1 && /following formulation:/.test(pWordTail[0].cleanText),
@@ -1382,7 +1453,7 @@ console.log('\n===== T14 跨栏续接（真实数据） =====');
 
   // 反例 3：单栏论文不该触发
   const p3 = [mkPara(0, 'body', 'ends without punctuation', 50, 545), mkPara(1, 'body', 'continuation here', 50, 545)];
-  run(p3, true, 297, split);
+  run(p3, true, 297, split, splitWordFn);
   checkTrue('单栏论文 → 不触发跨栏合并', p3.length === 2, `剩 ${p3.length} 段`);
 
   // 反例 4：跨栏但上一段不是 body（图注）→ 不许合并
@@ -1390,7 +1461,7 @@ console.log('\n===== T14 跨栏续接（真实数据） =====');
     mkPara(0, 'caption', 'Figure 2: something without period', 50, 545),
     mkPara(1, 'body', 'lowercase continuation', 309, 545)
   ];
-  run(p4, false, 297, split);
+  run(p4, false, 297, split, splitWordFn);
   checkTrue('图注不参与跨栏合并', p4.length === 2, `剩 ${p4.length} 段`);
 
   // 真实第 6 页：8.6 改成"图表块按栏内联"之后，Table 3 的数据行与图注会**插在**
@@ -1402,7 +1473,7 @@ console.log('\n===== T14 跨栏续接（真实数据） =====');
     mkPara(2, 'caption', 'Table 3: The quantitative evaluation on DAVIS-2017 validation set.', 309, 545),
     mkPara(3, 'body', 'target object. We compare our method with state-of-the-art methods.', 309, 545)
   ];
-  run(p5, false, 293, split);
+  run(p5, false, 293, split, splitWordFn);
   // 合并会把右栏那一段并进左栏尾段（剩下 3 段：合并后的正文 + 被跳过的图表两段）
   checkTrue('跨栏续句可以跳过中间的图表段落（右栏那段被并走）', p5.length === 3, `剩 ${p5.length} 段`);
   checkTrue(
@@ -1422,7 +1493,7 @@ console.log('\n===== T14 跨栏续接（真实数据） =====');
     mkPara(1, 'body', 'a totally unrelated paragraph that happens to be here.', 50, 286),
     mkPara(2, 'body', 'lowercase continuation of the first one', 309, 545)
   ];
-  run(p6, false, 293, split);
+  run(p6, false, 293, split, splitWordFn);
   checkTrue('中间隔着正文 → 不跨段合并', p6.length === 3, `剩 ${p6.length} 段`);
 })();
 
