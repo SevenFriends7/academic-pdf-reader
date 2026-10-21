@@ -193,8 +193,8 @@ check('提示词改成"照抄残渣 + ⟦⟧ 占位"（不再让模型转写 LaT
 check('旧的"公式原样保留"要求已全部删除（那等于命令模型抄残渣）', !/公式、数学符号、变量名、缩写、文献引用编号原样保留/.test(translatorSrc));
 check('闸门会先剥 LaTeX 再判语言与相似度', /stripLatexForCounting/.test(translatorSrc) && /similarity\(source, oPlain\)/.test(translatorSrc));
 check(
-  '译文行走公式渲染（逐句两处 + 连贯段落一处；译文公式由 renderZhWithMath 换成本地 LaTeX）',
-  (viewerSrc.match(/sent-zh">\$\{renderZhWithMath\(/g) || []).length === 2 &&
+  '译文行走公式渲染（逐句/整段/数学密集共 3 处；译文公式由 renderZhWithMath 换成本地 LaTeX）',
+  (viewerSrc.match(/sent-zh">\$\{renderZhWithMath\(/g) || []).length === 3 &&
     /zh-paragraph-plain">\$\{renderZhWithMath\(transText/.test(viewerSrc) &&
     /function renderZhWithMath\(text, para\)/.test(viewerSrc) &&
     // 原文侧：允许换行（renderParaEnHtml 有多处带换行的调用写法）
