@@ -7,7 +7,7 @@
     "color": "#0b578a",
     "theme": "dark"
   },
-  "version": "1.6.14",
+  "version": "1.6.31",
   "publisher": "paper-reader",
   "license": "MIT",
   "repository": {
@@ -49,10 +49,10 @@
     "onCustomEditor:academicReader.pdfEditor",
     "onCommand:academicReader.openPdf",
     "onCommand:academicReader.openSettings",
-    "onCommand:academicReader.setGeminiApiKey",
     "onCommand:academicReader.pickModel",
     "onCommand:academicReader.exportNotesMarkdown",
-    "onStartupFinished"
+    "onStartupFinished",
+    "onCommand:academicReader.setupLocalFormulaModel"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -71,12 +71,7 @@
     "commands": [
       {
         "command": "academicReader.openSettings",
-        "title": "配置学术翻译引擎与 API Key (Gemini / DeepSeek / 内置免费)",
-        "category": "文献阅读 (Academic Reader)"
-      },
-      {
-        "command": "academicReader.setGeminiApiKey",
-        "title": "设置 Google Gemini API Key（并自动校验可用性）",
+        "title": "配置学术翻译引擎与 API Key (DeepSeek / OpenAI / 内置免费)",
         "category": "文献阅读 (Academic Reader)"
       },
       {
@@ -97,6 +92,11 @@
       {
         "command": "academicReader.openPdf",
         "title": "在双栏对照器中打开 PDF",
+        "category": "文献阅读 (Academic Reader)"
+      },
+      {
+        "command": "academicReader.setupLocalFormulaModel",
+        "title": "启用本地公式识别（自动查找 Python + paddleocr）",
         "category": "文献阅读 (Academic Reader)"
       }
     ],
@@ -137,43 +137,21 @@
         },
         "academicReader.translationService": {
           "type": "string",
-          "default": "gemini",
+          "default": "openai-compatible",
           "enum": [
-            "gemini",
             "openai-compatible",
             "built-in"
           ],
           "enumDescriptions": [
-            "Google Gemini 官方 API (顶级学术翻译质量，推荐)",
             "自定义大模型 (DeepSeek / OpenAI / Kimi 等兼容接口)",
             "内置免费翻译 (无需 Key，网络直连)"
           ],
           "description": "翻译引擎选择"
         },
-        "academicReader.geminiApiKey": {
-          "type": "string",
-          "default": "",
-          "description": "Google Gemini API 密钥 (可在 Google AI Studio 免费申请)"
-        },
-        "academicReader.geminiModel": {
-          "type": "string",
-          "default": "gemini-3.6-flash",
-          "description": "翻译使用的 Gemini 模型。建议用命令「从可用模型列表中选择」来挑选——不同 API Key 有配额的模型不同。模型名写错/下线/无配额时会自动回退到有配额的模型，并在译文卡片上如实提示。"
-        },
         "academicReader.aiModel": {
           "type": "string",
           "default": "",
-          "description": "AI 学术问答使用的模型（翻译与问答共用所选引擎）。留空则沿用当前的翻译模型。Gemini 引擎填 Gemini 模型名（想用推理更强的模型问答、同时让翻译继续用 flash 就填这里）；OpenAI 兼容引擎填该端点的模型名（如 deepseek-reasoner）。注意：无配额的模型会返回 429，Gemini 引擎下插件会自动回退到有配额的模型。"
-        },
-        "academicReader.translationThinkingBudget": {
-          "type": "number",
-          "default": 0,
-          "description": "翻译时的 Gemini 思考预算（thinkingBudget）。默认 0 = 关闭思考（实测默认思考会让首字延迟从 ~1s 涨到 ~19s 且多烧约 1000 token，翻译并不需要）。设为 -1 使用模型默认值。"
-        },
-        "academicReader.aiThinkingBudget": {
-          "type": "number",
-          "default": 0,
-          "description": "AI 问答的思考预算（仅 Gemini 引擎有效）。默认 0 = 关闭思考：思考 token 计入账单且会显著拉长等待，日常问答收益有限。遇到需要深度推理的问题可临时设为 -1 交给模型决定。"
+          "description": "AI 学术问答使用的模型（翻译与问答共用所选引擎）。留空则沿用当前的翻译模型。OpenAI 兼容引擎填该端点的模型名（如 deepseek-reasoner）。"
         },
         "academicReader.aiTemperature": {
           "type": "number",
@@ -233,23 +211,72 @@
         },
         "academicReader.segmentationEngine": {
           "type": "string",
-          "default": "vision",
+          "default": "local",
           "enum": [
-            "vision",
+            "local",
             "auto",
-            "local"
+            "vision"
           ],
           "enumDescriptions": [
-            "视觉优先（推荐）：每页都请视觉模型判断版面结构（本地结果先显示，视觉回来后校正并刷新）；同一页只算一次，结果会缓存",
-            "按需视觉：只在本地判据可疑的页（三栏以上 / 图注占比异常 / 段落数突变）才请求视觉",
-            "只用本地：完全离线、零成本，用代码解析文本层与分栏"
+            "只用本地（推荐）：完全离线、零成本，用代码解析文本层与分栏，速度最快且最稳定",
+            "按需视觉：只在本地判据可疑的页才请求视觉",
+            "视觉优先：每页都请视觉模型判断版面结构"
           ],
-          "description": "版面分割引擎：由谁决定「段落怎么切、每段是什么类型、阅读顺序」。无论选哪个，**划线与高亮的坐标始终来自本地文本层**（视觉只判断结构，不给坐标）。没有手动重排按钮——`vision` 会为每一页自动做视觉判断；想重判本页就换一个视觉模型（缓存会自动判废）。"
+          "description": "版面分割引擎：由谁决定「段落怎么切、每段是什么类型、阅读顺序」。默认「只用本地」，完全离线无外部请求。"
         },
         "academicReader.visionSurgery": {
           "type": "boolean",
           "default": true,
           "description": "【视觉分割】是否允许视觉模型真的改写分段：把被错误切开的续句合并、把「正文+公式+正文」混在一起的一段拆开、把图内文字剔出正文。**默认每一页都套用视觉重排**；关掉它就只做类型/阅读顺序/丢弃的校正（1.2.0 的行为），段落边界完全由本地代码决定。"
+        },
+        "academicReader.splitBlockFormula": {
+          "type": "boolean",
+          "default": true,
+          "description": "【分段】把「整行都是公式」的行从正文段里切出来，单独成段（实验性）。不打开时，公式会和它前后的正文并成一段，导致整段被当成公式或整段被当成正文。"
+        },
+        "academicReader.formulaAsImage": {
+          "type": "boolean",
+          "default": true,
+          "description": "【公式卡片】直接显示按 PDF 版式裁下来的公式原图（推荐）。公式长得和原文一模一样，根号、分式、矩阵、上下标都不会走样；关掉则退回用文本层抽取的 LaTeX 重新排版，遇到需要结构信息的式子（根号、分式、嵌套上标）会明显更差。"
+        },
+        "academicReader.formulaModel.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "【本地公式模型】启用本机公式识别器（PP-FormulaNet + PaddleOCR），把公式裁图转成 LaTeX，供精读稿导出、问 AI、公式索引使用。需要本机装好 Python 与 paddleocr（见扩展目录 py/formula_sidecar.py 顶部说明）。界面上行间公式仍显示裁图（最保真），这条链路的价值在于让**文本形式**的公式也变准。"
+        },
+        "academicReader.formulaModel.pythonPath": {
+          "type": "string",
+          "default": "",
+          "description": "【本地公式模型】Python 解释器的完整路径（例如 D:\\\\python\\\\python3.13\\\\python.exe）。留空则依次尝试 python / py / python3。必须是装了 paddleocr 的那个环境——填错会报 ModuleNotFoundError: paddleocr。"
+        },
+        "academicReader.formulaModel.model": {
+          "type": "string",
+          "default": "PP-FormulaNet_plus-S",
+          "enum": [
+            "PP-FormulaNet_plus-S",
+            "PP-FormulaNet_plus-M",
+            "PP-FormulaNet_plus-L",
+            "PP-FormulaNet-S",
+            "PP-FormulaNet-L"
+          ],
+          "enumDescriptions": [
+            "251MB，CPU 约 400ms/条，精度已够大多数论文（推荐先用这个）",
+            "介于 S 与 L 之间，精度/速度折中",
+            "约 1.3GB，精度最高、速度最慢；后台预取场景可用",
+            "旧版 S（非 plus）：对复杂上下标更弱，仅作兼容",
+            "旧版 L（非 plus）"
+          ],
+          "description": "【本地公式模型】用哪个识别模型。plus 系列是 UniMERNet 系改进版，对分式、根号、嵌套上下标的还原明显更好。"
+        },
+        "academicReader.formulaModel.timeoutMs": {
+          "type": "number",
+          "default": 45000,
+          "description": "【本地公式模型】单条公式识别的超时（毫秒）。首次识别会触发模型加载（plus-S 约 12 秒），所以不要设得太小。"
+        },
+        "academicReader.formulaModel.idleTimeoutMs": {
+          "type": "number",
+          "default": 600000,
+          "description": "【本地公式模型】空闲多久后释放识别进程（毫秒，0 = 常驻不释放）。plus-S 常驻约 900MB 内存；默认 10 分钟。下次用到时会重新加载模型。"
         },
         "academicReader.visionMaxTokens": {
           "type": "number",
@@ -272,6 +299,7 @@
   "scripts": {
     "vscode:prepublish": "node esbuild.js --minify",
     "compile": "node esbuild.js",
+    "compile:wasm": "node esbuild-wasm.js",
     "watch": "node esbuild.js --watch",
     "package": "node package-vsix.js",
     "vsix": "npx --yes @vscode/vsce package --no-dependencies",
@@ -290,6 +318,7 @@
     "prevsix": "node scratch/check_version.js",
     "test:para": "node scratch/para_rebuild_test.js",
     "test:math": "node scratch/math_layer_test.js",
+    "test:formula-crop": "node scratch/formula_crop_extra_test.js",
     "test:zhmath": "node scratch/zh_math_subst_test.js",
     "test:zotero": "npx tsc src/zoteroClient.ts --outDir dist-test --module commonjs --target es2020 --skipLibCheck --esModuleInterop && node scratch/zotero/zotero_client_test.js && node scratch/zotero/viewer_zotero_test.js && node scratch/zotero/vision_index_test.js && node scratch/zotero/highlight_map_test.js",
     "test:barpos": "node scratch/focus_bar_pos_test.js",

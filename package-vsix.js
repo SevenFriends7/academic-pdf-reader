@@ -7,7 +7,38 @@ function buildVsix() {
 
   // 1. 确保最新编译（发布用压缩构建，与本机安装保持一致：
   //    pdf-lib + fontkit 不压缩会让 extension.js 从 175KB 涨到 2.8MB）
-  execSync('node esbuild.js --minify', { stdio: 'inherit' });
+  //    esbuild 的原生二进制在部分 Windows 环境起不来（实测 winmm.dll not found），
+  //    这时必须回退到 wasm 版，否则"改了代码但打不出包"，报错还指不到问题所在。
+  /*
+   * SKIP_BUILD=1 时直接用现有 dist 打包。
+   * 用途：esbuild 两条路都不可用时（原生二进制缺 DLL、wasm 版在部分 Node 上退出码异常），
+   * 只要 dist 是刚构建过的，打包这一步本身跟编译器无关。
+   */
+  if (process.env.SKIP_BUILD === '1') {
+    console.log('[vsix] SKIP_BUILD=1，跳过编译，使用现有 dist');
+  } else {
+  try {
+    execSync('node esbuild.js --minify', { stdio: 'inherit' });
+  } catch (e) {
+    console.warn('[vsix] esbuild 原生二进制不可用，改用 wasm 版编译…');
+    /*
+     * 【必须用 pipe 而不是 inherit】esbuild-wasm 的 bin 在 `stdio: 'inherit'` 下
+     * 会崩在 `fs.writeSync` 里（`RangeError: Invalid array length`），
+     * 那是它自己转写日志的 bug，和被编译的代码无关。用 pipe 收下来再转发就绕开了。
+     */
+    const { spawnSync } = require('child_process');
+    const r = spawnSync(process.execPath, [path.join(__dirname, 'esbuild-wasm.js'), '--minify'], {
+      cwd: __dirname,
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024
+    });
+    if (r.status !== 0) {
+      console.error(r.stdout || '', r.stderr || '');
+      throw new Error('wasm 编译失败');
+    }
+    process.stdout.write(r.stdout || '');
+  }
+  }
 
   const distDir = path.join(__dirname, 'dist');
   const mediaDir = path.join(__dirname, 'media');
@@ -40,6 +71,16 @@ function buildVsix() {
 
   // 复制 media
   fs.cpSync(mediaDir, path.join(extDir, 'media'), { recursive: true });
+
+  /*
+   * 复制 py（本地公式识别旁路进程）。
+   * 它是**可选功能**的载体：没有 Python 环境时用户不开这个开关就行，
+   * 但脚本本身必须在包里——否则开了开关也只会报"找不到 py/formula_sidecar.py"。
+   */
+  const pyDir = path.join(__dirname, 'py');
+  if (fs.existsSync(pyDir)) {
+    fs.cpSync(pyDir, path.join(extDir, 'py'), { recursive: true });
+  }
 
   // 生成 [Content_Types].xml
   const contentTypesXml = `<?xml version="1.0" encoding="utf-8"?>
@@ -136,6 +177,9 @@ function buildVsix() {
       fs.cpSync(distDir, path.join(targetDir, 'dist'), { recursive: true });
   fs.rmSync(path.join(targetDir, 'dist', 'extension.js.map'), { force: true });
       fs.cpSync(mediaDir, path.join(targetDir, 'media'), { recursive: true });
+      if (fs.existsSync(pyDir)) {
+        fs.cpSync(pyDir, path.join(targetDir, 'py'), { recursive: true });
+      }
       fs.copyFileSync(path.join(__dirname, 'package.json'), path.join(targetDir, 'package.json'));
       if (fs.existsSync(path.join(__dirname, 'README.md'))) {
         fs.copyFileSync(path.join(__dirname, 'README.md'), path.join(targetDir, 'README.md'));

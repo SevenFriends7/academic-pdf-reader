@@ -6,6 +6,7 @@ import { NotesStorageManager, PaperMetadata } from './notesStorage';
 import { buildAnnotatedPdf } from './pdfExport';
 import { mergeArchivedParagraphs } from './pageArchive';
 import { ZoteroClient, ZoteroLink, ZoteroDetectResult, toViewerAnnotations, ViewerAnnotation } from './zoteroClient';
+import { FormulaModelClient } from './formulaModel';
 
 /**
  * 段落内容指纹：FNV-1a + 长度。
@@ -76,9 +77,22 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
   /** 当前阅读窗口认领到的 Zotero 论文（用于把 Zotero 全文喂给 AI 问答的上下文） */
   private zoteroLink: ZoteroLink | null = null;
 
+  /**
+   * 本地公式识别器（Python 旁路进程）。
+   *
+   * 它是**懒启动**的：没启用、或者这一篇压根没有公式时，进程根本不会起来——
+   * plus-S 常驻约 900MB，不能因为用户装了这个扩展就白占着。
+   */
+  private readonly formulaModel: FormulaModelClient;
+
   constructor(private readonly context: vscode.ExtensionContext) {
     this.translator = new PaperTranslator((msg) => console.log(`[AcademicReader] ${msg}`));
     this.storageManager = new NotesStorageManager(context);
+    this.formulaModel = new FormulaModelClient((msg) => console.log(`[AcademicReader] ${msg}`));
+  }
+
+  dispose(): void {
+    this.formulaModel.dispose();
   }
 
   /**
@@ -250,14 +264,32 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
               data: Array.from(fileData),
               fileName: path.basename(document.uri.fsPath),
               paperData: paperData,
-              // 版面分割引擎要在首屏渲染前就位，否则设成 local 的用户也会被发一次视觉请求
+              // 版面分割引擎：**按用户配置走**。此前这里把 visionSurgery / visionModel 写死成
+              // false / ''，于是用户设了 segmentationEngine=vision 也没用——视觉请求带着空模型名
+              // 退回文本模型，必然失败，整页又回到本地启发式切分（实测 Xu 2020 第 4 页：
+              // 式(5) 与后面的 "where L is ..." 被并成一段，正文里 20 处行内公式重排成符号汤）。
               segmentationEngine: vscode.workspace
                 .getConfiguration('academicReader')
                 .get<string>('segmentationEngine', 'vision'),
-              // 视觉结果能不能真的改写分段（合并/拆分）：默认允许，关掉 = 只改类型/顺序/丢弃
-              visionSurgery: vscode.workspace.getConfiguration('academicReader').get<boolean>('visionSurgery', true),
-              // 视觉模型名要在首屏渲染前就位：换模型后每页的视觉缓存要自动判废重判
-              visionModel: vscode.workspace.getConfiguration('academicReader').get<string>('visionModel', '')
+              visionSurgery: vscode.workspace
+                .getConfiguration('academicReader')
+                .get<boolean>('visionSurgery', true),
+              visionModel: vscode.workspace
+                .getConfiguration('academicReader')
+                .get<string>('visionModel', ''),
+              // 公式卡片直接显示页面裁图（默认关：视觉模型能给出规范 LaTeX 时，KaTeX 更好；
+              // 它只在"拿不到可用 LaTeX"时当兜底）
+              formulaAsImage: vscode.workspace
+                .getConfiguration('academicReader')
+                .get<boolean>('formulaAsImage', false),
+              // 本地公式识别器：开启后，公式裁图会额外送本机模型转 LaTeX，
+              // 供精读稿导出 / 问 AI / 公式索引使用（界面上行间公式仍是裁图，最保真）
+              formulaModel: vscode.workspace
+                .getConfiguration('academicReader')
+                .get<boolean>('formulaModel.enabled', false),
+              formulaModelName: vscode.workspace
+                .getConfiguration('academicReader')
+                .get<string>('formulaModel.model', 'PP-FormulaNet_plus-S')
             });
             // Zotero 认领是"锦上添花"，绝不 await 在这个分支里：
             // 本地接口探测最长 4 秒，放在这里会让首屏白屏 4 秒。
@@ -301,9 +333,9 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
         case 'requestPageStructure': {
           const { page, rawText } = message;
           try {
-            console.log(`[AcademicReader] Requesting Gemini page ${page} structure parsing...`);
+            console.log(`[AcademicReader] Requesting LLM page ${page} structure parsing...`);
             const paragraphs = await this.translator.parseAndTranslatePage(rawText, page);
-            console.log(`[AcademicReader] Gemini page ${page} structure parsing succeeded with ${paragraphs.length} paragraphs.`);
+            console.log(`[AcademicReader] LLM page ${page} structure parsing succeeded with ${paragraphs.length} paragraphs.`);
             paragraphs.forEach((p, idx) => {
               const sig = hashText(p.original || '');
               if (sig) paperData.translations[`${page}_${sig}`] = p.translation;
@@ -316,7 +348,7 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
               paragraphs
             });
           } catch (err: any) {
-            console.warn(`[AcademicReader] Gemini page ${page} structure parsing failed:`, err.message);
+            console.warn(`[AcademicReader] LLM page ${page} structure parsing failed:`, err.message);
             webviewPanel.webview.postMessage({
               type: 'pageStructureError',
               page,
@@ -329,9 +361,9 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
         case 'requestPageVisionStructure': {
           const { page, rawText, imageBase64 } = message;
           try {
-            console.log(`[AcademicReader] Requesting Gemini Vision structure parsing for page ${page}...`);
+            console.log(`[AcademicReader] Requesting LLM Vision structure parsing for page ${page}...`);
             const paragraphs = await this.translator.parseAndTranslatePageVision(imageBase64, rawText, page);
-            console.log(`[AcademicReader] Gemini Vision page ${page} returned ${paragraphs.length} paragraphs.`);
+            console.log(`[AcademicReader] LLM Vision page ${page} returned ${paragraphs.length} paragraphs.`);
             paragraphs.forEach((p, idx) => {
               if (p.translation) {
                 const sig = (p.original || '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 28);
@@ -347,7 +379,7 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
               paragraphs
             });
           } catch (err: any) {
-            console.warn(`[AcademicReader] Gemini Vision structure parsing failed:`, err.message);
+            console.warn(`[AcademicReader] LLM Vision structure parsing failed:`, err.message);
             webviewPanel.webview.postMessage({
               type: 'pageVisionStructureError',
               page,
@@ -438,6 +470,12 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
          * 坐标不经过视觉模型 —— 划线高亮仍用本地文本层，见 segmentPageWithVision 的注释。
          */
         case 'requestVisionSegmentation': {
+          /*
+           * 【这里曾经是个桩】"视觉重排已停用，直接返回本地分段，不发起大模型调用"。
+           * 于是用户把 segmentationEngine 设成 vision、visionModel 填成 deepseek-flash，
+           * 每页都只是把本地的分段原样回传（action 恒为 keep）——看起来"开了视觉"，
+           * 实际一次模型都没调过，分段错误照旧（实测 Xu 2020 第 4 页式(5) 与正文并成一段）。
+           */
           const { page, imageBase64, mimeType, segments } = message;
           try {
             const result = await this.translator.segmentPageWithVision({
@@ -462,6 +500,50 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
         // 让 AI 问答能拿到全文上下文：webview 每解析完一页就同步一次
         case 'syncPageText': {
           this.translator.registerPageText(message.page, message.paragraphs || []);
+          break;
+        }
+
+        /**
+         * 本地公式识别：webview 把**已经裁好的**公式图发来，交给 Python 旁路进程转 LaTeX。
+         *
+         * 边界刻意划在"图 → 文本"：**找框与裁图全部在前端**，因为只有那里有 PDF 文本层
+         * （字体名 + 逐 item 的精确坐标）。让模型自己找框就是实测里"框歪 → 编造"的来源，
+         * 所以这一层不接受任何"整页图，你自己找公式"的请求。
+         */
+        case 'requestFormulaRecognize': {
+          const requestId = message.requestId;
+          const rawItems = Array.isArray(message.items) ? message.items : [];
+          if (rawItems.length === 0) {
+            webviewPanel.webview.postMessage({ type: 'formulaRecognizeResult', requestId, results: [] });
+            break;
+          }
+          const results = await this.formulaModel.recognizeBatch(
+            rawItems.map((it: any) => ({
+              key: String(it && it.key ? it.key : ''),
+              imageBase64: String(it && it.imageBase64 ? it.imageBase64 : ''),
+              mime: String((it && it.mime) || 'image/png')
+            }))
+          );
+          webviewPanel.webview.postMessage({ type: 'formulaRecognizeResult', requestId, results });
+          const ok = results.filter(r => r.latex).length;
+          const avg = ok > 0 ? Math.round(results.filter(r => r.latex).reduce((a, b) => a + (b.ms || 0), 0) / ok) : 0;
+          const firstErr = results.find(r => r.error)?.error;
+          vscode.window.setStatusBarMessage(
+            ok > 0
+              ? `$(symbol-operator) 本地公式识别 ${ok}/${results.length} 条 · ${avg}ms/条`
+              : `$(warning) 本地公式识别失败：${firstErr || '无结果'}`,
+            4000
+          );
+          break;
+        }
+
+        /** 状态查询：设置页/状态栏想知道"进程起来了没、用的哪个模型、平均多快" */
+        case 'requestFormulaModelStatus': {
+          webviewPanel.webview.postMessage({
+            type: 'formulaModelStatus',
+            requestId: message.requestId,
+            status: this.formulaModel.getStatus()
+          });
           break;
         }
 
@@ -521,44 +603,26 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
 
         case 'requestModelInfo': {
           const cfg = vscode.workspace.getConfiguration('academicReader');
-          const service = cfg.get<string>('translationService', 'gemini');
+          const service = cfg.get<string>('translationService', 'openai-compatible');
           const isOpenAI = service === 'openai-compatible';
-          let available: string[] = [];
-          let listError = '';
-          if (isOpenAI) {
-            // 自定义端点没有统一的"模型列表"接口，不能拿 Gemini 的列表冒充
-            const m = (cfg.get<string>('modelName', 'deepseek-chat') || '').trim();
-            available = m ? [m] : [];
-          } else {
-            try {
-              available = await this.translator.listModels(!!message.force);
-            } catch (err: any) {
-              listError = this.describeError(err);
-            }
-          }
+          const configuredModel = (cfg.get<string>('modelName', 'deepseek-chat') || 'deepseek-chat').trim();
+          const apiKey = (cfg.get<string>('apiKey', '') || '').trim();
+          const hasKey = isOpenAI ? !!apiKey : true;
           webviewPanel.webview.postMessage({
             type: 'modelInfo',
             service,
             isOpenAI,
-            configuredModel: isOpenAI
-              ? cfg.get<string>('modelName', 'deepseek-chat')
-              : cfg.get<string>('geminiModel', ''),
+            configuredModel,
             configuredAiModel: cfg.get<string>('aiModel', ''),
             answerStyle: cfg.get<string>('aiAnswerStyle', 'standard'),
-            // 版面分割引擎：webview 据此决定是否请视觉模型判断本页结构
             segmentationEngine: cfg.get<string>('segmentationEngine', 'vision'),
-            // 视觉手术开关（真的按模型判断合并/拆分段落）
             visionSurgery: cfg.get<boolean>('visionSurgery', true),
             visionModel: cfg.get<string>('visionModel', ''),
             engineTag: this.engineTag(),
-            available,
-            listError,
-            // 把扩展版本号一起下发，弹窗标题旁会显示：用户截图即可确认实际运行的版本，
-            // 避免"改了没生效 / 跑的仍是旧版"这类问题反复排查。
+            available: [configuredModel],
+            listError: '',
             extensionVersion: (this.context?.extension?.packageJSON?.version as string) || '',
-            hasKey: isOpenAI
-              ? !!(cfg.get<string>('apiKey', '') || '').trim()
-              : !!this.translator.getGeminiKey(cfg)
+            hasKey
           });
           break;
         }
@@ -649,7 +713,7 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
         }
 
         case 'configureGeminiKey': {
-          await vscode.commands.executeCommand('academicReader.setGeminiApiKey');
+          await vscode.commands.executeCommand('academicReader.openSettings');
           break;
         }
 
@@ -808,16 +872,12 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
 
   /**
    * 当前翻译引擎的短标识（服务 + 模型名的哈希）。
-   * 前端会把它并入段落缓存键：否则换成 DeepSeek 后，之前用 Gemini 翻出来的
-   * 旧译文仍然命中缓存，用户会以为"换了引擎却没变化"。
+   * 前端会把它并入段落缓存键：换模型后旧译文自动失效，避免命中旧缓存。
    */
   private engineTag(): string {
     const cfg = vscode.workspace.getConfiguration('academicReader');
-    const service = cfg.get<string>('translationService', 'gemini');
-    const model =
-      service === 'gemini'
-        ? cfg.get<string>('geminiModel', '') || 'default'
-        : cfg.get<string>('modelName', '') || 'default';
+    const service = cfg.get<string>('translationService', 'openai-compatible');
+    const model = (cfg.get<string>('modelName', 'deepseek-chat') || 'deepseek-chat').trim();
     const raw = `${service}|${model}|${PdfDualReaderProvider.PROMPT_VERSION}`;
     let h = 0x811c9dc5;
     for (let i = 0; i < raw.length; i++) {
@@ -831,77 +891,24 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
     return this.translator.listModels(force);
   }
 
-  /** 从真实可用模型列表中挑选（避免用户手打模型名打错或被旧代码改写） */
+  /** 设置模型名（写入 academicReader.modelName） */
   public async pickModel(): Promise<void> {
     const config = vscode.workspace.getConfiguration('academicReader');
-    const service = config.get<string>('translationService', 'gemini');
-
-    // OpenAI 兼容端点没有统一的模型列表接口 → 用输入框填写模型名，并写入 modelName
-    if (service === 'openai-compatible') {
-      const currentName = (config.get<string>('modelName', 'deepseek-chat') || '').trim();
-      const pickedName = await vscode.window.showInputBox({
-        title: '设置 OpenAI 兼容接口的模型名',
-        prompt: '翻译与 AI 问答都会使用这个模型（端点由 academicReader.apiEndpoint 决定）',
-        value: currentName || 'deepseek-chat',
-        placeHolder: 'deepseek-chat / deepseek-reasoner / qwen-plus / moonshot-v1-8k …',
-        validateInput: v =>
-          !v || !v.trim() ? '模型名不能为空' : /\s/.test(v.trim()) ? '模型名里不应包含空格' : undefined
-      });
-      if (pickedName === undefined) return;
-      const name = pickedName.trim();
-      if (!name) return;
-      await config.update('modelName', name, vscode.ConfigurationTarget.Global);
-      vscode.window.showInformationMessage(
-        `已把模型设为 ${name}。当前页翻译会重新计算，请回到阅读器点击右上角的重新翻译按钮。`
-      );
-      return;
-    }
-
-    let models: string[] = [];
-    try {
-      models = await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: '正在向 Gemini 查询可用模型列表...' },
-        () => this.translator.listModels(true)
-      );
-    } catch (err: any) {
-      const msg = err instanceof LlmError ? err.toUserMessage() : String(err?.message || err);
-      vscode.window.showErrorMessage(`无法获取模型列表：${msg}`);
-      return;
-    }
-
-    if (models.length === 0) {
-      vscode.window.showWarningMessage('该 API Key 下没有可用于 generateContent 的模型。');
-      return;
-    }
-
-    const current = config.get<string>('geminiModel', '');
-    const items = models.map(m => ({
-      label: m,
-      description:
-        m === current
-          ? '【当前翻译模型】'
-          : m === DEFAULT_TRANSLATION_MODEL
-            ? '【插件默认】实测最快且逐句对齐稳定'
-            : /pro/.test(m)
-              ? '质量优先（较慢）'
-              : /flash-lite/.test(m)
-                ? '速度优先（质量略低）'
-                : '均衡',
-      picked: m === current
-    }));
-
-    const picked = await vscode.window.showQuickPick(items, {
-      title: '选择翻译/AI 问答使用的模型',
-      placeHolder: `当前：${
-        current || `(未设置，插件默认 ${DEFAULT_TRANSLATION_MODEL})`
-      } — 输入可过滤；注意：某些模型在该 API Key 上没有配额，调用会返回 429`,
-      matchOnDescription: true
+    const currentName = (config.get<string>('modelName', 'deepseek-chat') || '').trim();
+    const pickedName = await vscode.window.showInputBox({
+      title: '设置翻译与 AI 问答使用的模型名',
+      prompt: '翻译与 AI 问答都会使用这个模型（端点由 academicReader.apiEndpoint 决定）',
+      value: currentName || 'deepseek-chat',
+      placeHolder: 'deepseek-chat / deepseek-reasoner / qwen-plus / moonshot-v1-8k …',
+      validateInput: v =>
+        !v || !v.trim() ? '模型名不能为空' : /\s/.test(v.trim()) ? '模型名里不应包含空格' : undefined
     });
-    if (!picked) return;
-
-    await config.update('geminiModel', picked.label, vscode.ConfigurationTarget.Global);
+    if (pickedName === undefined) return;
+    const name = pickedName.trim();
+    if (!name) return;
+    await config.update('modelName', name, vscode.ConfigurationTarget.Global);
     vscode.window.showInformationMessage(
-      `已切换模型为 ${picked.label}。当前页翻译会重新计算，请回到阅读器点击右上角的重新翻译按钮。`
+      `已把模型设为 ${name}。当前页翻译会重新计算，请回到阅读器点击右上角的重新翻译按钮。`
     );
   }
 
@@ -1212,7 +1219,7 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
           批注笔记 (<span id="notesCount">0</span>)
         </button>
       </div>
-      <button id="translateAllBtn" class="btn-gemini" title="使用大模型整页翻译">
+      <button id="translateAllBtn" class="btn-primary" title="使用大模型整页翻译">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/></svg>
         整页翻译
       </button>
@@ -1220,7 +1227,7 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
         导出笔记
       </button>
-      <button id="openSettingsBtn" class="btn-secondary" title="配置学术翻译大模型 (Gemini / DeepSeek / 内置引擎) 与 API Key">
+      <button id="openSettingsBtn" class="btn-secondary" title="配置学术翻译大模型 (DeepSeek / OpenAI / 内置引擎) 与 API Key">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
         翻译设置
       </button>
@@ -1253,7 +1260,7 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
       <div id="transView" class="pane-view active">
         <div class="pane-view-header">
           <div class="header-info">
-            <span class="badge badge-gemini">对照翻译</span>
+            <span class="badge badge-primary">对照翻译</span>
             <span class="subtitle">划选即译</span>
           </div>
           <div class="view-switch-tools">

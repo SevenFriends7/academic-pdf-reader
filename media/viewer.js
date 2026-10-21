@@ -59,6 +59,17 @@
   let renderedUnscaledWidth = 0;
   let autoFitResizeTimer = null;
   let currentTextContent = null;
+  /**
+   * 每页的数学 run（buildPageMathModel 的产物）。
+   *
+   * 【为什么留这一份】公式卡片不能再拿"段落 span 的并集"当裁图框：
+   * PDF 文本层的内容顺序会把一条式子拆到好几个段落里（实测 Xu 2020 p4 式(5)
+   * 被拆成 6 段），段落框只能裁到半条式子。数学 run 是**按字形几何**分组的，
+   * 它的 box 才是"这条式子到底占哪一块"的可靠来源。
+   */
+  const pageMathRuns = new Map();
+  /** 每页过滤后的文本 span（判断"这一行是不是夹着正文"用，见 formulaCropRectFromMathRuns） */
+  const pageAllSpans = new Map();
   let paperData = { annotations: [], translations: {}, sentenceTranslations: {} };
   let currentParagraphs = [];
   /**
@@ -103,6 +114,27 @@
    * 关掉就退化成 1.2.0 的行为：只改类型/顺序/丢弃。
    */
   let visionSurgeryAllowed = true;
+  /**
+   * 公式卡片是否**直接显示页面裁图**（宿主下发 academicReader.formulaAsImage，默认开）。
+   *
+   * 【为什么要有这条路】`√` 的被开方数在哪结束、`tr` 是不是上标，这类**结构信息**
+   * 逐字符查表永远拿不到（design-notes 根因四：`Q_{\sqrt{\,}}\cdot K^{⊤}` 就是这么来的）。
+   * 页面上本来就印着答案——把那一块按 PDF 版式裁下来当图片显示，是"取样"而不是"重建"，
+   * 错误率结构性为 0。KaTeX 那条路保留成**兜底**：裁图失败/关闭开关时照旧。
+   */
+  let formulaAsImageAllowed = true;
+  /**
+   * 是否启用**本地公式识别器**（宿主下发 academicReader.formulaModel.enabled，默认关）。
+   *
+   * 与 formulaAsImage 的关系是互补而不是替代：
+   *   · 裁图解决"界面上显示得对不对"（取样，错误率 0）；
+   *   · 本地模型解决"LaTeX 对不对"——精读稿导出、问 AI、公式索引要的是**文本**，
+   *     而裁图给不了文本。以前这半边靠云端视觉模型，现在可以走本机。
+   * 默认关是因为它要额外的 Python 环境（paddle + PP-FormulaNet），不是所有人都装了。
+   */
+  let formulaModelEnabled = false;
+  /** 本地模型名（只用于标注与状态显示，识别本身在 sidecar 里） */
+  let formulaModelName = 'PP-FormulaNet_plus-S';
   /**
    * 当前页**本地代码切出来的原件**（还没做过视觉手术的那一份）。
    *
@@ -750,6 +782,11 @@
         if (msg.segmentationEngine) visionEngine = msg.segmentationEngine;
         // 视觉结果能不能真的改写分段（合并/拆分）：默认允许，宿主可关
         visionSurgeryAllowed = msg.visionSurgery !== false;
+        // 公式卡片显示页面裁图（默认开；关掉退回纯 KaTeX 渲染）
+        formulaAsImageAllowed = msg.formulaAsImage !== false;
+        // 本地公式识别器（默认关：需要本机装 Python + paddle，见 py/formula_sidecar.py）
+        formulaModelEnabled = msg.formulaModel === true;
+        if (msg.formulaModelName) formulaModelName = String(msg.formulaModelName);
         // 视觉模型名（换模型 → 每页视觉缓存判废重判，见 isUsableVisionCache）
         if (msg.visionModel !== undefined) configuredVisionModel = String(msg.visionModel || '');
         if (msg.paperData) {
@@ -889,6 +926,26 @@
       }
 
       /** 视觉分割结果：把类型/顺序/丢弃应用到当前页（坐标不动） */
+      case 'formulaRecognizeResult': {
+        /*
+         * 本地公式识别的回包。这里只负责把 Promise 收掉——校验、采纳、写回段落
+         * 全在 runFormulaModel 里做（那里才拿得到对应的 para/seg 与原文）。
+         */
+        const pending = formulaModelPending.get(msg.requestId);
+        if (pending) {
+          formulaModelPending.delete(msg.requestId);
+          pending(Array.isArray(msg.results) ? msg.results : []);
+        }
+        break;
+      }
+
+      case 'formulaModelStatus': {
+        if (msg.status && msg.status.state === 'failed') {
+          showReaderToast(`本地公式模型不可用：${msg.status.lastError || '未知原因'}`, 'warn');
+        }
+        break;
+      }
+
       case 'visionSegmentationResult': {
         visionPending.delete(Number(msg.page));
         if (Number(msg.page) !== currentPage) {
@@ -2096,6 +2153,8 @@
      */
     const nameOf = k => (fontNames && fontNames[k]) || String(k || '');
     const mathModel = buildPageMathModel(textContent.items || [], nameOf, 10);
+    // 离屏单测只抽 buildAcademicLayout 这一段，拿不到顶部的 pageMathRuns；有则存、无则跳过
+    if (typeof pageMathRuns !== 'undefined') pageMathRuns.set(pageNum, mathModel.runs || []);
     const mathInfoByIdx = mathModel.byIndex || {};
     (textContent.items || []).forEach((it, i) => {
       if (textDivs[i]) textDivs[i]._mathInfo = mathInfoByIdx[i] || null;
@@ -2141,6 +2200,7 @@
 
       return true;
     });
+    if (typeof pageAllSpans !== 'undefined') pageAllSpans.set(pageNum, spans);
 
     // 2. 版面结构判定：**从数据里检测分栏结构**，而不是写死"页宽 49.5%"。
     //
@@ -2638,6 +2698,48 @@
         const lineText = line.spans.map(s => (s.textContent || '').trim()).join(' ').trim();
 
         if (captionLabelRegex.test(lineText)) {
+          /*
+           * 【行首出现 "Fig. 3." 不等于它是图注】
+           *
+           * 正文里引用图号时，引用句正好在行尾折行，于是**下一行以 "Fig. 3." 开头**：
+           *   "…An illustration of a sliding window is shown in"
+           *   "Fig. 3. In practice, the maximum size of the sliding window…"
+           * 旧逻辑只看行首标签，把第二行当成一条新图注，随后 extendCaptionBlocks 顺着
+           * 正常行距把**左栏剩下的整块正文全吞进去**（实测 Xu 2020 第 4 页：4) Optimization…
+           * 整段变成 caption 卡片，还被排到全页最后 —— 用户看到的就是"段与段的顺序乱"）。
+           *
+           * 【判据】真正的图注首行上方要么没有正文行（栏顶）、要么隔着图/表或较大的段间空隙。
+           * 这里用两条都不用猜内容的条件：
+           *   ① 上一行是**满栏正文行**（宽度 ≥ 本栏最宽行的 80%、≥6 个多字母词）；
+           *   ② 它与本行只差一个正常行距，且**没有以句末/冒号收尾**（即句子还没说完）。
+           * 同时满足 → 这一行是那句正文的续行，不是图注。
+           */
+          const prevLine = processed[processed.length - 1];
+          if (prevLine) {
+            const prevText = prevLine.spans.map(s => (s.textContent || '').trim()).join(' ').trim();
+            const colMaxW = Math.max(...linesRaw.map(l => l.maxX - l.minX), 0);
+            const prevW = prevLine.maxX - prevLine.minX;
+            const gapAbove = prevLine.y - line.y;
+            const prevWordCount = (prevText.match(/[A-Za-z][A-Za-z'\-]*/g) || []).filter(w => w.length >= 2).length;
+            const prevLooksBody = colMaxW > 0 && prevW >= colMaxW * 0.8 && prevWordCount >= 6;
+            const prevEndsSentence = /[.!?。！？:：;；]\s*$/.test(prevText);
+            // 只有"上一行明显停在半句中间"时才算正文续行（避免把真正的表注挡掉）
+            const prevEndsMidSentence =
+              /\b(?:in|of|to|on|at|for|from|with|by|as|and|or|the|a|an|is|are|was|were|be|been|being|that|which|this|these|those|shown|see|using|via|into|over|under|between|within|without)\s*$/i.test(
+                prevText
+              );
+            if (
+              prevLooksBody &&
+              prevEndsMidSentence &&
+              !prevEndsSentence &&
+              gapAbove > 0 &&
+              gapAbove <= Math.max(16, (line.h || 9) * 1.6)
+            ) {
+              line.section = colName;
+              processed.push(line);
+              continue;
+            }
+          }
           // 发现栏内图表注首行 (如 Figure 1: ...)
           line.section = 'caption';
           processed.push(line);
@@ -3149,6 +3251,250 @@
       ];
     })();
 
+    /*
+     * ============ 8.7 把"同一视觉行上的公式碎片"并回正文行 ============
+     *
+     * 【为什么必须有这一步】PDF 文本层里，一行正文与它中间/旁边的公式**不是一条 line**：
+     *   · 公式的分母比正文基线低 8pt、上标高 5pt，超出 LINE_Y_TOL，
+     *     于是 `∥`、`z`、`t`、`i` 各自成"行"，按 y 排序后**插进正文行之间**；
+     *   · 这些碎片又被行间公式判定交替标成 blockMath / 非 blockMath，
+     *     段落主循环在每个交界处断段 —— 一段完整解释会变成十几张卡片，
+     *     顺序还是按碎片基线排的（实测 Xu 2020 第 4 页：46 段里有 20 多段是公式碎片）。
+     *
+     * 【做法】只看几何：相邻（同栏）两条 line 的**纵向范围**有 ≥2pt 重叠，
+     * 且其中至少一条是"公式行"（没有两个以上真词），就把它们并成一条视觉行；
+     * 合并后 span 按**原始行序（上→下）→ 行内 x（左→右）**排列 —— 这个顺序就是
+     * commitParagraph 拼 cleanText / charMap 的顺序，于是正文与公式的先后关系恢复正确。
+     *
+     * 整块公式（式(5)、矩阵）的碎片之间纵向范围同样重叠，会被并成**一条** line，
+     * 段落主循环自然只产出一张公式卡片；下面的 __mathGroup 让它在行间公式判定里
+     * 稳定判为公式（碎片里有 `min`、`elements` 这类单个词，旧判据会来回跳）。
+     */
+    (function mergeVisualMathRows() {
+      const textOf = line => line.spans.map(s => (s.textContent || '').trim()).join(' ').trim();
+      const realWords = t =>
+        (t.match(/[A-Za-z][A-Za-z'\-]*/g) || []).filter(w => w.length >= 3 && /[a-z]/.test(w));
+
+      /** 这一行像不像公式碎片？（真词 < 2 个，且有符号/零散字母） */
+      const isMathish = line => {
+        const t = textOf(line);
+        if (!t) return false;
+        // 以冒号收尾的是正文（如跨栏折词剩下的 `tion:`），不能被公式行"吸"过去
+        if (/:\s*$/.test(t)) return false;
+        const bare = t.replace(/\(\s*\d{1,3}\s*\)/g, ' ').replace(/\[\s*\d{1,3}\s*\]/g, ' ');
+        if (realWords(bare).length >= 2) return false;
+        const letters = (bare.match(/[A-Za-z]/g) || []).length;
+        const symbols = (bare.match(/[^A-Za-z0-9\s]/g) || []).length;
+        return symbols > 0 || letters <= 2;
+      };
+
+      const out = [];
+      let group = null;
+      const start = line => {
+        group = {
+          section: line.section,
+          lines: [line],
+          mathLines: isMathish(line) ? 1 : 0,
+          top: line.y + (line.h || 0),
+          bottom: line.y
+        };
+      };
+      const flush = () => {
+        if (!group) return;
+        if (group.lines.length === 1) {
+          out.push(group.lines[0]);
+          group = null;
+          return;
+        }
+        /*
+         * 【组内顺序】原始行序是"按基线 y 排的碎片序"，公式的上标行会插到正文行前面，
+         * 直接拼接会得到「‖z‖ 是距离残差 d k ij − x̂ …」这种符号与正文交错的结果。
+         *
+         * 做法：以**含 ≥2 个词的行**为视觉行锚点（它们是这段真正的正文行），
+         * 其余碎片行按纵向重叠挂到最近的锚点；同一视觉行内再按 x 从左到右。
+         * 公式碎片之间谁先谁后不影响阅读（它们会被裁图整块显示），
+         * 但**正文必须排在它左边/右边的公式之后或之前**，这一步就是为此。
+         */
+        const wordCount = t => (t.match(/[A-Za-z]{2,}/g) || []).length;
+        const anchors = group.lines.filter(l => wordCount(textOf(l)) >= 2);
+        let spans = [];
+        if (anchors.length === 0) {
+          group.lines.forEach(l => {
+            [...l.spans].sort((a, b) => (a._pdfX || 0) - (b._pdfX || 0)).forEach(s => spans.push(s));
+          });
+        } else {
+          const rows = anchors
+            .slice()
+            .sort((a, b) => b.y - a.y)
+            .map(a => ({ y: a.y, top: a.y + (a.h || 0), spans: [...a.spans] }));
+          group.lines
+            .filter(l => !anchors.includes(l))
+            .forEach(l => {
+              const lTop = l.y + (l.h || 0);
+              let best = null;
+              let bestOverlap = 0;
+              rows.forEach(r => {
+                const ov = Math.min(r.top, lTop) - Math.max(r.y, l.y);
+                if (ov > bestOverlap) {
+                  bestOverlap = ov;
+                  best = r;
+                }
+              });
+              if (!best) {
+                let bestDist = Infinity;
+                rows.forEach(r => {
+                  const d = Math.abs(r.y - l.y);
+                  if (d < bestDist) {
+                    bestDist = d;
+                    best = r;
+                  }
+                });
+                if (bestDist > 12) best = null;
+              }
+              if (best) {
+                best.spans.push(...l.spans);
+                best.top = Math.max(best.top, lTop);
+              } else {
+                rows.push({ y: l.y, top: lTop, spans: [...l.spans] });
+              }
+            });
+          rows.sort((a, b) => b.y - a.y);
+          rows.forEach(r => r.spans.sort((a, b) => (a._pdfX || 0) - (b._pdfX || 0)));
+          rows.forEach(r => r.spans.forEach(s => spans.push(s)));
+        }
+        const allText = group.lines.map(textOf).join(' ');
+        const line = {
+          // y 取**最后一行**：段落主循环只用它算与下一行的行距（取顶行会把行距算大，误断段）
+          y: group.lines[group.lines.length - 1].y,
+          h: Math.max(...group.lines.map(l => l.h || 0)),
+          minX: Math.min(...group.lines.map(l => l.minX)),
+          maxX: Math.max(...group.lines.map(l => l.maxX)),
+          spans,
+          section: group.section
+        };
+        // 整块都是公式（只有零星单个词，如 min / elements）→ 强制按公式行处理
+        const eqNumberInText = /(?:^|\s)\(\s*\d{1,3}\s*\)(?:\s|$)/.test(allText);
+        const endsWithEqNumber = /\(\s*\d{1,3}\s*\)\s*$/.test(allText);
+        const rightEdge = Math.max(...group.lines.map(l => l.maxX));
+        const fewWords =
+          realWords(allText).length < 3 &&
+          (allText.match(/[A-Za-z]{2,}/g) || []).length < 3 &&
+          !/[.!?。！？]\s*$/.test(allText);
+        /*
+         * 编号式子的判据单独一条：式(3)/(4)/(5) 的碎片里有 `bi`、`zDT`、`det` 这些
+         * 两三个字母的记号，`isMathish` 会把整条式子判成"有单词"，
+         * 但它的编号贴在右栏边缘、整块没有成句正文 —— 证据足够，按公式段处理。
+         */
+        const numberedFormula =
+          (endsWithEqNumber && realWords(allText).length < 6 && rightEdge > 500) ||
+          // 式(5) 的编号在第二个 ∑ 行尾（不是整块最后一行），用"块内出现独立编号"兜住
+          (eqNumberInText && realWords(allText).length < 8 && !/[.!?。！？]\s*$/.test(allText));
+        if (group.mathLines > 0 && group.mathLines < group.lines.length) {
+          line.__mergedMath = true;
+        }
+        if ((group.mathLines > 0 && fewWords) || numberedFormula) {
+          line.__mathGroup = true;
+          if (group.lines.length > 1) line.__mergedFormulaBlock = true;
+        }
+        out.push(line);
+        group = null;
+      };
+
+      orderedLines.forEach(line => {
+        // 8.65 拆出来的符号表行已经是一行一条，绝不能再被视觉行合并拆开/并走
+        if (line.__noMerge) {
+          flush();
+          out.push(line);
+          return;
+        }
+        const mergeable = line.section === 'col1' || line.section === 'col2';
+        if (!mergeable) {
+          flush();
+          out.push(line);
+          return;
+        }
+        if (!group || group.section !== line.section) {
+          flush();
+          start(line);
+          return;
+        }
+        const top = line.y + (line.h || 0);
+        const bottom = line.y;
+        const overlap = Math.min(group.top, top) - Math.max(group.bottom, bottom);
+        // 至少一条是公式行才合并：两行普通正文纵向"重叠"只可能是字高估计误差，不能并
+        const mathLink = isMathish(line) || group.mathLines > 0;
+        /*
+         * 【下标/上标可以"够"过来】式(1) 的 `b_i` 在基线下 11.8pt（嵌套下标），
+         * 与式子的行框没有重叠，只差一点空隙；但它是公式碎片（isMathish），
+         * 且与式子底边只差 1.8pt。允许这种**公式碎片**跨过极小空隙并入，
+         * 但下一行如果是正文（"Together with…"）则绝不并——否则会把正文吞进公式。
+         */
+        const bridgeGap = group.bottom - line.y;
+        const canBridge = group.mathLines > 0 && isMathish(line) && bridgeGap > 0 && bridgeGap <= 13;
+        if ((overlap >= 2 && mathLink) || canBridge) {
+          group.lines.push(line);
+          group.top = Math.max(group.top, top);
+          group.bottom = Math.min(group.bottom, bottom);
+          if (isMathish(line)) group.mathLines++;
+        } else {
+          flush();
+          start(line);
+        }
+      });
+      flush();
+      orderedLines = out;
+    })();
+
+    /*
+     * ============ 8.8 符号表 / 术语表（NOMENCLATURE）整块作为版面裁图 ============
+     *
+     * 【为什么不再逐行拆】符号表是"左列符号 + 右列多行解释"的隐式表格，符号的上下标
+     * 会跨到上一行/下一行；按 y 或字符顺序硬拆，都会把矩阵/上下标劈开（实测拆出来的
+     * 行首是 `(ˆ`、`·)` 这种半个符号）。这种表最可靠的呈现就是**按版面原样裁图**：
+     * 一行不差，读者看原图即可；中文卡片只给一句说明，不再产出错位的译文。
+     */
+    (function mergeNotationTableBlocks() {
+      const textOf = line => line.spans.map(s => (s.textContent || '').trim()).join(' ').trim();
+      const isHead = t => /^(NOMENCLATURE|NOTATION|NOTATIONS|SYMBOLS|LISTOFSYMBOLS|LISTOFNOTATIONS|ABBREVIATIONS)$/i.test(t.replace(/\s+/g, ''));
+      const isSection = t => /^[A-Z]\.\s+[A-Z]/.test(t) && t.length <= 90;
+      const out = [];
+      for (let i = 0; i < orderedLines.length; i++) {
+        const head = orderedLines[i];
+        out.push(head);
+        if (!isHead(textOf(head))) continue;
+        const body = [];
+        let lastY = head.y;
+        let j = i + 1;
+        for (; j < orderedLines.length; j++) {
+          const l = orderedLines[j];
+          if (l.section !== head.section) break;
+          if (isSection(textOf(l))) break;
+          if (lastY - l.y > 70) break;
+          body.push(l);
+          lastY = l.y;
+        }
+        if (body.length < 2) continue;
+        const spans = [];
+        body.forEach(l => {
+          [...l.spans].sort((a, b) => (Number(a._pdfX) || 0) - (Number(b._pdfX) || 0)).forEach(s => spans.push(s));
+        });
+        out.push({
+          y: body[body.length - 1].y,
+          h: Math.max(...body.map(l => Number(l.h) || 0)),
+          minX: Math.min(...body.map(l => l.minX)),
+          maxX: Math.max(...body.map(l => l.maxX)),
+          spans,
+          section: head.section,
+          __noMerge: true,
+          __forceNewPara: true,
+          __mergedMath: true,
+          __notationTable: true
+        });
+        i = j - 1;
+      }
+      orderedLines = out;
+    })();
+
     // 9. 段落聚合并构建字符级精确映射表 (charMap)
     const paras = [];
     let curParaLines = [];
@@ -3194,6 +3540,12 @@
       };
       para.minX = Math.min(...curParaLines.map(l => l.minX));
       para.maxX = Math.max(...curParaLines.map(l => l.maxX));
+      /*
+       * 8.7 合并出来的"正文 + 公式同排"段落：文本层里公式的上下标与正文交错，
+       * 逐字符重排永远排不回版面顺序。标记下来，原文栏直接按版面裁图（见 renderSentencePairsHtml）。
+       */
+      if (curParaLines.some(l => l && l.__mergedMath)) para.mergedMath = true;
+      if (curParaLines.some(l => l && l.__notationTable)) para.notationTable = true;
 
       const orderedSpans = [];
       curParaLines.forEach(line => line.spans.forEach(span => orderedSpans.push(span)));
@@ -3228,8 +3580,23 @@
         const consumed = spanCharsMapped.get(span) || 0;
         para.segments.push({ kind: 'body', text, spanRef: span, spans: [span], items: item ? [item] : [], __off: consumed });
       };
-      const pushMath = (latex, text, itemsIn) => {
-        para.segments.push({ kind: 'math', latex, text, spans: [], items: itemsIn || [] });
+      const pushMath = (latex, text, itemsIn, spanRef, spanStart, spanEnd, spanLen) => {
+        /*
+         * `spans` 与 `__spanStart/__spanEnd` 是给"本地模型识别"用的定位信息：
+         * 模型要的是**这一小块公式**的像素，而不是整个段落。
+         * 一个 span 里可能夹着正文（`where $x$ is`），所以还要记下公式占 span 内哪一段字符，
+         * 再按比例把 span 的盒子切开（PDF 文本层没有字符级 x 坐标，这是能做到的最好近似）。
+         */
+        para.segments.push({
+          kind: 'math',
+          latex,
+          text,
+          spans: spanRef ? [spanRef] : [],
+          items: itemsIn || [],
+          __spanStart: spanStart,
+          __spanEnd: spanEnd,
+          __spanLen: spanLen
+        });
       };
 
       orderedSpans.forEach(span => {
@@ -3240,7 +3607,7 @@
 
         // ① span 完全落在一条公式里：整段交给公式
         if (info && info.math && info.latex) {
-          pushMath(info.latex, spanText.replace(/\s+/g, ' ').trim(), item ? [item] : []);
+          pushMath(info.latex, spanText.replace(/\s+/g, ' ').trim(), item ? [item] : [], span, 0, spanText.length, spanText.length);
           return;
         }
         // ② 普通正文 span：内部可能还夹着公式（行内公式）
@@ -3252,7 +3619,7 @@
         let cursor = 0;
         regions.forEach(r => {
           if (r.start > cursor) pushBody(spanText.slice(cursor, r.start), span, item);
-          pushMath(r.latex, spanText.slice(r.start, r.end), item ? [item] : []);
+          pushMath(r.latex, spanText.slice(r.start, r.end), item ? [item] : [], span, r.start, r.end, spanText.length);
           cursor = r.end;
         });
         if (cursor < spanText.length) pushBody(spanText.slice(cursor), span, item);
@@ -3401,11 +3768,39 @@
          */
         const hasBody = para.segments.some(s => s.kind === 'body' && s.text.trim());
         const mathSegs = para.segments.filter(s => s.kind === 'math' && String(s.latex || '').trim());
+        /*
+         * 【整段都是"公式行"的兜底】数学层没认出字体（或 CMEX 定界符的 str 是控制符）时，
+         * mathSegs 可能为空，但这一段的每一行都被 __blockMath 标记为公式行。
+         * 这种段落如果还按 body 出卡片，就会把 `+ ∥`、`}` 送去翻译——宿主根本翻不出东西，
+         * 前端就永远停在"正在翻译..."。按公式段落处理：不出翻译卡，只出裁图/公式卡。
+         */
+        const allBlockMath =
+          curParaLines.length > 0 && curParaLines.every(l => l && l.__blockMath === true);
+        /*
+         * 8.7 合并出来的整块公式 / 右栏编号式子：即使夹着几个数学层没认出的普通字符
+         * （`bi`、`zDT`、`det`），也必须是公式段 —— 否则整条式子会被送进翻译队列，
+         * 回来的只能是一坨照抄符号的中文（实测式(3)/(5)）。
+         */
+        const forcedFormula = curParaLines.length > 0 && curParaLines.every(l => l && l.__mathGroup === true);
+        if (forcedFormula && curParaLines.some(l => l && l.__mergedFormulaBlock)) {
+          para.formulaByMergedRows = true;
+        }
         if (!hasBody && mathSegs.length > 0) {
           para.type = 'formula';
           para.visionLatex = mathSegs[0].latex;
+        } else if (forcedFormula) {
+          para.type = 'formula';
+          if (mathSegs.length > 0) {
+            para.visionLatex = mathSegs[0].latex;
+            para.localMath = mathSegs.map(s => ({ text: String(s.text || ''), latex: String(s.latex || '').trim() }));
+          } else {
+            para.formulaByLayout = true;
+          }
         } else if (mathSegs.length > 0) {
           para.localMath = mathSegs.map(s => ({ text: String(s.text || ''), latex: String(s.latex || '').trim() }));
+        } else if (allBlockMath) {
+          para.type = 'formula';
+          para.formulaByLayout = true;
         }
         /*
          * 【字体层没认出公式时的兜底】见 looksLikeDisplayFormula 的注释：
@@ -3416,6 +3811,17 @@
         if (para.type !== 'formula' && typeof looksLikeDisplayFormula === 'function' && looksLikeDisplayFormula(para.cleanText)) {
           para.type = 'formula';
           para.formulaByShape = true;
+        }
+        /*
+         * 符号表整块：不做逐行文本重建（上下标跨行必然错位），改为
+         * 「说明 + 按版面原样裁图」。翻译字段直接放说明，卡片会走 mergedMath 裁图路径，
+         * 也不会再向翻译接口发这堆符号。
+         */
+        if (para.notationTable) {
+          para.type = 'body';
+          para.formulaByShape = false;
+          para.mergedMath = true;
+          para.translation = '符号表（按 PDF 版式原样显示，未翻译）';
         }
         para.sentencesEn = splitEnglishSentencesSmart(para.cleanText);
         paras.push(para);
@@ -3430,6 +3836,88 @@
     const heights = orderedLines.map(l => l.h).filter(h => h > 5 && h < 13);
     if (heights.length > 0) normalLineHeight = heights.reduce((a, b) => a + b, 0) / heights.length;
 
+    /*
+     * ============ 行间公式「整行独立」判定 ============
+     *
+     * 【为什么必须有这一条】PDF 里没有"公式"这个概念，式(5) 那种"公式 + 紧接着的 where L is …"
+     * 会被拼成一个段落（实测 Xu 2020 第 4 页：一段 875 字，公式和它后面的解释连在一起），
+     * 于是要么整段被当公式、要么整段被当正文，两边都错。
+     *
+     * 【判据】一行里**数学字体字形的推进宽度**占该行总宽度 ≥55%，
+     * 且除公式编号外几乎没有正文单词。
+     *
+     * 【为什么不能要求"整行不窄于 40pt、至少 2 个数学 span"】式(5) 的文本层不是
+     * 一条完整的行，而是被 pdf.js 按内容流拆成几十个小片段：`∥`、`{`、`t`、`(5)`、
+     * `(i,t)∈S` 各自成"行"，很多片段只有 1~2 个字形、宽 5~20pt。旧阈值把它们全部
+     * 判成正文，于是公式片段和下面的 `where L is …` 被拼进同一个段落（用户截图里
+     * "文字段落和公式的右中括号分到一起"）。现在窄片段也按"是不是数学字形"判定，
+     * 连续公式片段会自己组成一个公式段，遇到 `where …` 这种正文行才断开。
+     *
+     * `min` 这类数学字体里的算子即使被误判成正文单词，也允许最多 1 个；
+     * 真正的解释文字（`where` / `is` / `the` …）会远超 1 个。
+     */
+    orderedLines.forEach(ln => {
+      let mathW = 0;
+      let totalW = 0;
+      let bodyText = '';
+      let visibleText = '';
+      (ln.spans || []).forEach(sp => {
+        const text = String(sp.textContent || '');
+        visibleText += text;
+        const w = Number(sp._pdfW);
+        if (!(w > 0)) return;
+        totalW += w;
+        const info = sp._pdfIdx !== undefined ? mathInfoByIdx[sp._pdfIdx] : null;
+        if (info && info.math) {
+          mathW += w;
+        } else {
+          bodyText += ` ${text}`;
+        }
+      });
+      // 公式编号 `(5)`/`[12]` 不算正文单词
+      bodyText = bodyText.replace(/\(\s*\d{1,3}\s*\)/g, ' ').replace(/\[\s*\d{1,3}\s*\]/g, ' ');
+      const proseWords = (bodyText.match(/[A-Za-z]{2,}/g) || []).length;
+      const mathRatio = totalW > 0 ? mathW / totalW : 0;
+      /*
+       * 两个档：有 1 个数学算子词（min/sup）时仍要求数学占多数；一个正文单词都没有时，
+       * 只要还有数学字形就算公式行——`+ ∥`、`( ) ∥`、`j ∥ (5)` 这类排版碎片
+       * 正文占比可能很高（括号/加号是正文字体），但它们是公式的一部分，不能当正文。
+       *
+       * 最后一条兜底专门处理 CMEX10 的巨型定界符：pdf.js 给它的 str 是 `\r` 等控制符，
+       * `_mathInfo.math` 为 false，但它是公式的括号/竖线，不能让这一行断成正文段。
+       */
+      const hasMathGlyph = /[=+\-−*/^_{}[\]()<>≤≥≈≠∈∑∏∫√∥∂∇×·|\\]/.test(visibleText);
+      /*
+       * 8.7 合并出来的"整块公式行"直接判成公式行：
+       * 碎片里夹着 `min` / `elements` 这类单个词，按下面的比例判据会时真时假，
+       * 一段式子在段落主循环里被反复切断（实测式(5) 的 20 多段就是这么来的）。
+       */
+      if (ln.__mathGroup) {
+        ln.__blockMath = true;
+        return;
+      }
+      /*
+       * 【单行编号式子】`… + N (0, σ det) (3)` 本身已经是一整行（没有碎片可并），
+       * 但它含 `bi`/`zDT`/`det` 这些记号，按"正文单词数 ≤1"的判据会落选，
+       * 于是整条式子被当正文送去翻译。编号贴在栏尾、整行没有句末标点 → 就是公式行。
+       */
+      const eqNumberLine =
+        /\(\s*\d{1,3}\s*\)\s*$/.test(visibleText.trim()) &&
+        hasMathGlyph &&
+        proseWords <= 8 &&
+        !/[.!?。！？]\s*$/.test(visibleText.trim()) &&
+        ln.maxX > 295;
+      if (eqNumberLine) {
+        ln.__blockMath = true;
+        ln.__mathGroup = true;
+        return;
+      }
+      ln.__blockMath =
+        totalW > 0 &&
+        ((mathRatio >= 0.55 && proseWords <= 1) ||
+          (proseWords === 0 && (mathRatio >= 0.2 || hasMathGlyph)));
+    });
+
     for (let i = 0; i < orderedLines.length; i++) {
       const line = orderedLines[i];
       const text = line.spans.map(s => s.textContent || '').join(' ').trim();
@@ -3441,6 +3929,22 @@
       // 跨区域强制换段 (栏间绝不粘连)
       if (prevLine && prevLine.section !== line.section) {
         shouldStartNew = true;
+      }
+
+      // 8.65 符号表：一行就是一条定义，必须单独成段
+      if (line.__forceNewPara && curParaLines.length > 0) {
+        shouldStartNew = true;
+        nextType = 'body';
+      }
+
+      /*
+       * 行间公式的"整行"与正文行之间必须断段：公式自己成一段，前后正文各自成段。
+       * 两个方向都要断（正文→公式、公式→正文），否则半句会粘在公式上。
+       */
+      if (curParaLines.length > 0 && prevLine) {
+        const prevBlock = prevLine.__blockMath === true;
+        const curBlock = line.__blockMath === true;
+        if (prevBlock !== curBlock) shouldStartNew = true;
       }
 
       if (line.section === 'header') {
@@ -3686,6 +4190,10 @@
     } catch (e) {
       console.warn('[Viewer] 视觉分割调度失败:', e);
     }
+
+    // 上一轮（或上次会话）已经用本地模型识别过的公式，先回填到刚解析出来的段落上。
+    // 段落每次翻页都会重建，模型结果不能跟着丢——否则每次翻回来都要重新识别一遍（400ms × 几十条）。
+    restoreModelMathFromArchive(pageNum, paras);
 
     // 【顺序很重要】归档必须在 renderTranslationCards 之后：
     // 卡片渲染时才会把缓存里的译文回填到段落上，先归档就会存下一堆"没有译文"的快照
@@ -4546,18 +5054,31 @@
   }
 
   function getParaCacheKey(pageNum, para) {
-    const sig = getParaSig(para.cleanText || para.text || '');
+    const sig = paraCacheSig(para);
     // 缓存键里带上引擎标识：换引擎后旧译文自动失效，
     // 否则会继续复用上一个引擎翻出来的结果，让人以为"换了引擎没用"。
     const tag = currentEngineTag ? `${currentEngineTag}_` : '';
     return sig ? `${pageNum}_${tag}${sig}` : `${pageNum}_${para.id}`;
   }
 
+  /**
+   * 段落内容指纹（译文缓存键的正文部分）。
+   *
+   * 【混排段落加版本前缀】8.7 合并出来的"正文 + 公式同排"段落，送翻译的文本
+   * 从"文本层残渣"换成了"散文 + ⟦公式⟧"（buildMergedMathTranslateInput）。
+   * 如果指纹不变，用户会继续命中旧译文缓存，界面上看到的还是那串
+   * 「… is the residual of detection …」——等于这次修复对老用户不生效。
+   */
+  function paraCacheSig(para) {
+    const sig = getParaSig((para && (para.cleanText || para.text)) || '');
+    return sig && para && para.mergedMath ? `m1_${sig}` : sig;
+  }
+
   function findCachedTranslation(pageNum, para) {
     if (!para) return '';
     if (para.translation) return para.translation;
 
-    const sig = getParaSig(para.cleanText || para.text || '');
+    const sig = paraCacheSig(para);
     if (!sig) return '';
     // 只按内容指纹精确命中（不再做前缀模糊匹配——那会把别段的译文贴过来）
     //
@@ -4568,6 +5089,8 @@
     // 无标识键保留做兜底：0.5.1 之前存下的缓存没有标识。
     const tagged = `${pageNum}_${currentEngineTag ? `${currentEngineTag}_` : ''}${sig}`;
     if (paperData.translations[tagged]) return paperData.translations[tagged];
+    // 混排段落的旧键（无 m1_ 前缀）里存的是"公式残渣直译"，绝不能再兜底复用
+    if (para.mergedMath) return '';
     const legacyKey = `${pageNum}_${sig}`;
     if (paperData.translations[legacyKey]) return paperData.translations[legacyKey];
     return '';
@@ -4579,7 +5102,7 @@
     if (para.sentenceTranslations && Array.isArray(para.sentenceTranslations) && para.sentenceTranslations.length > 0) {
       list = para.sentenceTranslations;
     } else if (paperData.sentenceTranslations) {
-      const sig = getParaSig(para.cleanText || para.text || '');
+      const sig = paraCacheSig(para);
       if (sig) {
         // 与 findCachedTranslation 同理：先查带引擎标识的键，再兜底无标识键
         const tagged = `${pageNum}_${currentEngineTag ? `${currentEngineTag}_` : ''}${sig}`;
@@ -4629,7 +5152,7 @@
     if (!text.trim()) return false;
     if (/[\u4e00-\u9fff]/.test(text)) return false; // 已经是中文，没什么可判的
     const letters = (text.match(/[A-Za-z]/g) || []).length;
-    const symbols = (text.match(/[=+\-*/^_{}[\]()<>≤≥≈≠∈∑∫∂∇×·|\\]/g) || []).length;
+    const symbols = (text.match(/[=+\-*/^_{}[\]()<>≤≥≈≠∈∑∫∂∇×·|\\∥⊥∘∗∼]/g) || []).length;
     const digits = (text.match(/\d/g) || []).length;
     const denom = letters + symbols + digits;
     if (denom === 0) return false;
@@ -4638,7 +5161,78 @@
     return density >= 0.35 && letters <= 20 && words <= 6;
   }
 
+  /**
+   * 更严格的"公式碎片"判据（用于**翻译入口**，不是显示分类）。
+   *
+   * `isFormulaLikePara` 对"字母很多但全是变量名/上下标"的碎片会漏判：
+   * 例如 `Vk P ˆ tiT V ti +1 − T ...` 字母数超过 20，却被当成正文送去翻译；
+   * 模型只能原样返回，翻译质量校验就报"译文与原文几乎完全相同（疑似照搬原文）"。
+   *
+   * 这里用一条更稳的语言学信号：**没有任何常见英文虚词**（the/is/of/and/…），
+   * 且符号/数字密度够高、没有句末标点 → 它不可能是正常散文，直接按公式碎片处理。
+   */
+  function isFormulaResiduePara(para) {
+    const text = String((para && para.cleanText) || '').replace(/\s+/g, ' ').trim();
+    if (!text) return false;
+    if (/[\u4e00-\u9fff]/.test(text)) return false;
+    if (/[.!?。！？]["'”’)\]]?\s*$/.test(text)) return false;
+    /*
+     * 必须**区分大小写**：变量名 `iT` / `Vt` 在小写化后会命中 `it`，
+     * 于是一整条公式被误判成"有英文虚词的散文"（实测式(5) 的矩阵行就是这样漏网的）。
+     * 正常散文里总有至少一个小写虚词；纯公式里的 `iT` 是大小写混排的变量。
+     */
+    const funcWords = text.match(
+      /\b(?:the|a|an|is|are|was|were|of|to|in|for|and|or|that|this|these|those|with|as|by|on|at|from|it|its|which|where|when|while|than|then|thus|hence|however|also|if|but|so|such|each|both|all|not|no|more|most|other|into|over|after|before|during|between|without|via|we|our|us|can|could|will|would|should|may|might|must)\b/g
+    ) || [];
+    if (funcWords.length > 0) return false;
+    const symbols = text.match(/[=+\-−*/^_{}[\]()<>≤≥≈≠∈∑∫∂∇×·|\\∥⊥∘∗∼ˆ˜]/g) || [];
+    const digits = text.match(/\d/g) || [];
+    const nonSpace = text.replace(/\s+/g, '').length;
+    const density = (symbols.length + digits.length) / Math.max(1, nonSpace);
+    // 0.10 是实测底线：矩阵行 `Vk P ˆ tiT ...` 几乎没有标点符号（密度 0.12），
+    // 但它是公式；真正的散文碎片（`residual of detection …`）有虚词，会先被上面拦掉。
+    return density >= 0.10;
+  }
+
   // ====================== 导出「全文双语精读稿」的数据准备 ======================
+  /**
+   * 从本页归档快照里恢复本地模型的识别结果。
+   *
+   * 为什么必须做：`paragraphs` 是**每次翻页重新解析**出来的新对象，
+   * 模型识别的结果是挂在这些对象上的（`para.modelLatex` / `seg.modelLatex`），
+   * 不恢复就等于"翻走再翻回来，识别白做了"——用户会看到同一条公式一会儿准一会儿不准。
+   *
+   * 只回填**空位**，绝不覆盖本次会话已有的结果：以本轮的为准（用户可能刚换了模型）。
+   */
+  function restoreModelMathFromArchive(pageNum, paragraphs) {
+    const archived = pageParaArchive.get(pageNum);
+    if (!Array.isArray(archived) || archived.length === 0) return;
+    const byId = new Map(archived.map(p => [String(p && p.id), p]));
+    let restored = 0;
+    for (const para of paragraphs || []) {
+      if (!para) continue;
+      const a = byId.get(String(para.id));
+      if (!a) continue;
+      if (!String(para.modelLatex || '').trim() && a.modelLatex) {
+        para.modelLatex = String(a.modelLatex);
+        restored += 1;
+      }
+      const inline = Array.isArray(a.modelInline) ? a.modelInline : [];
+      if (inline.length === 0 || !Array.isArray(para.segments)) continue;
+      para.segments.forEach(s => {
+        if (!s || s.kind !== 'math' || String(s.modelLatex || '').trim()) return;
+        const key = normaliseMathText(s.text);
+        if (!key) return;
+        const hit = inline.find(x => normaliseMathText(x && x.text) === key);
+        if (hit && String(hit.latex || '').trim()) {
+          s.modelLatex = String(hit.latex);
+          restored += 1;
+        }
+      });
+    }
+    if (restored > 0) console.log(`[Viewer] 第 ${pageNum} 页从归档恢复 ${restored} 条模型公式`);
+  }
+
   /**
    * 归档一页的段落（renderPage 解析完就调用一次）。
    * 只留轻量字段，rawSpans/charMap 是 DOM 元素，绝不能留。
@@ -4670,6 +5264,35 @@
            */
           visionLatex: String(p.visionLatex || '').trim(),
           visionInline: Array.isArray(p.visionInline) ? p.visionInline.slice(0, 64) : [],
+          /*
+           * 本地模型（sidecar）识别出来的 LaTeX。
+           *
+           * 与 visionLatex 分开放，不是冗余：visionLatex 来自**云端整页视觉模型**的判断，
+           * 这条来自**本地识别器 + 字符守恒校验**。两者可信度不同，导出时优先级也不同
+           * （modelLatex 更高：它有"裁图就是这段文字"的硬校验，而整页视觉模型只能靠肉眼）。
+           * 只存 modelLatex 而不存原始 raw，是因为 raw 是中间产物，重放时没用。
+           */
+          modelLatex: String(p.modelLatex || '').trim().slice(0, 2000),
+          modelInline: (() => {
+            const seen = [];
+            (p.segments || []).forEach(s => {
+              if (!s || s.kind !== 'math') return;
+              const tex = String(s.modelLatex || '').trim();
+              if (!tex) return;
+              const text = String(s.text || '').slice(0, 120);
+              if (seen.some(y => y.text === text)) return;
+              seen.push({ text, latex: tex.slice(0, 800) });
+            });
+            // p.localMath 里也可能挂着模型结果（老路径），一并收进来去重
+            (p.localMath || []).forEach(x => {
+              const tex = String(x && x.modelLatex ? x.modelLatex : '').trim();
+              if (!tex) return;
+              const text = String(x.text || '').slice(0, 120);
+              if (seen.some(y => y.text === text)) return;
+              seen.push({ text, latex: tex.slice(0, 800) });
+            });
+            return seen.slice(0, 64);
+          })(),
           /*
            * 本地数学层的产物也要跟着快照走：
            *   localLatex —— 整段/整条公式的规范 LaTeX（由 PDF 字体+几何确定性生成）
@@ -4786,8 +5409,8 @@
     const sig = getParaSig(para.cleanText || '');
     if (!sig) return '';
     const tagged = getParaCacheKey(pageNum, para);
-    const untagged = `${pageNum}_${sig}`;
-    return paperData.translations[tagged] || paperData.translations[untagged] || '';
+    const untagged = para.mergedMath ? '' : `${pageNum}_${sig}`;
+    return paperData.translations[tagged] || (untagged ? paperData.translations[untagged] : '') || '';
   }
 
   /** 句级对齐译文（只有句数严格相等且无空项才算数，与界面上的判据一致） */
@@ -4799,10 +5422,10 @@
       const sig = getParaSig(para.cleanText || '');
       if (sig) {
         const tagged = getParaCacheKey(pageNum, para);
-        const untagged = `${pageNum}_${sig}`;
+        const untagged = para.mergedMath ? '' : `${pageNum}_${sig}`;
         list =
           (paperData.sentenceTranslations && paperData.sentenceTranslations[tagged]) ||
-          (paperData.sentenceTranslations && paperData.sentenceTranslations[untagged]) ||
+          (untagged && paperData.sentenceTranslations && paperData.sentenceTranslations[untagged]) ||
           null;
       }
     }
@@ -5023,8 +5646,30 @@
       return;
     }
 
-    // 视觉重排已停用，不向扩展发起视觉大模型请求
-    return;
+    const shot = await capturePageImage(pageNum);
+    if (!shot) return;
+    const base64 = String(shot.dataUrl).split(',')[1] || '';
+    if (!base64) return;
+
+    visionPending.add(pageNum);
+    showVisionBadge('正在请视觉模型判断版面…（坐标仍来自文本层）');
+    try {
+      vscode.postMessage({
+        type: 'requestVisionSegmentation',
+        page: pageNum,
+        imageBase64: base64,
+        mimeType: 'image/jpeg',
+        segments: paragraphs.map(p => ({
+          id: p.id,
+          type: p.type || 'body',
+          text: (p.cleanText || '').slice(0, 1500)
+        }))
+      });
+    } catch (e) {
+      visionPending.delete(pageNum);
+      showVisionBadge('视觉请求发送失败', 'error');
+      vscode.postMessage({ type: 'showInfo', message: `视觉请求发送失败：${(e && e.message) || e}` });
+    }
   }
 
   /**
@@ -5039,8 +5684,20 @@
    */
   function showVisionBadge(text, level) {
     let el = document.getElementById('visionStatusBadge');
-    if (el) el.remove();
-    return;
+    if (!text) {
+      if (el) el.remove();
+      return;
+    }
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'visionStatusBadge';
+      el.className = 'vision-status-badge';
+      const host = dom.transListContainer || document.getElementById('transListContainer');
+      if (host && host.parentNode) host.parentNode.insertBefore(el, host);
+      else document.body.appendChild(el);
+    }
+    el.textContent = text;
+    el.classList.toggle('vision-status-error', level === 'error');
   }
 
   // ============ 视觉手术：真的按模型的判断合并 / 拆分 / 改类型（坐标仍来自文本层） ============
@@ -5259,6 +5916,49 @@
   }
 
   /**
+   * 把切点从"公式内部"挪到公式边界。
+   *
+   * 【为什么必须有】视觉模型给的是**看图写出的锚点**，经常落在一条式子的中间
+   * （实测 Xu 2020 p4：模型把 `is the residual …` 当成锚点，切点正好落在
+   * `z^t_{d_ij} - ||V_k x_i` 和后半截 `- V_k x_j||^2` 之间）。
+   * 切开之后，公式片只剩半条式子：裁图被切掉一截、页面上还露出一串字符层残渣。
+   * 这里只做一件事：切点两侧只要有一侧是数学字形，就把它挪到这段连续数学字形的
+   * **起点或终点**——宁可让相邻的正文片多带/少带一个字符，也绝不把公式劈成两半。
+   */
+  function snapCutOutsideMath(para, at, preferStart) {
+    const text = String((para && para.cleanText) || '');
+    if (!(at > 0 && at < text.length)) return at;
+    const cm = (para && para.charMap) || [];
+    const mathSpans = new Set();
+    ((para && para.segments) || []).forEach(s => {
+      if (s && s.kind === 'math') (s.spans || []).forEach(sp => sp && mathSpans.add(sp));
+    });
+    const spanIsMath = i => {
+      const c = cm[i];
+      const sp = c && c.span;
+      if (!sp) return false;
+      const mi = sp._mathInfo;
+      return mathSpans.has(sp) || !!(mi && mi.math);
+    };
+    const isMath = i => {
+      if (i < 0 || i >= text.length) return false;
+      if (spanIsMath(i)) return true;
+      // 公式里的空格/运算符常常落在正文 span 上：只要左右紧邻数学字形，也算公式内部
+      if (!/[\s=+\-−*/^_{}[\]()<>≤≥≈≠∈∑∏∫√∥∂∇×·|\\]/.test(text[i])) return false;
+      return spanIsMath(i - 1) || spanIsMath(i + 1);
+    };
+    const leftMath = isMath(at - 1);
+    const rightMath = isMath(at);
+    if (!leftMath && !rightMath) return at;
+    let s = at;
+    let e = at;
+    while (s > 0 && isMath(s - 1)) s--;
+    while (e < text.length && isMath(e)) e++;
+    if (s === at && e === at) return at;
+    return preferStart ? s : e;
+  }
+
+  /**
    * 造出拆分后的一片。句子与译文**从原段继承**：原段的句下标与 cleanText 严格对应，
    * 落在这一片范围内的句子连同译文一起搬过来——这是唯一不会猜错的做法。
    * 被切点劈成两半的句子两边都不留（宁缺毋滥），那一片会被重新翻译。
@@ -5294,6 +5994,12 @@
     if (part && part.latex) piece.visionLatex = String(part.latex).trim();
     if (part && part.at) piece.visionSplitAt = part.at;
     if (Array.isArray(orig.visionInline) && orig.visionInline.length) piece.visionInline = orig.visionInline.slice();
+    /*
+     * 8.7 的两个标记要跟着拆分走：否则视觉模型把"正文 + 公式同排"的段落拆开之后，
+     * 新片段丢掉 mergedMath，原文栏又退回文本层残渣（用户截图里的那串符号）。
+     */
+    if (orig.mergedMath) piece.mergedMath = true;
+    if (orig.formulaByMergedRows) piece.formulaByMergedRows = true;
 
     const srcSents = Array.isArray(orig.sentencesEn) ? orig.sentencesEn : [];
     const srcTrans = Array.isArray(orig.sentenceTranslations) ? orig.sentenceTranslations : [];
@@ -5369,6 +6075,8 @@
     const mergedInline = (a.visionInline || []).concat(b.visionInline || []);
     if (mergedInline.length) merged.visionInline = mergedInline.slice(0, 12);
     else delete merged.visionInline;
+    if (a.mergedMath || b.mergedMath) merged.mergedMath = true;
+    if (a.formulaByMergedRows || b.formulaByMergedRows) merged.formulaByMergedRows = true;
 
     const aSents = Array.isArray(a.sentencesEn) ? a.sentencesEn : [];
     const bSents = Array.isArray(b.sentencesEn) ? b.sentencesEn : [];
@@ -5495,14 +6203,33 @@
     // ---- 2) 拆分：把"混了多种内容"的一段按锚点切开（锚点由模型按文本层残渣写法给出）----
     const out = [];
 
+    /**
+     * 把切点从"公式内部"挪到公式边界。
+     *
+     * 【为什么必须有】视觉模型给的是**看图写出的锚点**，经常落在一条式子的中间
+     * （实测 Xu 2020 p4：模型把 `is the residual …` 当成锚点，切点正好落在
+     * `z^t_{d_ij} - ||V_k x_i` 和后半截 `- V_k x_j||^2` 之间）。
+     * 切开之后，公式片只剩半条式子：裁图被切掉一截、页面上还露出一串字符层残渣。
+     * 这里只做一件事：切点两侧只要有一侧是数学字形，就把它挪到这段连续数学字形的
+     * **起点或终点**——宁可让相邻的正文片多带/少带一个字符，也绝不把公式劈成两半。
+     */
     /** 按 parts 的锚点把 para 切开；锚点定位不到、或切不出两片 → 返回 null */
     const trySplit = (para, parts) => {
       const cuts = [];
       let from = 0;
       for (let k = 1; k < parts.length; k++) {
         const anchor = parts[k] && parts[k].at;
-        const at = anchor ? locateAnchorIndex(para.cleanText, anchor, from) : -1;
-        if (at < 0) return null;
+        const rawAt = anchor ? locateAnchorIndex(para.cleanText, anchor, from) : -1;
+        if (rawAt < 0) return null;
+        const at = snapCutOutsideMath(para, rawAt, normalizeVisionType(parts[k] && parts[k].type) === 'formula');
+        const len = String(para.cleanText || '').length;
+        /*
+         * 挪动后可能退到上一个切点：这种拆分落地不了，宁可跳过。
+         * 但**段首的 0 是合法的**——模型常把 parts[1] 锚在公式段的第一字，
+         * 此时第一片本来就是空片（sliceParaPart 会丢掉），不能因此把整处拆分判失败。
+         */
+        if (at < 0 || at > len) return null;
+        if (cuts.length > 0 && at <= cuts[cuts.length - 1]) return null;
         cuts.push(at);
         from = at;
       }
@@ -6137,19 +6864,35 @@
          * 行内公式（不依赖模型），所以行内公式先用它；覆盖不到的地方才回落到视觉替换表。
          * 顺序不能反：本地是"从 PDF 字符与位置精确还原"，视觉只是"看图转写"。
          */
+        const modelLatex = String(para.modelLatex || '').trim();
         const visionLatex = String(para.visionLatex || '').trim();
+        /*
+         * 【优先级：本地模型 > 本地数学层 > 视觉替换表】
+         *
+         * 本地模型（modelLatex）排第一，不是因为"模型更聪明"，而是因为它是**唯一有硬校验**的那条：
+         * 它的输入是这一小块裁图，输出要和 PDF 文本层的字符做多重集比对，对不上就丢弃
+         * （见 verifyLatexAgainstText）。没通过校验的压根不会出现在 para 上。
+         * 而本地数学层是逐字符拼的，结构（分式/根号）永远拼不对；视觉表是整页顺手转写，无校验。
+         */
+        const canonLatex = modelLatex || visionLatex;
         const visionInline = Array.isArray(para.visionInline) ? para.visionInline : [];
+        const modelInline = Array.isArray(para.modelInline) ? para.modelInline : [];
         const localMath = Array.isArray(para.localMath) ? para.localMath : [];
         const inlineMd = t => {
           const s0 = String(t == null ? '' : t);
+          if (modelInline.length) {
+            const withModel = applyInlineMathToMarkdown(s0, modelInline.map(x => ({ find: x.text, latex: x.latex })));
+            if (withModel !== s0) return withModel;
+          }
           if (localMath.length) {
             const withLocal = applyInlineMathToMarkdown(s0, localMath.map(x => ({ find: x.text, latex: x.latex })));
             if (withLocal !== s0) return withLocal;
           }
           return visionInline.length ? applyInlineMathToMarkdown(s0, visionInline) : s0;
         };
-        if (para.type === 'formula' && visionLatex) {
-          md += `**公式（由 PDF 字体与位置精确抽取，可直接渲染）**\n\n$$\n${visionLatex}\n$$\n\n`;
+        if (para.type === 'formula' && canonLatex) {
+          const src = modelLatex ? '本地模型识别，已通过与文本层的字符守恒校验' : '由 PDF 字体与位置精确抽取';
+          md += `**公式（${src}，可直接渲染）**\n\n$$\n${canonLatex}\n$$\n\n`;
           md += `<sub>公式不翻译；下面是字符层抽取结果（可能有误，仅备查）：${escapeHtml(sourceText)}</sub>\n\n`;
         } else if (para.type === 'title' || para.type === 'heading') {
           if (translation) md += `${mdQuote(translation)}\n\n`;
@@ -6268,20 +7011,1062 @@
    * 上下标全丢、希腊字母变普通字符，KaTeX 也无从渲染。图像是唯一可靠的来源，
    * 所以让视觉模型把公式**转写成 LaTeX**（见 translator.segmentPageWithVision 的提示词）。
    */
+  /* ============ 公式卡片：按 PDF 版式裁图（"取样"，而不是"重建"） ============
+   *
+   * 为什么不再只靠 KaTeX：`√` 的被开方数到哪结束、`tr` 是上标还是正文，
+   * 这类**结构信息**逐字符查表拿不到（本轮实测：本地把式(2)渲染成
+   * `sof tmax (√)`，根号下面是空的，而页面上印的是 `softmax(QK^tr/√C)`）。
+   * 版面里本来就有答案 —— 把那一块按 PDF 坐标裁下来当图片显示即可。
+   *
+   * 为什么只用 span 的 style 而不用 getBoundingClientRect：
+   * pdf.js 给每个 span 的 left/top/width/height 是**相对页面左上角的 CSS px**
+   * （已经乘过 currentScale），除以 currentScale 就是 PDF 点坐标。这样卡片即使
+   * 在隐藏容器里（display:none）也算得准，不依赖布局。
+   */
+
+  /**
+   * 一段里有多少条行内公式。`localMath` 是 commitParagraph 逐条记下来的，
+   * 比在 HTML 里数 `$` 可靠（正文里本来就没有 `$`）。
+   */
+  function mathRunCount(para) {
+    return (para && Array.isArray(para.localMath) && para.localMath.length) || 0;
+  }
+  /**
+   * ≥4 处行内公式就算"数学很密"。
+   * 实测 Xu 2020 第 4 页：第 3 段 21 处、第 7 段 11 处、第 1 段 8 处；
+   * 而普通正文段 0~2 处（KaTeX 那条路对它们是够用的）。
+   */
+  const MATH_HEAVY_RUNS = 4;
+  /**
+   * 只有**结构型**公式才值得把整段原文换成版面裁图。
+   *
+   * 反例（Xu 2020 p4 的 `Where td0 and td1 ...` 段）：11 处"行内公式"其实全是
+   * `td_0`、`td_1`、`0 < td_1 < td_0` 这种简单上下标，KaTeX 排得很好；
+   * 旧逻辑只看"公式条数 ≥4"，就把整段换成一张大图，结果图上只有一行
+   * `td_0 and td_1`（段落 span 还混进了图的括号），又大又空——用户说的"好丑"。
+   */
+  const MATH_STRUCT_RE = /\\(?:frac|sqrt|sum|prod|int|iint|oint|hat|widehat|widetilde|overline|underline|overbrace|underbrace|overset|underset|begin|end|matrix|array|left|right|binom|partial|nabla)\b/;
+  function hasStructuralLocalMath(para) {
+    return ((para && para.localMath) || []).some(m => MATH_STRUCT_RE.test(String((m && m.latex) || '')));
+  }
+
+  /**
+   * 把若干 span 的 CSS px 盒子并成**PDF 点**坐标的裁图矩形。
+   * 纯函数（不碰 DOM），回归测试直接喂假数据，见 scratch/math_layer_test.js。
+   */
+  function formulaCropPdfRect(spanBoxes, scale, padX, padY, pageW, pageH) {
+    const s = Number(scale) > 0 ? Number(scale) : 1;
+    let x0 = Infinity;
+    let y0 = Infinity;
+    let x1 = -Infinity;
+    let y1 = -Infinity;
+    for (const b of spanBoxes || []) {
+      if (!b) continue;
+      const l = Number(b.left);
+      const t = Number(b.top);
+      const w = Number(b.width);
+      const h = Number(b.height);
+      if (![l, t, w, h].every(Number.isFinite) || w <= 0 || h <= 0) continue;
+      if (l < x0) x0 = l;
+      if (t < y0) y0 = t;
+      if (l + w > x1) x1 = l + w;
+      if (t + h > y1) y1 = t + h;
+    }
+    if (!Number.isFinite(x0) || !Number.isFinite(x1) || x1 <= x0 || y1 <= y0) return null;
+    // 留白：公式的下标/根号常常探出字形盒；给 2pt 上下、3pt 左右
+    let r = { x0: x0 / s - padX, y0: y0 / s - padY, x1: x1 / s + padX, y1: y1 / s + padY };
+    if (Number.isFinite(pageW)) {
+      r.x0 = Math.max(0, r.x0);
+      r.x1 = Math.min(pageW, r.x1);
+    }
+    if (Number.isFinite(pageH)) {
+      r.y0 = Math.max(0, r.y0);
+      r.y1 = Math.min(pageH, r.y1);
+    }
+    if (r.x1 - r.x0 < 2 || r.y1 - r.y0 < 2) return null;
+    return r;
+  }
+
+  /**
+   * 用**数学 run 的几何框**求公式裁图矩形。
+   *
+   * 【为什么不能再只用段落 span】PDF 文本层的内容顺序不等于阅读顺序：
+   * 一条式子常被拆到好几个段落里（实测 Xu 2020 p4 式(5) 被拆成 6 段），
+   * 拿其中一个段落的 span 并集去裁，只能裁到半条式子——用户看到的就是
+   * “公式图右边被切掉一截 + 下面一串字符层残渣”。
+   *
+   * 数学 run 由 buildPageMathModel 按**字形几何**分组，box 就是每个字形簇的真实位置。
+   * 这里以段落自己的数学 run 为种子，把**同一基线/紧邻的 run** 连成一个整体，
+   * 再取并集。阈值刻意取得保守：
+   *   · 行内公式：纵向 4.5pt（相邻两行公式的间隙实测约 7pt，不会被并进来）；
+   *   · 整段公式：纵向 11pt（式(5) 的三行之间约 8pt，可以并成一条，
+   *     而它和下面的 “where L is …” 相距 18pt，不会越界）。
+   * 返回 null 时调用方退回原来的 span 并集，行为不会比现在更差。
+   */
+  function formulaCropRectFromMathRuns(para, runs, pageW, pageH, opts) {
+    const o = opts || {};
+    const isBlock = o.block === true || !!(para && para.type === 'formula');
+    const maxGapX = isBlock ? 24 : 18;
+    /*
+     * 行内公式用"纵向中心差"而不是 bbox 的垂直间隙：上下标会让相邻两条式子的
+     * bbox **重叠**（距离残差与检测残差实测重叠 4pt），按 bbox 间隙会被判成同一簇。
+     * 中心差则稳定：同一条式子的 run 中心差 ≤12pt，相邻两条式子通常 ≥18pt。
+     */
+    const maxCenterDy = 12;
+    /*
+     * 整段公式改用"垂直间隙 + 这一行有没有正文"两条判据：
+     * 式(5) 三行之间隔着大号 ∑/括号，中心差能到 30~40pt，用中心差会只裁到一行；
+     * 而下面的 `where L is …` 与式(5) 只隔 8pt，单靠间隙又会把它并进来。
+     * 真正的分界是：`where` 那一行**夹着正文**。所以候选 run 的同一行上只要
+     * 有连续英文单词（且不是数学字体），就不许并进整段公式。
+     */
+    const maxGapY = 16;
+    const allSpans = Array.isArray(o.allSpans) ? o.allSpans : [];
+
+    const runIdOf = sp => {
+      const mi = sp && sp._mathInfo;
+      return mi && mi.math && Number.isFinite(mi.runId) ? Number(mi.runId) : null;
+    };
+    /*
+     * 只拿**这段文字里最先出现的那条数学 run** 当种子，不能把整段里所有数学 run 全并起来：
+     * 一个 body 段可能同时含"距离残差"和"检测残差"两条式子（Xu 2020 p4 的 where 段就是），
+     * 全并起来会把两条式子裁进同一张图，等于从一个错误换成另一个错误。
+     * charMap 是 cleanText 的逐字符映射，按它的顺序找到的第一条 run 就是这张卡片正文
+     * 开头那条式子；再从它出发按几何邻近扩张，得到完整的一条。
+     */
+    let seedId = null;
+    for (const c of (para && para.charMap) || []) {
+      const id = runIdOf(c && c.span);
+      if (id !== null) { seedId = id; break; }
+    }
+    if (seedId === null) {
+      for (const sp of (para && para.rawSpans) || []) {
+        const id = runIdOf(sp);
+        if (id !== null) { seedId = id; break; }
+      }
+    }
+    if (seedId === null) {
+      // 拆分/合并后的段落 rawSpans 可能只覆盖一部分；segments 里的 math span 是最后一条线索
+      for (const s of (para && para.segments) || []) {
+        if (!s || s.kind !== 'math') continue;
+        for (const sp of s.spans || []) {
+          const id = runIdOf(sp);
+          if (id !== null) { seedId = id; break; }
+        }
+        if (seedId !== null) break;
+      }
+    }
+    if (seedId === null) return null;
+
+    const byId = new Map();
+    (runs || []).forEach((r, i) => byId.set(Number.isFinite(r && r.id) ? Number(r.id) : i, r));
+    if (!byId.has(seedId)) return null;
+    const picked = new Set([seedId]);
+
+    const boxOf = r => {
+      const b = r && r.box;
+      if (!b) return null;
+      const v = [b.minX, b.maxX, b.minY, b.maxY].map(Number);
+      if (!v.every(Number.isFinite)) return null;
+      return { x0: Math.min(v[0], v[1]), x1: Math.max(v[0], v[1]), y0: Math.min(v[2], v[3]), y1: Math.max(v[2], v[3]) };
+    };
+    const unionOf = (a, b) => ({
+      x0: Math.min(a.x0, b.x0),
+      x1: Math.max(a.x1, b.x1),
+      y0: Math.min(a.y0, b.y0),
+      y1: Math.max(a.y1, b.y1)
+    });
+    const gap = (a, b) => ({
+      x: Math.max(0, Math.max(a.x0 - b.x1, b.x0 - a.x1)),
+      y: Math.max(0, Math.max(a.y0 - b.y1, b.y0 - a.y1)),
+      centerDy: Math.abs((a.y0 + a.y1) / 2 - (b.y0 + b.y1) / 2)
+    });
+    /*
+     * 这个 run 所在的那一行有没有正文？
+     * 只看**横向相邻**的 span（同一栏），并要求含连续英文单词；公式里的
+     * `min`/`where` 若是数学字体会被 _mathInfo.math 排掉。
+     */
+    const proseOnLine = b => {
+      if (allSpans.length === 0) return false;
+      const cy = (b.y0 + b.y1) / 2;
+      const half = Math.max(3, (b.y1 - b.y0) / 2 + 1.5);
+      return allSpans.some(sp => {
+        if (!sp || (sp._mathInfo && sp._mathInfo.math)) return false;
+        const y = Number(sp._pdfY);
+        const x = Number(sp._pdfX);
+        const w = Number(sp._pdfW);
+        if (![y, x, w].every(Number.isFinite)) return false;
+        if (Math.abs(y - cy) > half) return false;
+        const gx = Math.max(0, Math.max(x - b.x1, b.x0 - (x + w)));
+        if (gx > 60) return false; // 另一栏/页面另一侧不算
+        return /[A-Za-z]{2,}/.test(String(sp.textContent || ''));
+      });
+    };
+
+    let bbox = null;
+    picked.forEach(id => {
+      const b = boxOf(byId.get(id));
+      if (b) bbox = bbox ? unionOf(bbox, b) : b;
+    });
+    if (!bbox) return null;
+    const seedBox = { ...bbox };
+
+    // 反复吸收紧邻的 run，直到不再变大（一条式子的上下标/分式会分散在很多 run 里）
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const [id, r] of byId) {
+        if (picked.has(id)) continue;
+        const b = boxOf(r);
+        if (!b) continue;
+        const g = gap(bbox, b);
+        if (g.x > maxGapX) continue;
+        if (isBlock) {
+          if (g.y > maxGapY) continue;
+          // 和种子 run 同一行的一定属于这条式子；正文判断只用于**跨行**扩张
+          if (gap(seedBox, b).centerDy > 12 && proseOnLine(b)) continue;
+        } else if (g.centerDy > maxCenterDy) {
+          continue;
+        }
+        picked.add(id);
+        bbox = unionOf(bbox, b);
+        grew = true;
+      }
+    }
+
+    /*
+     * 坐标翻转：run.box 用的是 pdf.js 的 PDF 坐标（原点左下、y 向上），
+     * 而 formulaCropPdfRect / canvas.drawImage 用的是**原点左上**的裁图像素坐标。
+     * 不翻转会把公式上下搬十几到几十 pt，裁到相邻行——这是最容易静默错的一步。
+     */
+    const top = Number.isFinite(pageH) ? pageH - bbox.y1 : bbox.y1;
+    const bottom = Number.isFinite(pageH) ? pageH - bbox.y0 : bbox.y0;
+    // 留白：左右 3pt、上下 8pt（上下标/大括号的墨迹常探出 run 的字体盒，2pt 会切头切脚）
+    let r = { x0: bbox.x0 - 3, x1: bbox.x1 + 3, y0: top - 8, y1: bottom + 8 };
+    if (Number.isFinite(pageW)) {
+      r.x0 = Math.max(0, r.x0);
+      r.x1 = Math.min(pageW, r.x1);
+    }
+    if (Number.isFinite(pageH)) {
+      r.y0 = Math.max(0, r.y0);
+      r.y1 = Math.min(pageH, r.y1);
+    }
+    /*
+     * 顶部再修一刀：run.box 的 maxY 是**字体行高**（baseline + 整个 em），
+     * 比字形墨迹高，实测会把公式上面那行正文（`is the set of all VIO …`）带进裁图。
+     * 这里只找"基线在公式主基线上方、且与公式横向相邻"的正文 span，把裁图顶边压到
+     * 它的行底之下。公式自己的上标是数学字体，不会被当成正文。
+     */
+    if (allSpans.length && Number.isFinite(pageH)) {
+      let proseBottom = -Infinity;
+      for (const sp of allSpans) {
+        if (!sp || (sp._mathInfo && sp._mathInfo.math)) continue;
+        const y = Number(sp._pdfY);
+        const x = Number(sp._pdfX);
+        const w = Number(sp._pdfW);
+        if (![y, x, w].every(Number.isFinite)) continue;
+        if (y <= bbox.y0 + 2) continue; // 只看公式主基线上方的行
+        // 必须和公式**横向重叠**：只隔着一条栏间距的左栏正文也可能落在 30pt 内，
+        // 用它来压顶边会把公式裁得只剩一条线（实测 Xu p4 左栏 `certain threshold`）。
+        const overlapX = Math.min(x + w, r.x1) - Math.max(x, r.x0);
+        if (overlapX <= 0) continue;
+        if (!/[A-Za-z]{2,}/.test(String(sp.textContent || ''))) continue;
+        const h = Number(sp._pdfH) || 0;
+        const bottom2 = pageH - (y - h * 0.25);
+        if (bottom2 > proseBottom) proseBottom = bottom2;
+      }
+      if (Number.isFinite(proseBottom)) r.y0 = Math.max(r.y0, proseBottom + 0.8);
+    }
+    if (r.x1 - r.x0 < 2 || r.y1 - r.y0 < 2) return null;
+    return r;
+  }
+
+  /**
+   * 公式片段（`para.segments` 里 kind==='math' 的那一条）→ 裁图矩形。
+   *
+   * 【为什么用 span 的 rect 而不是逐 item 的 transform】span 是 pdf.js 真正排出来的文本层元素，
+   * 它的 getBoundingClientRect() 已经含了缩放、旋转、CSS 变换；而 item.transform 是 PDF 用户坐标，
+   * 还要自己乘 viewport 矩阵，一旦页面有 cropbox/旋转就漏项。这里沿用 spanBoxesOf 的口径。
+   *
+   * 【为什么按字符比例切】一个 span 里可能夹着正文（`where x is` 里的 x），
+   * 而 PDF 文本层**没有字符级的 x 坐标**（一个 text item 只有整段宽度）。
+   * 所以在"公式只占 span 一部分"时，按字符占比线性切——数学字体基本等宽，误差约 ±1 字符，
+   * 交给 form 的 3pt 左右留白去吸收；真正的兜底是后面的字符守恒校验。
+   */
+  function mathSegCropRect(seg, canvasRect, pxPerCss, scale, pageW, pageH) {
+    const sp = ((seg && seg.spans) || [])[0];
+    if (!sp || typeof sp.getBoundingClientRect !== 'function') return null;
+    const r = sp.getBoundingClientRect();
+    if (!(r.width > 0) || !(r.height > 0)) return null;
+    const len = Number(seg.__spanLen) || 0;
+    const a = Number.isFinite(seg.__spanStart) ? seg.__spanStart : 0;
+    const b = Number.isFinite(seg.__spanEnd) ? seg.__spanEnd : len;
+    let left = r.left;
+    let width = r.width;
+    if (len > 1 && b > a && (a > 0 || b < len)) {
+      left = r.left + (r.width * a) / len;
+      width = (r.width * (b - a)) / len;
+    }
+    const box = {
+      left: (left - canvasRect.left) * pxPerCss,
+      top: (r.top - canvasRect.top) * pxPerCss,
+      width: width * pxPerCss,
+      height: r.height * pxPerCss
+    };
+    return formulaCropPdfRect([box], scale, 3, 4, pageW, pageH);
+  }
+
+  // ---------------------- 模型结果的字符守恒校验 ----------------------
+  /*
+   * 【为什么必须有这一道】`formula_model_probe/FINDINGS.md` 实测：识别器在框裁对时 4/4 全对，
+   * 框裁错时 3/3 全错，而且**不是拒绝，是编造**——把邻行正文塞进 `\begin{array}` 里一本正经地输出。
+   * 裁框这件事只要有一点几何误差（行内片段按字符比例切就是这种情形），模型就会给出
+   * "能渲染、但内容不是这条公式"的结果，比原来的残渣更危险（残渣至少看着可疑）。
+   *
+   * 【判据为什么是字符多重集，而不是逐字序列】
+   * 一条公式被还原成 LaTeX 之后，**字符顺序本来就会变**：
+   *   `\frac{QK^{tr}}{\sqrt{C}}` 的可见字符是 Q K t r C，
+   *   而 PDF 文本层里可能排成 `QK tr C` 或 `Q K^tr √C`。
+   * 逐字比对必然误杀。而"用了哪些字符、各几次"是稳定的——分母 2、指数 t、根号里是 C，
+   * 这些字符不管怎么排都得出现。所以这里比**多重集**：覆盖率够高、且没有大量多出来的字符，
+   * 才认为这个 LaTeX 说的就是框里那条式子。
+   */
+
+  /** LaTeX 命令 → 它"印出来是什么字符"。只收会影响字符守恒判断的那些 */
+  const LATEX_CHAR_CMD = {
+    alpha: 'α', beta: 'β', gamma: 'γ', delta: 'δ', epsilon: 'ε', varepsilon: 'ε', zeta: 'ζ',
+    eta: 'η', theta: 'θ', vartheta: 'θ', iota: 'ι', kappa: 'κ', lambda: 'λ', mu: 'μ', nu: 'ν',
+    xi: 'ξ', pi: 'π', rho: 'ρ', sigma: 'σ', tau: 'τ', upsilon: 'υ', phi: 'φ', varphi: 'φ',
+    chi: 'χ', psi: 'ψ', omega: 'ω', Gamma: 'Γ', Delta: 'Δ', Theta: 'Θ', Lambda: 'Λ', Xi: 'Ξ',
+    Pi: 'Π', Sigma: 'Σ', Phi: 'Φ', Psi: 'Ψ', Omega: 'Ω',
+    in: '∈', notin: '∉', subset: '⊂', subseteq: '⊆', cup: '∪', cap: '∩', emptyset: '∅',
+    forall: '∀', exists: '∃', neg: '¬', wedge: '∧', vee: '∨', to: '→', rightarrow: '→',
+    leftarrow: '←', leftrightarrow: '↔', mapsto: '↦', Rightarrow: '⇒', Leftrightarrow: '⇔',
+    sum: '∑', prod: '∏', int: '∫', oint: '∮', partial: '∂', nabla: '∇', infty: '∞',
+    approx: '≈', simeq: '≃', cong: '≅', leq: '≤', le: '≤', geq: '≥', ge: '≥',
+    neq: '≠', ne: '≠', equiv: '≡', sim: '∼', propto: '∝', pm: '±', mp: '∓',
+    times: '×', div: '÷', cdot: '⋅', circ: '∘', oplus: '⊕', otimes: '⊗',
+    lceil: '⌈', rceil: '⌉', lfloor: '⌊', rfloor: '⌋', langle: '⟨', rangle: '⟩',
+    parallel: '∥', perp: '⊥', ldots: '…', cdots: '⋯', dots: '…', prime: '′',
+    // 下面这些"印出来是字母/空白"的，保留成字母，方便和原文对账
+    mathbb: '', mathcal: '', mathbf: '', mathrm: '', mathit: '', mathsf: '', mathtt: '',
+    text: '', textrm: '', textbf: '', textit: '', operatorname: '', boldsymbol: '',
+    left: '', right: '', big: '', Big: '', bigg: '', Bigg: '', quad: '', qquad: '',
+    label: '', tag: '', nonumber: '', notag: '',
+    hat: '', tilde: '', bar: '', dot: '', ddot: '', vec: '', overline: '', underline: '',
+    frac: '', dfrac: '', tfrac: '', sqrt: '', root: '', mathop: '', limits: '',
+    hline: '', cline: '', array: '', begin: '', end: '', substack: '', stackrel: '',
+    underset: '', overset: '', mathbin: '', mathrel: '', mathord: '', mathopen: '', mathclose: ''
+  };
+  /** 这些命令后面跟的内容整体丢掉（不是符号，是排版参数或环境名） */
+  const LATEX_DROP_ARG_CMD = new Set(['begin', 'end', 'label', 'tag', 'array', 'color', 'hspace', 'vspace', 'rule', 'fontsize']);
+
+  /** 从 `from` 起读一个 `{...}` 组（允许前面有空白）；读不到返回 null */
+  function readBraceGroup(s, from) {
+    let k = from;
+    while (k < s.length && /\s/.test(s[k])) k++;
+    if (s[k] !== '{') return null;
+    const bodyStart = k + 1;
+    let depth = 0;
+    for (; k < s.length; k++) {
+      if (s[k] === '{') depth++;
+      else if (s[k] === '}') {
+        depth--;
+        if (depth === 0) return { end: k + 1, body: s.slice(bodyStart, k) };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * LaTeX → 可见字符多重集（不保序）。
+   * 失败时返回 null，调用方按"不可信"处理（宁可不换，也别换个错的）。
+   */
+  function latexVisibleChars(tex) {
+    const s = String(tex || '');
+    if (!s.trim()) return null;
+    const out = [];
+    let i = 0;
+    while (i < s.length) {
+      const ch = s[i];
+      /*
+       * `\\`（换行）必须先吃掉两个字符。只吃一个的话，第二个反斜杠会被当成命令前缀，
+       * 而它后面通常紧跟字母（`a\\b` 里的 b）→ 被读成命令 `\b` 并被当成"未知命令"丢掉。
+       * 实测这条会让 `a\\b` 只剩一个字符，校验凭空少一半。
+       */
+      if (ch === '\\' && s[i + 1] === '\\') {
+        i += 2;
+        continue;
+      }
+      if (ch === '\\') {
+        const m = /^\\([A-Za-z]+)\*?/.exec(s.slice(i));
+        if (m) {
+          const name = m[1];
+          i += m[0].length;
+          if (LATEX_DROP_ARG_CMD.has(name)) {
+            const g1 = readBraceGroup(s, i);
+            if (g1) {
+              i = g1.end;
+              /*
+               * `\begin{array}{l}` / `\begin{tabular}{|c|c|}`：第二个组是**列格式说明**，
+               * 不是内容。不丢掉它，`{l}` 里的 l 就会被当成一个可见字符混进多重集，
+               * 把"吞了邻行"的判定往下压（实测正是这一处让编造的判据失真）。
+               */
+              if (name === 'begin' || name === 'end') {
+                const g2 = readBraceGroup(s, i);
+                if (g2 && /^[lcr|j\s]+$/i.test(g2.body)) i = g2.end;
+              }
+            }
+          }
+          if (Object.prototype.hasOwnProperty.call(LATEX_CHAR_CMD, name)) {
+            const rep = LATEX_CHAR_CMD[name];
+            for (const c of rep) out.push(c);
+          }
+          continue;
+        }
+        // `\,` `\;` `\:` `\!` 与 `\ `（反斜杠+空格）都是**间距命令**，不产生可见字符。
+        // 把它们当成"转义字符"会把一个逗号/分号算进多重集，短公式直接因此被误杀。
+        // 注意看的是**下一个字符**（此时 i 还停在反斜杠上）。
+        if (s[i + 1] === ' ' || ',;:!'.indexOf(s[i + 1]) >= 0) {
+          i += 2;
+          continue;
+        }
+        // 转义字符（`\{` `\}` `\%` `\_` 之类）：按字面字符算
+        i += 1;
+        if (s[i]) {
+          out.push(s[i]);
+          i += 1;
+        }
+        continue;
+      }
+      if (ch === '{' || ch === '}' || ch === '_' || ch === '^' || ch === '&' || ch === '~') {
+        i++;
+        continue;
+      }
+      if (ch === '$') {
+        i++;
+        continue;
+      }
+      if (/\s/.test(ch) || ch === '\ufffd') {
+        // U+FFFD 是 UTF-8 解码失败的替换符（PaddleOCR 偶尔会吐出 `\text{�oor}` 这种），
+        // 它不代表公式里的任何符号，计入只会让覆盖率永远差一截
+        i++;
+        continue;
+      }
+      out.push(ch);
+      i++;
+    }
+    return out;
+  }
+
+  /** 文本 → 多重集（忽略大小写之外的差异；连字符与减号统一） */
+  function textCharBag(text) {
+    const bag = new Map();
+    for (const raw0 of String(text || '')) {
+      if (/\s/.test(raw0)) continue;
+      let raw = raw0;
+      /*
+       * 【必须归一化数学字母数字区】PDF 文本层里的数学字母常常不是普通 ASCII：
+       * AOT 第 4/5 页的 `H×W×N` 在文本层里是 `𝑯×𝑾×𝑵`（U+1D400 段，数学斜体），
+       * 而模型输出的 LaTeX 里是普通的 H/W/N。不还原成基字母，
+       * 一条**完全正确**的识别也会被判定为"字符对不上"（实测这就是误杀的主因）。
+       */
+      const cp = raw.codePointAt(0);
+      if (cp >= 0x1d400 && cp <= 0x1d7ff) {
+        const base = typeof mathAlnumBase === 'function' ? mathAlnumBase(cp) : '';
+        if (base) raw = base;
+      }
+      // U+FFFD 是解码失败的替换符，不是"公式里的字符"，计入会让覆盖率永远差一截
+      if (raw === '\ufffd') continue;
+      const c = raw.replace(/[−–—‐]/g, '-');
+      bag.set(c, (bag.get(c) || 0) + 1);
+    }
+    return bag;
+  }
+
+  /**
+   * 公式里**本来就该出现**的英文单词（算子名/函数名）。
+   *
+   * 这个表是"吞正文"判据的白名单：模型把邻行正文塞进 `\mathrm{probability}` 时，
+   * 那个词一定不在表里；而 `\operatorname{softmax}` 里的 softmax 在表里，不能误杀。
+   * 只比长度 ≥4 的词——`\text{and}`、`\text{for}` 这类短连接词在公式里很常见。
+   */
+  const MATH_WORD_ALLOW = new Set([
+    'softmax', 'softargmax', 'sigmoid', 'relu', 'gelu', 'selu', 'tanh', 'softplus',
+    'argmax', 'argmin', 'max', 'min', 'sup', 'inf', 'lim', 'log', 'exp', 'pow',
+    'sin', 'cos', 'tan', 'cot', 'sec', 'csc', 'sinh', 'cosh', 'atan', 'asin', 'acos',
+    'det', 'dim', 'rank', 'trace', 'diag', 'norm', 'mean', 'std', 'var', 'cov', 'corr',
+    'mod', 'gcd', 'lcm', 'sqrt', 'abs', 'sgn', 'deg', 'arg'
+  ]);
+
+  /**
+   * 结构自检：花括号是否平衡、`\begin`/`\end` 是否配对、"文字块"里有没有混进正文词。
+   *
+   * 【为什么光靠字符守恒不够】实测（AOT 手工框那 6 个案例）：
+   *   · 模型把 `\begin{aligned}{` 写成 `Abegint}{`，字符几乎没少，校验照样通过，
+   *     但 KaTeX 已经渲染不出来；
+   *   · 框偏大时模型会**忠实地把框里所有东西都转写出来**，包括正文单词
+   *     （`\mathrm{probability}`、`\mathrm{logits}`），字符守恒甚至能到 0.97 ——
+   *     这类"字符对得上、但它不是一条公式"的结果最危险，因为它看起来完全像模像样。
+   * 所以这里再补三条结构/语义判据，与字符守恒互为补充。
+   *
+   * 返回 '' 表示没发现问题，否则返回问题代号。
+   */
+  function latexStructuralProblem(tex) {
+    const s = String(tex || '');
+    let depth = 0;
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      if (c === '\\') {
+        i += 1; // 跳过被转义的字符（`\{` `\}` 不算括号）
+        continue;
+      }
+      if (c === '{') depth += 1;
+      else if (c === '}') {
+        depth -= 1;
+        if (depth < 0) return 'unbalanced-brace';
+      }
+    }
+    if (depth !== 0) return 'unbalanced-brace';
+
+    const begins = (s.match(/\\begin\s*\{/g) || []).length;
+    const ends = (s.match(/\\end\s*\{/g) || []).length;
+    if (begins !== ends) return 'unbalanced-env';
+
+    // `\text{...}` / `\mathrm{...}` / `\operatorname{...}` 里的长英文词：不在白名单就是正文
+    const re = /\\(?:text|textrm|textbf|textit|mathrm|mathbf|operatorname|boldsymbol)\s*\{([^{}]*)\}/g;
+    let m;
+    while ((m = re.exec(s)) !== null) {
+      const words = m[1].match(/[A-Za-z]{4,}/g) || [];
+      for (const w of words) {
+        if (!MATH_WORD_ALLOW.has(w.toLowerCase())) return 'prose-in-math';
+      }
+    }
+    return '';
+  }
+
+  /**
+   * 判定一段 LaTeX 是否"就是"这段残渣文本。
+   *
+   * 返回 { ok, coverage, extra, reason }：
+   *   coverage = 原文里有多少字符在 LaTeX 中被写到了（多重集交集 / 原文总数）
+   *   extra    = LaTeX 里有多少字符是原文没有的（相对原文总数的比例）—— 吞邻行会把它顶上去
+   *
+   * 【阈值是实测标定的，不是拍的】拿 FINDINGS 里那 7 个案例反推：
+   *   · `Att(Q,K,V)=Corr(Q,K)V=softmax(QK^tr/√C)V` → 模型输出覆盖率 ~0.95、extra ~0.15（应通过）
+   *   · 裁歪后 `\begin{array}{l}{\operatorname{ming}N…` → 覆盖率 <0.4、extra >1.5（应拒绝）
+   *   · `\frac{1}{_t{_{^{t}}}}` 对原文 `x_i^t` → 覆盖率 0.33（应拒绝）
+   * 短公式单独一档：3 个字符的残渣做多重集比对几乎没有统计意义（碰巧对上两个就过），
+   * 所以要求它**完全覆盖且几乎不许多**。
+   */
+  function verifyLatexAgainstText(latex, text) {
+    const got = latexVisibleChars(latex);
+    if (!got) return { ok: false, coverage: 0, extra: 0, reason: 'empty' };
+    // 结构先过一遍：写坏了的 LaTeX（括号不配对、`\begin` 没 `\end`）连渲染都渲染不出来，
+    // 字符对得上也没意义。
+    const structural = latexStructuralProblem(latex);
+    if (structural) return { ok: false, coverage: 0, extra: 0, reason: structural };
+    const want = textCharBag(text);
+    let wantN = 0;
+    want.forEach(v => { wantN += v; });
+    if (wantN === 0) return { ok: false, coverage: 0, extra: 0, reason: 'no-text' };
+
+    const gotBag = new Map();
+    got.forEach(c => gotBag.set(c, (gotBag.get(c) || 0) + 1));
+    let hit = 0;
+    want.forEach((n, c) => { hit += Math.min(n, gotBag.get(c) || 0); });
+    const extraN = Math.max(0, got.length - hit);
+    const coverage = hit / wantN;
+    const extra = extraN / wantN;
+
+    if (wantN <= 3) {
+      /*
+       * 原文只有一两个字符时，多重集比对几乎没有统计意义（碰巧对上就过），
+       * 所以要求**完全相同**：一个字符都不许缺，也一个都不许多。
+       * 实测反例：原文 `∼`、模型输出 `2\sim` —— 多出来的那个 `2` 是编造的起点，
+       * 允许 1 个多余字符就会把它放进来。
+       */
+      const ok = coverage >= 0.999 && extraN === 0;
+      return { ok, coverage, extra, reason: ok ? 'ok' : 'short-mismatch' };
+    }
+    /*
+     * extra 门槛定在 0.30 是实测标定的：
+     *   · 识别正确的那几条，extra 一律是 0.00（模型只是换了写法，不会凭空多出字符）；
+     *   · 框略大、把邻字转写进来的那几条，extra 落在 0.37~1.21；
+     *   · 最初用 0.60 时，AOT_p5_Vprime_R 那条（模型把 `AttID` 拆成 `A&tI}D(0)`）就是这样漏进来的。
+     */
+    const ok = coverage >= 0.7 && extra <= 0.3;
+    return {
+      ok,
+      coverage,
+      extra,
+      reason: ok ? 'ok' : coverage < 0.7 ? 'missing-chars' : 'extra-chars'
+    };
+  }
+
+  /** 3× PDF 点 ≈ 216dpi：卡片正文宽度（≤900px）下足够清晰，再高只是浪费内存 */
+  const FORMULA_CROP_SCALE = 3;  const FORMULA_CROP_MAX_CANVAS = 4096;
+  /** `${pageNum}|${x0},${y0},${x1},${y1}` -> dataURL；翻页回来看过的页不再重算 */
+  const formulaCropCache = new Map();
+  let formulaCropToken = 0;
+  /**
+   * 翻译回包重渲染卡片后补一次裁图调度。
+   * 多次回包（一页十几段）用一个短 debounce 合并，避免每段都整页重渲一次。
+   */
+  let cropHydrateTimer = 0;
+  function scheduleFormulaCropHydrate(pageNum) {
+    if (typeof requestAnimationFrame !== 'function') return;
+    if (cropHydrateTimer) clearTimeout(cropHydrateTimer);
+    cropHydrateTimer = setTimeout(() => {
+      cropHydrateTimer = 0;
+      requestAnimationFrame(() => {
+        if (pageNum !== currentPage) return;
+        hydrateFormulaCrops(pageNum, currentParagraphs).catch(e =>
+          console.warn('[Viewer] 补裁图失败（保留文本兜底）:', e)
+        );
+      });
+    }, 300);
+  }
+
+  /**
+   * 从 style 里读长度，兼容两种写法：
+   *   `48.00px`（老版本 / 我们自己的 div）
+   *   `calc(var(--scale-factor)*48.00px)`（pdf.js 3.11 的文本层就是这种）
+   * 直接 parseFloat 前者可以、后者是 NaN——实测踩过，功能会静默失效。
+   */
+  function cssLenToPx(v, scaleFactor) {
+    const s = String(v == null ? '' : v);
+    const m = /(-?\d+(?:\.\d+)?)px/.exec(s);
+    if (!m) return NaN;
+    const n = parseFloat(m[1]);
+    return s.indexOf('--scale-factor') >= 0 ? n * (Number(scaleFactor) || 1) : n;
+  }
+
+  /**
+   * 段落里每个 span 的盒子（单位：**canvas 像素**，原点在画布左上角）。
+   *
+   * 【为什么优先量 rect 而不是读 style】pdf.js 3.11 把 span 定位写成
+   * `calc(var(--scale-factor)*48.00px)`，而且 span 上**没有** width/height 样式
+   * （宽度由字体内容决定）。按 style 解析会一条都算不出来 → 功能静默失效。
+   * rect 量的是真实排版结果，两种写法都覆盖；页面被隐藏量不到 0 时才退回 style。
+   */
+  function spanBoxesOf(para, canvasRect, pxPerCss, scaleFactor) {
+    const out = [];
+    const spans = (para && para.rawSpans) || [];
+    for (const sp of spans) {
+      if (!sp) continue;
+      if (canvasRect && typeof sp.getBoundingClientRect === 'function') {
+        const r = sp.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) {
+          out.push({
+            left: (r.left - canvasRect.left) * pxPerCss,
+            top: (r.top - canvasRect.top) * pxPerCss,
+            width: r.width * pxPerCss,
+            height: r.height * pxPerCss,
+          });
+          continue;
+        }
+      }
+      const st = sp.style;
+      if (!st) continue;
+      const left = cssLenToPx(st.left, scaleFactor);
+      const top = cssLenToPx(st.top, scaleFactor);
+      const width = cssLenToPx(st.width, scaleFactor);
+      const height = cssLenToPx(st.height, scaleFactor);
+      if ([left, top, width, height].every(Number.isFinite)) {
+        out.push({ left, top, width, height });
+      }
+    }
+    return out;
+  }
+
+  function cropCacheKey(pageNum, rect) {
+    const f = n => Math.round(n * 2) / 2; // 0.5pt 量化，缩放来回抖动也能命中
+    return `${pageNum}|${f(rect.x0)},${f(rect.y0)},${f(rect.x1)},${f(rect.y1)}`;
+  }
+
+  /**
+   * 卡片已经用 KaTeX 出来之后，再把公式正文换成页面裁图。
+   *
+   * 【为什么是"替换"而不是"直接出图"】卡片是同步拼 HTML 的（renderCardFormulaHtml），
+   * 而裁图要等 pdf.js 渲染，一旦做成同步就会把整页卡片卡住。先出 KaTeX（秒出、可读），
+   * 图就绪后换上去；任何一步失败都保持 KaTeX 不动。
+   */
+  async function hydrateFormulaCrops(pageNum, paragraphs) {
+    const wantCrop = formulaAsImageAllowed;
+    const wantModel = formulaModelEnabled;
+    if ((!wantCrop && !wantModel) || !pdfDoc) return;
+    const bodies = Array.from(document.querySelectorAll('.card-formula-body[data-crop-para], .para-crop[data-crop-para]'));
+    /*
+     * 先做一次廉价预检再决定要不要渲染整页。
+     * 一页 3× 全页 canvas 是这里最重的一步（长文档翻页能明显感觉到），
+     * 而"这一页根本没有数学片段"是最常见的情况——不能为了没有的候选付这笔钱。
+     */
+    const hasMathCand = (paragraphs || []).some(
+      p => p && (p.type === 'formula' ||
+        (Array.isArray(p.segments) && p.segments.some(s => s && s.kind === 'math' && String(s.text || '').trim())))
+    );
+    const needCrop = wantCrop && bodies.some(b => !b.getAttribute('data-crop-done'));
+    const needModel = wantModel && hasMathCand;
+    if (!needCrop && !needModel) return;
+    const myToken = ++formulaCropToken;
+
+    let page;
+    try {
+      page = await pdfDoc.getPage(pageNum);
+    } catch (e) {
+      return;
+    }
+    if (myToken !== formulaCropToken || currentPage !== pageNum) return;
+
+    /*
+     * 几何基准取**屏幕上那张画布**：canvas 像素对应 viewport(scale=currentScale)，
+     * 所以 canvas 像素 ÷ currentScale 就是 PDF 点。pxPerCss 兜住"画布被 CSS 缩放过"
+     * 的情况（将来若改成按 devicePixelRatio 渲染，这个比值就不是 1 了）。
+     */
+    const wrap = document.getElementById(`pageWrapper_${pageNum}`);
+    const canvasEl = wrap ? wrap.querySelector('canvas.pdf-canvas') || wrap.querySelector('canvas') : null;
+    if (!canvasEl || !canvasEl.width) return;
+    const canvasRect = canvasEl.getBoundingClientRect();
+    if (canvasRect.width <= 0) return;
+    const pxPerCss = canvasEl.width / canvasRect.width;
+
+    let base;
+    try {
+      base = page.getViewport({ scale: 1 });
+    } catch (e) {
+      return;
+    }
+
+    // 整页只渲一次，再按各自矩形裁（一页常有 5~20 条公式，逐条重渲会卡死）
+    let scale = FORMULA_CROP_SCALE;
+    const longest = Math.max(base.width, base.height);
+    if (longest * scale > FORMULA_CROP_MAX_CANVAS) scale = FORMULA_CROP_MAX_CANVAS / longest;
+    const vp = page.getViewport({ scale });
+    const full = document.createElement('canvas');
+    full.width = Math.max(1, Math.ceil(vp.width));
+    full.height = Math.max(1, Math.ceil(vp.height));
+    try {
+      const fctx = full.getContext('2d');
+      // PDF 页面底色是透明的；卡片是浅色底，先铺白，免得截出来是黑的
+      fctx.fillStyle = '#ffffff';
+      fctx.fillRect(0, 0, full.width, full.height);
+      await page.render({ canvasContext: fctx, viewport: vp }).promise;
+    } catch (e) {
+      console.warn('[Viewer] 公式裁图渲染失败，退回 KaTeX:', e);
+      return;
+    }
+    if (myToken !== formulaCropToken || currentPage !== pageNum) return;
+
+    /** 按矩形从整页 canvas 裁一张 dataURL（带缓存；裁图与模型共用同一份结果） */
+    const cropDataUrl = rect => {
+      const key = cropCacheKey(pageNum, rect);
+      let dataUrl = formulaCropCache.get(key);
+      if (dataUrl) return dataUrl;
+      const sx = Math.max(0, Math.floor(rect.x0 * scale));
+      const sy = Math.max(0, Math.floor(rect.y0 * scale));
+      const sw = Math.min(full.width - sx, Math.ceil((rect.x1 - rect.x0) * scale));
+      const sh = Math.min(full.height - sy, Math.ceil((rect.y1 - rect.y0) * scale));
+      if (sw < 6 || sh < 6) return null;
+      const crop = document.createElement('canvas');
+      crop.width = sw;
+      crop.height = sh;
+      const cctx = crop.getContext('2d');
+      cctx.drawImage(full, sx, sy, sw, sh, 0, 0, sw, sh);
+      try {
+        dataUrl = crop.toDataURL('image/png');
+      } catch (e) {
+        return null;
+      }
+      formulaCropCache.set(key, dataUrl);
+      if (formulaCropCache.size > 80) {
+        const oldest = formulaCropCache.keys().next().value;
+        formulaCropCache.delete(oldest);
+      }
+      return dataUrl;
+    };
+
+    let applied = 0;
+    const mathRuns = pageMathRuns.get(pageNum) || [];
+    /** 行间公式：卡片上那一块（裁图显示） */
+    const blockTargets = [];
+    for (const body of bodies) {
+      const pid = body.getAttribute('data-crop-para');
+      const para = (paragraphs || []).find(p => String(p && p.id) === String(pid));
+      if (!para) continue;
+      /*
+       * 两种裁图目标必须分开：
+       *   · `.card-formula-body` 是**一条公式**——优先用数学 run 的几何框，
+       *     它不会因为公式被文本层拆成几段而只裁到半条式子；
+       *   · `.para-crop` 是**整段正文**（数学密集段的原文栏）——必须用段落全部 span
+       *     的并集，绝不能套数学 run 的框。否则整段只裁到 `td_0 and td_1` 这一小块，
+       *     卡片里会出现一大片空白 + 一行孤零零的符号（用户截图里的"好丑"）。
+       */
+      const isParaCrop = !!(body.classList && body.classList.contains('para-crop'));
+      const rect = isParaCrop
+        ? formulaCropPdfRect(
+            spanBoxesOf(para, canvasRect, pxPerCss, currentScale),
+            currentScale, 3, 6, base.width, base.height,
+          )
+        : /*
+           * 8.7 合并出来的整块公式（矩阵、式(5)）：段落 span 的并集就是这一块的完整范围，
+           * 比"数学 run 几何"更可靠 —— run 只覆盖数学字形的簇，矩阵两侧的大括号、
+           * 上下的 underbrace 与 `m × n elements` 标签不在数学字体里，会被裁掉。
+           * 用户截图里圈出的状态矩阵，裁图缺的正是这些边框/标注。
+           */
+          (para.formulaByMergedRows
+            ? formulaCropPdfRect(
+                spanBoxesOf(para, canvasRect, pxPerCss, currentScale),
+                currentScale, 3, 10, base.width, base.height,
+              )
+            : null) ||
+          formulaCropRectFromMathRuns(para, mathRuns, base.width, base.height, {
+            block: true,
+            allSpans: pageAllSpans.get(pageNum) || [],
+          }) ||
+          formulaCropPdfRect(
+            spanBoxesOf(para, canvasRect, pxPerCss, currentScale),
+            currentScale, 3, 8, base.width, base.height,
+          );
+      if (!rect) continue;
+      const dataUrl = cropDataUrl(rect);
+      if (!dataUrl) continue;
+
+      if (wantCrop) {
+        body.innerHTML = `<img class="formula-crop-img" src="${dataUrl}" alt="公式原图（按 PDF 版式裁切）" title="按 PDF 版式原样裁切，未做 LaTeX 重建">`;
+        body.setAttribute('data-crop-done', '1');
+        const label = body.parentElement ? body.parentElement.querySelector('[data-formula-crop-label]') : null;
+        // 标签必须跟着改：现在显示的是"图像"，不能再声称"由字体与位置精确抽取的 LaTeX"
+        if (label) label.textContent = '公式（按 PDF 版式原样裁切，内容是图像）';
+        if (body.classList && body.classList.contains('para-crop')) {
+          // 正文段的原文栏：补一句说明，读者才知道这栏为什么是图
+          const note = document.createElement('div');
+          note.className = 'para-crop-note';
+          note.textContent = `原文含 ${mathRunCount(para)} 处行内公式，已按版面原样显示`;
+          body.appendChild(note);
+        }
+        applied += 1;
+      }
+      blockTargets.push({ key: `b${para.id}`, para, kind: 'block', text: para.cleanText || '', rect });
+    }
+    if (applied > 0) console.log(`[Viewer] 第 ${pageNum} 页 ${applied} 条公式改为版面裁图`);
+
+    if (!wantModel) return;
+    // 归档里恢复出来的结果也要立刻显示（否则得等到下一次翻页才生效）
+    refreshInlineMathFromModel(paragraphs);
+    await runFormulaModel(pageNum, paragraphs, blockTargets, cropDataUrl, base, myToken, canvasRect, pxPerCss);
+  }
+
+  /**
+   * 行内公式：模型识别的候选与批量执行。
+   *
+   * 【为什么必须限量】plus-S 在 CPU 上约 400ms/条，一页行内公式常有 20~40 处，
+   * 全送就是 8~16 秒的后台占用。这里按"长度降序"取前 N 条——长的公式更容易被逐字符拼错
+   * （上下标嵌套、根号、分式），短的（`x`、`n`、`d_k`）本地拼装本来就没错，送的性价比最低。
+   */
+  const FORMULA_MODEL_MAX_PER_PAGE = 40;
+
+  async function runFormulaModel(pageNum, paragraphs, blockTargets, cropDataUrl, base, myToken, canvasRect, pxPerCss) {
+    const cand = [];
+    for (const t of blockTargets) {
+      // 已经有可信结果（本次会话或归档恢复）就不重复花钱/花时间
+      if (t.para && String(t.para.modelLatex || '').trim()) continue;
+      cand.push(t);
+    }
+    for (const para of paragraphs || []) {
+      if (!para || !Array.isArray(para.segments)) continue;
+      para.segments.forEach((seg, idx) => {
+        if (!seg || seg.kind !== 'math') return;
+        if (String(seg.modelLatex || '').trim()) return;
+        const text = String(seg.text || '').trim();
+        if (!text) return;
+        /*
+         * 行内公式同样先走 run 几何框：按字符比例切一个 span 只能保证"大概在这里"，
+         * 而 run 的 box 是字形真实边界（根号、上下标都在里面）。
+         */
+        const rect =
+          formulaCropRectFromMathRuns(
+            { rawSpans: seg.spans || [], segments: [seg] },
+            pageMathRuns.get(pageNum) || [],
+            base.width,
+            base.height,
+            { block: false, allSpans: pageAllSpans.get(pageNum) || [] },
+          ) ||
+          mathSegCropRect(seg, canvasRect, pxPerCss, currentScale, base.width, base.height);
+        if (!rect) return;
+        cand.push({ key: `i${para.id}_${idx}`, para, seg, kind: 'inline', text, rect, order: idx });
+      });
+    }
+    if (cand.length === 0) return;
+    /*
+     * 排序：**整段公式优先**，同类里长的优先。
+     * 行间公式（type=formula）是要导出成 `$$...$$` 的主角，一条顶几十条行内符号；
+     * 而同为行内时，越长的式子越可能是"本地逐字符拼装拼错"的那种（根号、分式、多层上下标）。
+     */
+    cand.sort((a, b) => {
+      if (a.kind !== b.kind) return a.kind === 'block' ? -1 : 1;
+      return String(b.text).length - String(a.text).length;
+    });
+    const picked = cand.slice(0, FORMULA_MODEL_MAX_PER_PAGE);
+
+    const items = [];
+    const sent = [];
+    for (const t of picked) {
+      const dataUrl = cropDataUrl(t.rect);
+      if (!dataUrl) continue;
+      const comma = dataUrl.indexOf(',');
+      if (comma < 0) continue;
+      items.push({ key: t.key, imageBase64: dataUrl.slice(comma + 1), mime: 'image/png' });
+      sent.push(t);
+    }
+    if (items.length === 0) return;
+    if (myToken !== formulaCropToken || currentPage !== pageNum) return;
+
+    console.log(`[Viewer] 第 ${pageNum} 页送本地模型识别 ${items.length} 条公式`);
+    const results = await requestFormulaRecognize(items);
+    if (!Array.isArray(results) || results.length === 0) return;
+
+    const byKey = new Map(results.map(r => [String(r && r.key), r]));
+    let acceptedBlock = 0;
+    let acceptedInline = 0;
+    const rejected = [];
+    for (const t of sent) {
+      const r = byKey.get(t.key);
+      if (!r || !r.latex) {
+        if (r && r.error) rejected.push(`${t.key}: ${r.error}`);
+        continue;
+      }
+      const v = verifyLatexAgainstText(r.latex, t.text);
+      if (!v.ok) {
+        rejected.push(`${t.key}: ${v.reason} cov=${v.coverage.toFixed(2)} extra=${v.extra.toFixed(2)}`);
+        continue;
+      }
+      if (t.kind === 'block') {
+        t.para.modelLatex = String(r.latex).trim();
+        t.para.modelMeta = { model: formulaModelName, ms: r.ms || 0, coverage: v.coverage, extra: v.extra };
+        acceptedBlock += 1;
+      } else {
+        t.seg.modelLatex = String(r.latex).trim();
+        t.seg.modelMeta = { model: formulaModelName, ms: r.ms || 0, coverage: v.coverage, extra: v.extra };
+        acceptedInline += 1;
+      }
+    }
+    if (rejected.length) {
+      // 拒绝也是信息：能看出"框裁歪了"还是"模型编了"，排查时不用再猜
+      console.log(`[Viewer] 第 ${pageNum} 页 ${rejected.length} 条模型结果未通过守恒校验：${rejected.slice(0, 6).join(' | ')}`);
+    }
+    if (acceptedBlock + acceptedInline === 0) return;
+    console.log(`[Viewer] 第 ${pageNum} 页本地模型采纳：行间 ${acceptedBlock} 条、行内 ${acceptedInline} 条`);
+
+    // 行内公式就地换掉 KaTeX 内容（原文栏的可见改善就在这一步）
+    if (acceptedInline > 0) refreshInlineMathFromModel(paragraphs);
+    // 归档一次，让导出/问 AI/索引立刻用上新结果
+    try {
+      archivePageParagraphs(pageNum, paragraphs);
+    } catch (e) {
+      console.warn('[Viewer] 归档模型公式失败:', e);
+    }
+  }
+
+  /**
+   * 把原文栏里已经渲染成 KaTeX 的行内公式，换成模型给出的版本。
+   *
+   * 【为什么能安全就地替换】renderParaEnHtml 给每个公式 span 打了 data-math-text
+   * （那一段残渣的原文）与 data-para-id，所以不需要重建整段 HTML ——
+   * 重建会连带影响划线高亮（charMap 与 cleanText 严格 1:1），风险远大于收益。
+   */
+  function refreshInlineMathFromModel(paragraphs) {
+    const els = document.querySelectorAll('.local-math[data-math-text]');
+    if (!els.length) return;
+    let n = 0;
+    for (const el of els) {
+      const pid = el.getAttribute('data-para-id');
+      const text = el.getAttribute('data-math-text') || '';
+      const para = (paragraphs || []).find(p => String(p && p.id) === String(pid));
+      if (!para || !Array.isArray(para.segments)) continue;
+      const wanted = normaliseMathText(text);
+      if (!wanted) continue;
+      const seg = para.segments.find(s => s && s.kind === 'math' && normaliseMathText(s.text) === wanted);
+      const latex = seg && String(seg.modelLatex || '').trim();
+      if (!latex) continue;
+      el.innerHTML = renderVisionMathHtml(latex, false);
+      el.setAttribute('data-math-source', 'model');
+      el.setAttribute('title', '行内公式（本地模型识别，已通过与 PDF 文本层的字符守恒校验）');
+      n += 1;
+    }
+    if (n > 0) console.log(`[Viewer] 行内公式已用本地模型结果替换 ${n} 处`);
+  }
+
+  /** 公式残渣的归一化键：去空白、统一减号、去掉组合符（不同来源写法常有细微差异） */
+  function normaliseMathText(s) {
+    return String(s == null ? '' : s)
+      .replace(/\s+/g, '')
+      .replace(/[−–—‐]/g, '-')
+      .replace(/[\u0300-\u036f\u20d0-\u20ff]/g, '')
+      .trim();
+  }
+
+  /** 与宿主的公式识别往返（带超时兜底：宿主没回也不能把前端吊死） */
+  let formulaModelSeq = 0;
+  const formulaModelPending = new Map();
+
+  function requestFormulaRecognize(items) {
+    return new Promise(resolve => {
+      const requestId = ++formulaModelSeq;
+      formulaModelPending.set(requestId, resolve);
+      try {
+        vscode.postMessage({ type: 'requestFormulaRecognize', requestId, items });
+      } catch (e) {
+        formulaModelPending.delete(requestId);
+        resolve([]);
+        return;
+      }
+      setTimeout(() => {
+        if (formulaModelPending.has(requestId)) {
+          formulaModelPending.delete(requestId);
+          console.warn('[Viewer] 本地公式识别超时（宿主机无响应）');
+          resolve([]);
+        }
+      }, 180000);
+    });
+  }
+
+
   function renderCardFormulaHtml(para, inline) {
     const latex = String(para.visionLatex || '').trim();
-    if (!latex) return renderFigureLabelNoticeHtml(para);
-    return `
-      <div class="card-formula-block${inline ? ' card-formula-inline' : ''}">
-        <div class="card-formula-label">${inline ? '本段公式（由 PDF 字体与位置精确抽取）' : '公式（由 PDF 字体与位置精确抽取）'}</div>
-        <div class="card-formula-body">${renderVisionMathHtml(latex, true)}</div>
+    /*
+     * 【没有 latex 也要出卡片】只要允许版面裁图，公式本来就不需要"重建"。
+     * 实测 Xu 2020 第 4 页式(5)：localMath 抽出来的 latex 是
+     * `\parallel^{\parallel\parallel\parallel 2}` —— 渲染出来是垃圾；而页面上印得好好的。
+     * 旧代码这时走 renderFigureLabelNoticeHtml（等于把公式丢掉），现在改成出裁图卡片。
+     */
+    /*
+     * 行间公式段一律用版面裁图（只要开关打开）：
+     * 公式的"内容"是本地永远重建不对的那一半（design-notes 根因四），而裁图是"取样"。
+     * 注意：只有**独立成段**的公式才走这里——整段只有公式（type=formula）。
+     * 正文里夹的行内公式仍走 KaTeX，那属于另一条路。
+     */
+    const cropAttr = (!inline && formulaAsImageAllowed) ? ` data-crop-para="${String(para.id)}"` : '';
+    const canCrop = !inline && formulaAsImageAllowed;
+    if (!latex && !canCrop) return renderFigureLabelNoticeHtml(para);
+    const labelAttr = cropAttr ? ' data-formula-crop-label' : '';
+    const bodyHtml = latex
+      ? renderVisionMathHtml(latex, true)
+      : '<div class="crop-pending">正在按版面裁取公式原图…</div>';
+    const toolsHtml = latex
+      ? `
         <div class="card-formula-tools">
           <!-- 一键问 AI：把这条规范 LaTeX 一起带上（见 collectFocusMath），让模型逐符号讲透 -->
           <button class="btn-formula-ask" data-para-id="${para.id}" type="button" title="按“逐符号 + 小例子”讲透这条公式（会把规范 LaTeX 一起交给模型）">讲透这条公式</button>
           <button class="btn-formula-copy" data-latex="${escapeHtml(latex)}" type="button" title="复制这条公式的 LaTeX 源码">复制 LaTeX</button>
-        </div>
-        <div class="card-formula-note">公式不翻译；下方原文仅供核对字符层抽取结果</div>
-        <div class="card-formula-raw">${escapeHtml(String(para.cleanText || '').slice(0, 300))}</div>
+        </div>`
+      : '';
+    return `
+      <div class="card-formula-block${inline ? ' card-formula-inline' : ''}">
+        <div class="card-formula-label"${labelAttr}>${inline ? '本段公式（由 PDF 字体与位置精确抽取）' : '公式（由 PDF 字体与位置精确抽取）'}</div>
+        <div class="card-formula-body"${cropAttr}>${bodyHtml}</div>
+        ${toolsHtml}
+        <div class="card-formula-note">${inline ? '行内公式不参与翻译' : (canCrop ? '公式优先按页面原图展示；不参与翻译' : '公式不参与翻译')}</div>
       </div>
     `;
   }
@@ -6294,6 +8079,27 @@
           <div class="skeleton-shimmer-line text-line"></div>
           <div class="skeleton-shimmer-line text-line short"></div>
           <div class="skeleton-shimmer-tip"><span class="mini-spinner spinning"></span> 正在翻译...</div>
+        </div>`;
+    }
+
+    /*
+     * 【数学很密的段落：原文换版面截图】
+     * 实测 Xu 2020 第 4 页：一段里 8~21 处行内公式，逐字符重排出来是
+     * `tion: { ∥ ∑ ∥ ∥ 2 ∥ V t tk min …` 这种符号汤——中文译文是好的，
+     * 坏的是"原文"这一栏。这里把原文放进裁图容器（先保留现有文本当兜底，
+     * 图就绪后替换；裁图失败就什么都不变）。
+     */
+    if (
+      formulaAsImageAllowed &&
+      (para.mergedMath || (mathRunCount(para) >= MATH_HEAVY_RUNS && hasStructuralLocalMath(para)))
+    ) {
+      return `
+        <div class="sentence-pair-row math-heavy-row" data-sent-idx="0">
+          <div class="sent-num">1</div>
+          <div class="sent-content">
+            <div class="sent-zh">${renderZhWithMath(cachedTrans, para)}</div>
+            <div class="sent-en para-crop" data-crop-para="${String(para.id)}">${renderParaEnHtml(para.cleanText, para)}</div>
+          </div>
         </div>`;
     }
 
@@ -6394,19 +8200,40 @@
     // 图表内部标签（轴标签、图例、子图编号）不送翻译：
     // 模型只会把符号原样吐回来，既没有信息量，还会触发"照搬原文"的假报错。
     const isFigureLabelPara = para => para && (para.type === 'figure-label' || para.type === 'noise');
+    /*
+     * 装饰性碎片：只有制表符/控制符/括号装饰，没有任何字母或数字（如 `︷ ︸︸ ︷`、`}`）。
+     * 它们是公式/图表的排版残片，既不是正文也没有可翻译内容；不拦掉就会变成一张张空卡片。
+     */
+    const isDecorativePara = para => {
+      const t = String((para && para.cleanText) || '').replace(/\s+/g, '');
+      return t.length > 0 && !/[\p{L}\p{N}]/u.test(t);
+    };
 
     // 纯公式/符号段落也一起跳过（判据见 isFormulaLikePara）：
     // 它们是"公式行"不是散文，送翻译只会拿回原文，然后被质量校验判成"疑似未翻译"弹红框。
     // 例外：视觉模型给了 LaTeX 的（type=formula）要**生成卡片**——卡片里渲染真公式。
     const hasLatex = p => !!(p && p.visionLatex);
-    const skippedFormula = paragraphs.filter(p => !isFigureLabelPara(p) && isFormulaLikePara(p) && !hasLatex(p));
+    /*
+     * 【公式卡片的第二条门槛：版面裁图】
+     * 有些公式段的 localMath 是垃圾（Xu 2020 p4 式(5): `\parallel^{\parallel\parallel\parallel 2}`），
+     * 但它确实是独立成段的公式——只要允许裁图，就不该因为"没有可用 LaTeX"把整段丢掉。
+     */
+    const canCropFormula = p => formulaAsImageAllowed && !!(p && p.type === 'formula');
+    const showFormulaCard = p => hasLatex(p) || canCropFormula(p);
+    const skippedFormula = paragraphs.filter(
+      p => !isFigureLabelPara(p) && !isDecorativePara(p) &&
+        (isFormulaLikePara(p) || isFormulaResiduePara(p)) && !showFormulaCard(p)
+    );
 
     // 这些段落**连卡片都不生成**。
     // 否则第 6 页那类以表格为主的页面会变成一张满屏数字的"未翻译"卡片墙，
     // 而且它们本来就不该出现在对照翻译视图里。
-    const skippedFigure = paragraphs.filter(isFigureLabelPara);
+    const skippedFigure = paragraphs.filter(p => isFigureLabelPara(p) || isDecorativePara(p));
     const translatableParas = paragraphs.filter(
-      p => !isFigureLabelPara(p) && (!isFormulaLikePara(p) || hasLatex(p))
+      p => !isFigureLabelPara(p) && !isDecorativePara(p) &&
+        // 公式段本身要出公式卡片，不能被"公式碎片"翻译拦截误伤
+        (p.type === 'formula' || !isFormulaResiduePara(p)) &&
+        (!isFormulaLikePara(p) || showFormulaCard(p))
     );
 
     if (translatableParas.length === 0) {
@@ -6429,6 +8256,26 @@
         .slice(0, 12)
         .join('\n');
       dom.transListContainer.appendChild(notice);
+    }
+
+    /*
+     * 公式卡片先同步出 KaTeX（秒出、可读），再异步换成页面裁图。
+     * 调度点特意放在 forEach **之前**：rAF 的回调一定跑在这一整段同步建 DOM 之后，
+     * 于是既不用关心循环在哪结束，也不会因为中途 return 而漏掉。
+     */
+    /*
+     * 两个开关共用同一个调度点：裁图要渲染整页，本地模型识别也要渲染整页，
+     * 分开调度就是渲染两遍（一页 3× 全页 canvas 是很重的一步）。
+     * 【必须是 "或" 不是 "与"】只开本地模型的用户（关掉了裁图）以前根本不会走到这里。
+     */
+    if ((formulaAsImageAllowed || formulaModelEnabled) && typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => {
+        // 任何异常都只能退回 KaTeX，绝不能冒到 unhandledrejection 里把控制台刷满。
+        // 传**全量** paragraphs 而不是 translatableParas：模型要识别的行内公式可能挂在
+        // 被过滤掉的段落上（比如整段判成 figure 标签的），按 para.id 查找，多传不影响。
+        hydrateFormulaCrops(pageNum, paragraphs)
+          .catch(e => console.warn('[Viewer] 公式裁图/识别失败（已退回 KaTeX）:', e));
+      });
     }
 
     translatableParas.forEach((para) => {
@@ -6476,7 +8323,7 @@
           ${
             isFigureLabelPara(para)
               ? renderFigureLabelNoticeHtml(para)
-              : para.type === 'formula' && hasLatex(para)
+              : para.type === 'formula' && (hasLatex(para) || canCropFormula(para))
                 ? renderCardFormulaHtml(para)
                 : renderSentencePairsHtml(para, cachedTrans, cachedSentences)
           }
@@ -6951,6 +8798,13 @@
   }
 
   function formatOriginalParagraph(para) {
+    /*
+     * 正文与公式混排的段落（8.7 合并出来的视觉行）：文本层的公式上下标与正文交错，
+     * 逐字重排一定错位。原文栏按版面裁图显示，和在「逐句精读」里保持一致。
+     */
+    if (formulaAsImageAllowed && para.mergedMath) {
+      return `<div class="para-crop" data-crop-para="${String(para.id)}">${renderParaEnHtml(para.cleanText, para)}</div>`;
+    }
     if (!para.sentencesEn || para.sentencesEn.length === 0) {
       return renderParaEnHtml(para.cleanText, para);
     }
@@ -6998,8 +8852,107 @@
       .join(' ');
   }
 
+  /**
+   * 翻译看门狗：宿主端把空文本请求丢掉、或扩展宿主中途重启时，翻译回包永远不来，
+   * 前端就会一直停在"正在翻译..."。超过这个时间还没有回包，就把骨架换成可重试的错误框。
+   * 时间要比宿主的总超时（批量 240s）短，用户不必等四分钟才知道卡住了。
+   */
+  const TRANSLATION_WATCHDOG_MS = 30000;
+  const TRANSLATION_MAX_RETRIES = 2;
+  const translationWatchdogs = new Map();
+  const translationRetryCount = new Map();
+
+  function clearTranslationWatchdog(key) {
+    const timer = translationWatchdogs.get(key);
+    if (timer) {
+      clearTimeout(timer);
+      translationWatchdogs.delete(key);
+    }
+  }
+
+  /**
+   * 混排段落（正文 + 公式同排，8.7 合并出来的视觉行）送翻译前的清洗。
+   *
+   * 【为什么必须清洗】这类段落的 cleanText 是"文本层阅读顺序"：
+   *   `…measurements. ∥ ∥ z t dij − ∥ ∥ Vk x ˆ t i … is the residual of distance …`
+   * 模型会把公式和紧邻的英文一起括进 `⟦…⟧`（实测 Xu 2020 p4 的译文就变成
+   * 「⟦… is the residual of detection …⟧」原样贴在中文里）。把公式片段换成
+   * `⟦公式⟧` 后，模型只需要翻译剩下的散文，译文里也只剩一个干净的公式占位。
+   *
+   * 不参与任何坐标/高亮：只改**送翻译的文本**，cacheKey 仍按原始 cleanText 算。
+   */
+  function buildMergedMathTranslateInput(para) {
+    const raw = String((para && para.cleanText) || '').trim();
+    if (!raw) return null;
+    /*
+     * 【为什么按 token 判而不是按 para.segments】这类段落的数学层只认出零星几个字形
+     * （实测 26 条 localMath 里只有 1 条 segment），按 segment 替换等于没替换。
+     * 文本层里公式与散文的差别在"词形"上：纯符号/数字、单双字母变量、带上下标的短记号；
+     * 常见虚词（is/of/the/and…）与 ≥3 字母的小写词保留。
+     */
+    const STOP = new Set([
+      'is','of','to','in','on','at','by','as','an','or','we','it','if','be','do','so','no','up','my','he','she',
+      'the','and','for','are','was','were','its','this','that','with','from','can','has','have','not','but','all',
+      'any','our','their','they','them','then','than','when','where','which','while','will','would','should','may',
+      'might','must','also','into','over','under','between','such','each','both','more','most','other','only','same',
+      'very','use','used','using','one','two','three'
+    ]);
+    const isMathToken = tok => {
+      const t = String(tok || '').trim();
+      if (!t) return false;
+      const core = t.replace(/^[([{'"“‘]+/, '').replace(/[)\]}'",.;:!?”’]+$/, '');
+      if (!core) return false;
+      const lower = core.toLowerCase();
+      if (STOP.has(lower)) return false;
+      // 单个大写字母多半是集合/矩阵名（L / D / S），中文里保留它比换成 ⟦公式⟧ 更有信息量
+      if (/^[A-Z]$/.test(core)) return false;
+      const letters = (core.match(/[A-Za-z]/g) || []).length;
+      const digits = (core.match(/\d/g) || []).length;
+      const symbols = (core.match(/[^A-Za-z0-9]/g) || []).length;
+      if (letters === 0) return digits > 0 || symbols > 0;
+      if (symbols > 0 && letters <= 3) return true;
+      if (letters <= 2) return true;
+      if (letters <= 4 && /[A-Z]/.test(core) && /[a-z]/.test(core)) return true;
+      return false;
+    };
+    const out = [];
+    let inMath = false;
+    raw.split(/\s+/).filter(Boolean).forEach(tok => {
+      if (isMathToken(tok)) {
+        if (!inMath) out.push('⟦公式⟧');
+        inMath = true;
+      } else {
+        out.push(tok);
+        inMath = false;
+      }
+    });
+    const text = out.join(' ').replace(/\s+([,.;:!?])/g, '$1').trim();
+    // 清洗后至少要有足够的散文，否则说明判错了，退回原文
+    if ((text.match(/[A-Za-z]/g) || []).length < 30) return null;
+    return { text, sentences: splitEnglishSentencesSmart(text).map(s => s.text) };
+  }
+
   function triggerParagraphTranslate(pageNum, para, force = false) {
     if (!para) return;
+
+    /*
+     * 空文本 / 公式符号片段不送翻译。
+     *
+     * 宿主 enqueueTranslate 对 `!text.trim()` 是**直接 return**（不回包），
+     * 公式片段送过去又会被宿主当成非叙述内容原样返回；前者会让卡片永远转圈。
+     * 这里先挡掉，并给用户一个明确的"未翻译"说明。
+     */
+    const translateText = String(para.cleanText || '').trim();
+    if (!translateText || isFormulaLikePara(para) || isFormulaResiduePara(para)) {
+      translationRetryCount.delete(getParaCacheKey(pageNum, para));
+      const skipHtml = `<div class="trans-skip-note">公式/符号片段，未翻译</div>`;
+      const pairsEl = document.getElementById(`sentencePairs_${pageNum}_${para.id}`);
+      const textEl = document.getElementById(`transText_${pageNum}_${para.id}`);
+      if (pairsEl) pairsEl.innerHTML = skipHtml;
+      if (textEl) textEl.innerHTML = skipHtml;
+      if (typeof window._academicTransNext === 'function') window._academicTransNext();
+      return;
+    }
 
     // 图表内部标签不翻译（手动点"重译"也一样）：模型只会把符号原样返回
     if (para.type === 'figure-label') {
@@ -7014,6 +8967,7 @@
     const cacheKey = getParaCacheKey(pageNum, para);
 
     if (force) {
+      translationRetryCount.delete(cacheKey);
       // 只按内容指纹清除（旧版用「前 28 字符前缀」清理，会误删别的段落缓存）
       delete paperData.translations[cacheKey];
       if (paperData.sentenceTranslations) delete paperData.sentenceTranslations[cacheKey];
@@ -7045,6 +8999,20 @@
     }
 
     const sentences = para.sentencesEn ? para.sentencesEn.map(s => s.text) : [];
+    /*
+     * 正文与公式同排的段落：只把**散文**送翻译，公式用 ⟦公式⟧ 占位。
+     * 否则模型会把公式连同旁边的英文一起括进 ⟦⟧，中文卡片里就会出现
+     * 「… is the residual of detection …」这种没翻译的原文（用户截图的第二处问题）。
+     */
+    let sendText = para.cleanText;
+    let sendSentences = sentences;
+    if (para.mergedMath) {
+      const cleaned = buildMergedMathTranslateInput(para);
+      if (cleaned) {
+        sendText = cleaned.text;
+        sendSentences = cleaned.sentences;
+      }
+    }
 
     /*
      * 标题/摘要/章节标题即使很短也必须真翻。
@@ -7058,15 +9026,44 @@
     const forceTranslate =
       para.type === 'title' || para.type === 'abstract' || para.type === 'heading' || para.type === 'keywords';
 
+    clearTranslationWatchdog(cacheKey);
     vscode.postMessage({
       type: 'requestTranslate',
       page: pageNum,
       paraIndex: para.id,
       cacheKey: cacheKey,
-      text: para.cleanText,
-      sentences: sentences,
+      text: sendText,
+      sentences: sendSentences,
       forceTranslate: forceTranslate
     });
+
+    const watchdog = setTimeout(() => {
+      translationWatchdogs.delete(cacheKey);
+      const pairsEl = document.getElementById(`sentencePairs_${pageNum}_${para.id}`);
+      // 已经出结果/已换页就不覆盖
+      if (!pairsEl || !pairsEl.querySelector('.active-loading')) return;
+      /*
+       * 先自动重试：扩展宿主重启（VS Code 安装扩展/崩溃恢复）会把在途请求丢掉，
+       * 这时重发一次通常 1~2 秒就能回来；不要一上来就让用户点按钮。
+       */
+      const tries = translationRetryCount.get(cacheKey) || 0;
+      if (tries < TRANSLATION_MAX_RETRIES) {
+        translationRetryCount.set(cacheKey, tries + 1);
+        console.warn(`[Viewer] 翻译 ${tries + 1}/${TRANSLATION_MAX_RETRIES} 次无回包，自动重试`);
+        triggerParagraphTranslate(pageNum, para, false);
+        return;
+      }
+      translationRetryCount.delete(cacheKey);
+      const timeoutHtml = `
+        <div class="trans-error-box">
+          <div class="error-msg">⚠️ 翻译请求超时：后台没有返回结果（可能是网络/API 卡住，或扩展宿主已重启）。</div>
+          <button class="btn-retry-trans" data-para-id="${para.id}">点击重试</button>
+        </div>`;
+      pairsEl.innerHTML = timeoutHtml;
+      const textEl = document.getElementById(`transText_${pageNum}_${para.id}`);
+      if (textEl) textEl.innerHTML = timeoutHtml;
+    }, TRANSLATION_WATCHDOG_MS);
+    translationWatchdogs.set(cacheKey, watchdog);
   }
 
   function handleTranslateResult(msg) {
@@ -7090,6 +9087,8 @@
       const para =
         candidate && (!cacheKey || getParaCacheKey(page, candidate) === cacheKey) ? candidate : null;
       const key = cacheKey || (para ? getParaCacheKey(page, para) : `${page}_${paraIndex}`);
+      clearTranslationWatchdog(key);
+      translationRetryCount.delete(key);
 
       // 只写内容指纹键。旧版同时写 `${page}_${paraIndex}`，段落切分一变就会指向别的段落。
       if (translated) paperData.translations[key] = translated;
@@ -7117,6 +9116,19 @@
       if (!para) return;
 
       if (isError || !translated) {
+        /*
+         * 公式碎片被误送翻译时，模型只能原样返回，质量校验会报“照搬原文”。
+         * 这不是翻译失败，而是这段本来就没有可翻译的散文——显示“未翻译”，
+         * 不要给用户一个红框和“重试”（重试多少次结果都一样）。
+         */
+        if (isFormulaResiduePara(para)) {
+          const skipHtml = `<div class="trans-skip-note">公式/符号片段，未翻译</div>`;
+          const pairsEl = document.getElementById(`sentencePairs_${page}_${paraIndex}`);
+          const textEl = document.getElementById(`transText_${page}_${paraIndex}`);
+          if (pairsEl) pairsEl.innerHTML = skipHtml;
+          if (textEl) textEl.innerHTML = skipHtml;
+          return;
+        }
         const errorHtml = `
           <div class="trans-error-box">
             <div class="error-msg">⚠️ 学术翻译未完成：${escapeHtml(
@@ -7139,6 +9151,14 @@
       const pairsEl = document.getElementById(`sentencePairs_${page}_${paraIndex}`);
       if (pairsEl) {
         pairsEl.innerHTML = renderSentencePairsHtml(para, translated, sentenceTranslations);
+        /*
+         * 【翻译回包会重渲染卡片，裁图必须补一次】
+         * 首屏渲染时若译文还没回来，卡片是骨架屏/纯文本；`hydrateFormulaCrops` 那时
+         * 找不到 `.para-crop`。等译文回包后这里整块 innerHTML 换掉，新的 `.para-crop`
+         * 没有 `data-crop-done`，如果不补调度，原文栏就永远是文本层那串错序的符号
+         * （用户截图里"高光选中的地方，右边卡片还是乱码"就是这个时序造成的）。
+         */
+        scheduleFormulaCropHydrate(page);
         pairsEl.classList.add('trans-flash-highlight');
         setTimeout(() => pairsEl.classList.remove('trans-flash-highlight'), 1200);
       }
@@ -7187,6 +9207,7 @@
         const pairsEl = document.getElementById(`sentencePairs_${msg.page}_${currentParagraphs[idx].id}`);
         if (pairsEl) {
           pairsEl.innerHTML = renderSentencePairsHtml(currentParagraphs[idx], p.translation, null);
+          scheduleFormulaCropHydrate(msg.page);
         }
       }
     });
@@ -10414,6 +12435,25 @@ let aiPresetQuestion = '';
    * 视觉替换表与本地区间重叠时**一律丢掉视觉那条**：视觉给的是"看图的转写"，
    * 本地给的是"PDF 里真实的字符与位置"，精度不在一个量级。
    */
+  /**
+   * 找"这段残渣"对应的**本地模型** LaTeX（`para.segments[*].modelLatex`）。
+   *
+   * 【为什么按残渣全文精确认领，而不是按位置】`renderParaEnHtml` 拿到的是
+   * 一段文本（整段或一个句子），它自己用 `findMathRegions` 重算公式区间；
+   * 而模型结果是挂在 `para.segments` 的 math 片段上的，两套切法不一定逐字对齐。
+   * 归一化后完全一致才认领——认错比不认更糟（会把 A 公式的 LaTeX 贴到 B 公式上）。
+   */
+  function modelLatexFor(para, residue) {
+    const segs = para && Array.isArray(para.segments) ? para.segments : [];
+    if (!segs.length) return '';
+    const want = normaliseMathText(residue);
+    if (!want) return '';
+    const hit = segs.find(
+      s => s && s.kind === 'math' && String(s.modelLatex || '').trim() && normaliseMathText(s.text) === want
+    );
+    return hit ? String(hit.modelLatex).trim() : '';
+  }
+
   function renderParaEnHtml(text, para) {
     const src = String(text == null ? '' : text);
     if (!src) return '';
@@ -10437,11 +12477,29 @@ let aiPresetQuestion = '';
        * 排查"用户看到的到底是新版还是旧版"时，特征串一查就知道——
        * 新版原文侧的行内公式一定带这个属性；旧版（≤1.3.9）只会显示文本层残渣
        * （特征：每个字形之间都有一个空格，如 `AttLT ( X l t , X l m , Y m )`）。
+       *
+       * `data-math-text` / `data-para-id` 是给**本地模型回填**用的抓手：
+       * 模型识别完只需要换掉这些 span 的内容，不必重建整段 HTML
+       * （重建会牵动 charMap 与 cleanText 的 1:1 对应，划线高亮会整体错位）。
+       * 属性值写的是**残渣原文**，回填时按它去 para.segments 里认领对应片段。
        */
-      out += `<span class="local-math" data-math-source="local" title="公式（本机按 PDF 字体与位置精确抽取，非模型转写）">${renderVisionMathHtml(
-        r.latex,
-        false
-      )}</span>`;
+      const residue = src.slice(r.start, r.end);
+      const pidAttr = para && para.id != null ? String(para.id) : '';
+      /*
+       * 【优先用本地模型结果】`r.latex` 是 `chainToLatex` 逐字符拼的：
+       * 上下标能对，但根号管到哪、分式的分子分母是谁，逐字符查表拿不到
+       * （实测 `Q_{\sqrt{\,}}\cdot K^{⊤}`——被开方数永远是空的）。
+       * 模型结果有字符守恒校验兜底，可信度高于本地拼装，所以排前面。
+       */
+      const modelTex = modelLatexFor(para, residue);
+      const latex = modelTex || r.latex;
+      const sourceAttr = modelTex ? 'model' : 'local';
+      const title = modelTex
+        ? '公式（本地模型识别，已通过与 PDF 文本层的字符守恒校验）'
+        : '公式（本机按 PDF 字体与位置精确抽取，非模型转写）';
+      out += `<span class="local-math" data-math-source="${sourceAttr}" data-para-id="${escapeHtml(
+        pidAttr
+      )}" data-math-text="${escapeHtml(residue)}" title="${title}">${renderVisionMathHtml(latex, false)}</span>`;
       cursor = r.end;
     });
     if (cursor < src.length) out += renderEnTextHtml(src.slice(cursor), kept);
@@ -10481,10 +12539,26 @@ let aiPresetQuestion = '';
    */
   function looksLikeFormulaResidue(s) {
     const t = String(s == null ? '' : s).trim();
-    if (!t || t.length > 24) return false;
+    if (!t) return false;
+    /*
+     * 【长度不能是主判据】旧上限是 24 个字符，等于假设"公式都很短"。
+     * 实测 Xu 2020 第 4 页：`j ‖ (5) (i,j,t) ∈ DT} ∑ ‖ () − 1() ‖ − Vt1 −` 有 45 个字符，
+     * 直接被判成"不是公式"，于是**原样贴进译文**——中文句子中间硬插一串符号。
+     * 这和 1.5 版 `⟦([^⟧]{1,200})⟧` 那个正则踩的是同一个坑：拿"公式不会太长"当前提。
+     * 现在只留一个宽松的兜底上限（防止整页文本被误括进来）。
+     */
+    if (t.length > 600) return false;
     const spaces = (t.match(/\s/g) || []).length;
     if (spaces > t.length * 0.5) return false;
-    return /[A-Za-z0-9\u0370-\u03ff∈∉⊂⊃∪∩∑∏∫∂∇√≈≤≥≠×÷⋅+\-*/^_{}[\]()|<>′=]/.test(t);
+    /*
+     * 长内容额外要求**符号密度**：`{ } | ‖ = ∈ ∑ √` 这类字符在公式里密集，
+     * 在正文里几乎不出现。不加这一条，`S is // the set of ...`（含 `/`）也会被当成公式。
+     */
+    if (t.length > 30) {
+      const heavy = (t.match(/[∈∉⊂⊃∪∩∑∏∫∂∇√≈≤≥≠‖∥={}|^_]/g) || []).length;
+      if (heavy / t.length < 0.05) return false;
+    }
+    return /[A-Za-z0-9\u0370-\u03ff∈∉⊂⊃∪∩∑∏∫∂∇√≈≤≥≠×÷⋅+\-*/^_{}[\]()|<>′=‖∥]/.test(t);
   }
 
   /**
@@ -10513,18 +12587,61 @@ let aiPresetQuestion = '';
      * 而 `\hat` 在文本模式里被 KaTeX 当成 `\h`（水平间距）+ "at"，渲染出 `maskY t`。
      */
     const pairs = [];
+    /*
+     * 【主序 = para.segments 里 math 片段的顺序】
+     *
+     * 这既是**原文的阅读顺序**，也是译文里 `⟦…⟧` 出现的顺序。
+     * 翻译模型抄进 `⟦⟧` 的残渣常常和文本层差几个空格/标点（实测 Xu 2020 第 4 页：
+     * 整段公式全退化成裸残渣，就是因为逐字比对一条都没命中），
+     * 所以除了"精确匹配"，还需要一条"按顺序认领"的兜底——而顺序只能从 segments 拿。
+     *
+     * latex 取 `modelLatex || latex`：模型结果有字符守恒校验，比本地逐字符拼装可信。
+     */
+    const seqPairs = [];
+    (para && Array.isArray(para.segments) ? para.segments : []).forEach(seg => {
+      if (!seg || seg.kind !== 'math') return;
+      const t = String(seg.text || '').trim();
+      const tex = String(seg.modelLatex || seg.latex || '').trim();
+      if (t && tex) seqPairs.push({ raw: t, latex: tex });
+    });
+    seqPairs.forEach(x => pairs.push({ key: residueKeyOf(x.raw), raw: x.raw, latex: x.latex }));
     inline.forEach(x => {
       const f = String(x && x.find ? x.find : '').trim();
       const l = String(x && x.latex ? x.latex : '').trim();
       // raw 保留**原始大小写**的残渣写法，供"精确匹配"这一档使用（见下面 k/exact 的注释）
-      if (f && l) pairs.push({ key: residueKeyOf(f), raw: f, latex: l });
+      if (f && l && !pairs.some(p => p.raw === f)) pairs.push({ key: residueKeyOf(f), raw: f, latex: l });
     });
     (para && Array.isArray(para.localMath) ? para.localMath : []).forEach(x => {
       const t = String(x && x.text ? x.text : '').trim();
       const l = String(x && x.latex ? x.latex : '').trim();
-      if (t && l) pairs.push({ key: residueKeyOf(t), raw: t, latex: l });
+      // 与 segments 里同一条的重复项跳过：segments 那份的 latex 已经是"模型优先"，不该被本地的盖回去
+      if (t && l && !pairs.some(p => p.raw === t)) pairs.push({ key: residueKeyOf(t), raw: t, latex: l });
     });
-
+    /**
+     * 字符多重集重叠度（Jaccard）。
+     *
+     * 顺序兜底必须配一道校验：模型偶尔漏括/多括，一旦错位就会把 A 公式的 LaTeX
+     * 贴到 B 公式上——那比显示残渣更糟（残渣至少看着可疑，错配的渲染是"看起来对"）。
+     * 用多重集而不是序列：同一条公式在两种写法里字符顺序本来就会变。
+     */
+    const charOverlap = (a, b) => {
+      const bag = s => {
+        const m = new Map();
+        for (const c of String(s == null ? '' : s).replace(/\s+/g, '')) m.set(c, (m.get(c) || 0) + 1);
+        return m;
+      };
+      const A = bag(a);
+      const B = bag(b);
+      let inter = 0;
+      let union = 0;
+      new Set([...A.keys(), ...B.keys()]).forEach(c => {
+        const x = A.get(c) || 0;
+        const y = B.get(c) || 0;
+        inter += Math.min(x, y);
+        union += Math.max(x, y);
+      });
+      return union ? inter / union : 0;
+    };
     /*
      * 【绝不能把"已渲染好的公式 HTML"再喂回 renderEnTextHtml】
      * 那条路径会先 escapeHtml 再找 `$...$`，于是拼进去的 `<span class="katex">`
@@ -10563,6 +12680,18 @@ let aiPresetQuestion = '';
         continue;
       }
       const inner = src.slice(start + 1, end);
+      /*
+       * 混排段落送翻译时用的是 ⟦公式⟧ 占位（见 buildMergedMathTranslateInput）。
+       * 模型通常原样保留它；这里直接渲染成一个紧凑的公式标记，
+       * 不能当成"表格/正文被误括"把「公式」两个字展开。
+       */
+      if (/^(?:公式|formula)$/i.test(inner.trim())) {
+        pieces.push({
+          html: `<span class="vision-residue-math" title="公式（原文见上方版面裁图）">⟨公式⟩</span>`
+        });
+        cursor = end + 1;
+        continue;
+      }
       const asPlainText = (txt, why) => {
         pieces.push({
           html: `<span class="vision-residue-math" title="${why}">${escHtml(txt).replace(/\s+/g, ' ')}</span>`
@@ -10592,18 +12721,72 @@ let aiPresetQuestion = '';
           const ci = pairs.filter(x => x.key === k);
           if (ci.length === 1) latex = ci[0].latex;
         }
-        if (!latex && pairs.length === 1) latex = pairs[0].latex;
+        /*
+         * ② 唯一候选兜底**必须带校验**。
+         * 旧写法是 `if (!latex && pairs.length === 1) latex = pairs[0].latex`——
+         * 只要这段里恰好只有一条公式，**任何**配不上的残渣都会被强行贴成它。
+         * 实测（本文件的 zh_math_residue_test）：`⟦j ‖ (5)(i,j,t) ∈ DT} … Vt1 −⟧`
+         * 被贴成 `\min\sum_{(i,j,t)\in DT}`，界面上是一条"看起来完全正确"的假公式。
+         * 这比显示残渣更坏——残渣至少可疑。
+         */
+        if (!latex && pairs.length === 1 && charOverlap(pairs[0].raw, inner) >= 0.4) {
+          latex = pairs[0].latex;
+        }
+        /*
+         * ③ 重叠度兜底：前两档都落空时，取"字符重叠度最高"的那条公式。
+         *
+         * 【为什么不用序号】逐句对照渲染时 `renderZhWithMath` 是**每句单独调用**的
+         * （`sent-zh` 一行一个），拿不到"这段里的第几个公式"这种段落级序号；
+         * 用序号会从每句的 0 重新数，第二句就会认领到第一句的公式。
+         *
+         * 【为什么必须有这一档】`⟦…⟧` 里的内容是**翻译模型照抄的残渣**，它经常重排空格、
+         * 把 `∥` 抄成 `//`、丢掉组合抑扬符，逐字比对一条都命中不了。实测 Xu 2020 第 4 页
+         * 整段公式因此全部退化成裸残渣（`j ‖ (5) (i,j,t) ∈ DT} ∑ ‖ () − 1() ‖ − Vt1 −`）。
+         *
+         * 门槛 0.6：错配一位就会把 A 公式的 LaTeX 贴到 B 上，比显示残渣更坏。
+         * 两个候选分数相同的（如 `Y_l^n` vs `Y_l^m`）取先出现的——宁可保守。
+         */
+        if (!latex && seqPairs.length) {
+          let best = null;
+          let bestScore = 0;
+          for (const p of seqPairs) {
+            const sc = charOverlap(p.raw, inner);
+            if (sc > bestScore) {
+              best = p;
+              bestScore = sc;
+            }
+          }
+          if (best && bestScore >= 0.6) latex = best.latex;
+        }
         if (latex) {
           pieces.push({
-            html: `<span class="local-math" data-math-source="local-zh" title="公式（本机按 PDF 字体与位置精确抽取）">${renderVisionMathHtml(latex, false)}</span>`
+            // data-math-text / data-para-id 是异步回填的抓手：模型结果比首屏渲染晚到，
+            // 要能按"这段残渣 + 这个段落"找回对应的 span 再换内容（见 refreshInlineMathFromModel）
+            html: `<span class="local-math" data-math-source="local-zh" data-para-id="${escHtml(
+              para && para.id != null ? String(para.id) : ''
+            )}" data-math-text="${escHtml(
+              inner
+            )}" title="公式（本机按 PDF 字体与位置精确抽取）">${renderVisionMathHtml(latex, false)}</span>`
           });
         } else {
           /*
-           * 表里没有这条：按**纯文字**排版（并去掉括号）。
-           * 【为什么不能走数学模式】`\hat` 在数学模式里会被 KaTeX 当成 `\h` + "at"，
-           * 用户看到 `maskY t`（实测）。残渣就该长得像残渣，用等宽文字显示最诚实。
+           * 表里没有这条：**译文里不要再贴一坨残渣**。
+           *
+           * 【为什么改】译文是给人读中文的。实测 Xu 2020 第 4 页，一句中文里插进
+           * `j ‖ (5) (i,j,t) ∈ DT} ∑ ‖ () − 1() ‖ − Vt1 −` 这种串，读者得先跳过它
+           * 才能找到下一句中文——这比"公式没渲染出来"更难受。
+           * 左侧原文（带高亮）随时可查，所以这里只留一个紧凑占位，
+           * 完整残渣放进 title，需要时悬停即可。
+           *
+           * 注意与上面 `!looksLikeFormulaResidue` 那个分支的区别：那里是"根本不是公式"
+           * （表格、被误括的正文），必须原样显示内容；这里是"是公式但没配上写法"，
+           * 显示残渣没有信息增量。
            */
-          asPlainText(inner, '这条公式本地没抽到规范写法，按原文残渣显示');
+          pieces.push({
+            html: `<span class="vision-residue-math" title="${escapeHtml(
+              `这条公式没匹配到规范写法，原文残渣：${String(inner).slice(0, 200)}`
+            )}">⟨公式⟩</span>`
+          });
         }
       }
       cursor = end + 1;
@@ -11545,6 +13728,7 @@ let aiPresetQuestion = '';
     if (msg.segmentationEngine) visionEngine = msg.segmentationEngine;
     // 视觉手术开关（关掉 = 只改类型/顺序/丢弃，不动分段）
     if (msg.visionSurgery !== undefined) visionSurgeryAllowed = msg.visionSurgery !== false;
+    if (msg.formulaAsImage !== undefined) formulaAsImageAllowed = msg.formulaAsImage !== false;
     if (msg.visionModel !== undefined) configuredVisionModel = String(msg.visionModel || '');
     syncAiStyleButtons();
     // 引擎标识变化 → 此后段落用新引擎重新翻译（旧引擎的缓存键不再命中）

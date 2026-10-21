@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { PdfDualReaderProvider } from './pdfEditorProvider';
+import { detectPaddlePython } from './formulaModel';
 
 export function activate(context: vscode.ExtensionContext) {
   console.log('[AcademicReader] Academic Literature Reader extension is active!');
@@ -57,60 +58,6 @@ export function activate(context: vscode.ExtensionContext) {
   );
   context.subscriptions.push(exportPdfCmd);
 
-  // 注册命令：快速配置 Google Gemini API Key
-  const setGeminiKeyCmd = vscode.commands.registerCommand(
-    'academicReader.setGeminiApiKey',
-    async () => {
-      const config = vscode.workspace.getConfiguration('academicReader');
-      const currentKey = config.get<string>('geminiApiKey', '');
-      const input = await vscode.window.showInputBox({
-        title: '🔑 配置 Google Gemini API Key',
-        prompt:
-          '请输入 Google Gemini API 密钥（AI Studio 或 Google Cloud 控制台获取；两种格式都支持：AIza... 或 AQ....）',
-        value: currentKey,
-        password: true,
-        ignoreFocusOut: true,
-        placeHolder: 'AQ.Ab8... 或 AIzaSy...'
-      });
-
-      if (input === undefined) return;
-      const key = input.trim();
-      if (!key) {
-        vscode.window.showWarningMessage('未填写 API Key，已取消。');
-        return;
-      }
-
-      await config.update('geminiApiKey', key, vscode.ConfigurationTarget.Global);
-      await config.update('translationService', 'gemini', vscode.ConfigurationTarget.Global);
-
-      // 立刻实测这把 key 能不能用、能看到哪些模型，避免"填了但一直报错却不知道原因"
-      await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: '正在校验 Gemini API Key...' },
-        async () => {
-          try {
-            const models = await provider.listModels(true);
-            const hit = models.filter((m: string) => /flash|pro/.test(m)).slice(0, 6).join(', ');
-            vscode.window
-              .showInformationMessage(
-                `✅ API Key 有效，共 ${models.length} 个可用模型（${hit}…）。已启用 Gemini 为首选引擎。`,
-                '选择模型'
-              )
-              .then(choice => {
-                if (choice === '选择模型') {
-                  vscode.commands.executeCommand('academicReader.pickModel');
-                }
-              });
-          } catch (err: any) {
-            vscode.window.showErrorMessage(
-              `⚠️ API Key 已保存，但校验失败：${err && err.message ? err.message : err}`
-            );
-          }
-        }
-      );
-    }
-  );
-  context.subscriptions.push(setGeminiKeyCmd);
-
   // 注册命令：从「真实可用模型列表」里挑模型（不再让用户手打模型名）
   const pickModelCmd = vscode.commands.registerCommand('academicReader.pickModel', async () => {
     await provider.pickModel();
@@ -122,7 +69,7 @@ export function activate(context: vscode.ExtensionContext) {
     'academicReader.openSettings',
     async () => {
       const config = vscode.workspace.getConfiguration('academicReader');
-      const currentService = config.get<string>('translationService', 'gemini');
+      const currentService = config.get<string>('translationService', 'openai-compatible');
 
       const items = [
         {
@@ -132,11 +79,6 @@ export function activate(context: vscode.ExtensionContext) {
               ? '【当前使用中】选一个常用模型，填上 API Key 即可'
               : '选一个常用模型，填上 API Key 即可',
           action: 'custom'
-        },
-        {
-          label: '$(key) 配置 Google Gemini API Key',
-          description: currentService === 'gemini' ? '【当前使用中】Google 官方接口' : 'Google 官方接口',
-          action: 'gemini'
         },
         {
           label: '$(globe) 切换为内置免费翻译引擎（无需 Key）',
@@ -156,9 +98,7 @@ export function activate(context: vscode.ExtensionContext) {
 
       if (!selected) return;
 
-      if (selected.action === 'gemini') {
-        await vscode.commands.executeCommand('academicReader.setGeminiApiKey');
-      } else if (selected.action === 'custom') {
+      if (selected.action === 'custom') {
         await configureCustomLLM(config);
       } else if (selected.action === 'builtin') {
         await config.update('translationService', 'built-in', vscode.ConfigurationTarget.Global);
@@ -169,6 +109,93 @@ export function activate(context: vscode.ExtensionContext) {
     }
   );
   context.subscriptions.push(openSettingsCmd);
+
+  /*
+   * 注册命令：一键启用本地公式识别。
+   *
+   * 【为什么需要这个命令】它要两件事同时配好才生效——开关 + 解释器路径，
+   * 而"哪个 python 里装了 paddleocr"用户通常不知道（实测这台机器上 `python`
+   * 指向的是 Microsoft Store 占位符，真解释器在 D:\python\python3.13）。
+   * 让用户自己去设置里翻两个 key、再猜路径，是最容易半途放弃的地方。
+   */
+  const setupFormulaCmd = vscode.commands.registerCommand(
+    'academicReader.setupLocalFormulaModel',
+    async () => {
+      const cfg = vscode.workspace.getConfiguration('academicReader');
+      const chosen = await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: '正在查找装了 paddleocr 的 Python…',
+          cancellable: false
+        },
+        async () => detectPaddlePython(cfg.get<string>('formulaModel.pythonPath', '') || '')
+      );
+
+      if (!chosen) {
+        const action = await vscode.window.showErrorMessage(
+          '没找到装了 paddleocr 的 Python。可先在终端执行：pip install "paddleocr>=3.7" paddlepaddle pillow，再重试本命令。',
+          '打开相关设置'
+        );
+        if (action) {
+          await vscode.commands.executeCommand('workbench.action.openSettings', 'academicReader.formulaModel');
+        }
+        return;
+      }
+
+      await cfg.update('formulaModel.pythonPath', chosen.path, vscode.ConfigurationTarget.Global);
+      await cfg.update('formulaModel.enabled', true, vscode.ConfigurationTarget.Global);
+      const pick = await vscode.window.showInformationMessage(
+        `已启用本地公式识别：${chosen.path}（paddleocr ${chosen.version}）。` +
+          '打开 PDF 翻到有公式的页面即可看到效果；首次会花十几秒加载模型，之后约 0.4 秒/条。',
+        '打开一篇 PDF 试试'
+      );
+      if (pick) {
+        await vscode.commands.executeCommand('academicReader.openPdf');
+      }
+    }
+  );
+  context.subscriptions.push(setupFormulaCmd);
+
+  void maybePromptLocalFormulaModel(context);
+}
+
+/**
+ * 首次运行时主动问一句"要不要启用本地公式识别"。
+ *
+ * 【为什么值得主动问】这个功能的开关默认是关的（它依赖 Python + paddleocr，
+ * 不是所有机器都有），但**本机已经有环境的人不知道要去设置里翻两个 key**——
+ * 实测用户装完就直接打开论文看，看到的还是老样子，于是以为"装了没用"。
+ *
+ * 只在**从未提示过**（globalState 记账）且开关仍为关时做一次；探测是同步 spawn，
+ * 要 2~4 秒（paddle 会加载一堆算子库），所以延迟 3 秒，不挡扩展激活。
+ */
+async function maybePromptLocalFormulaModel(context: vscode.ExtensionContext): Promise<void> {
+  const KEY = 'formulaModelPrompted.v1';
+  if (context.globalState.get<boolean>(KEY)) return;
+  const cfg = vscode.workspace.getConfiguration('academicReader');
+  if (cfg.get<boolean>('formulaModel.enabled', false)) return;
+
+  setTimeout(async () => {
+    let found: ReturnType<typeof detectPaddlePython> = null;
+    try {
+      found = detectPaddlePython(cfg.get<string>('formulaModel.pythonPath', '') || '');
+    } finally {
+      // 探过就记账：找不到也别每次启动都再花几秒试一遍
+      await context.globalState.update(KEY, true);
+    }
+    if (!found) return;
+    const pick = await vscode.window.showInformationMessage(
+      `检测到本机已装 paddleocr（${found.version}），可以启用「本地公式识别」把公式还原成准确的 LaTeX（分式、根号、嵌套上下标）。要现在启用吗？`,
+      '启用',
+      '以后再说'
+    );
+    if (pick !== '启用') return;
+    await cfg.update('formulaModel.pythonPath', found.path, vscode.ConfigurationTarget.Global);
+    await cfg.update('formulaModel.enabled', true, vscode.ConfigurationTarget.Global);
+    vscode.window.showInformationMessage(
+      `已启用本地公式识别（${found.path}）。打开 PDF 翻到有公式的页面即可；首次会花十几秒加载模型。`
+    );
+  }, 3000);
 }
 
 /**

@@ -773,7 +773,7 @@ console.log('\n[数学公式渲染：KaTeX 本地打包，渲染失败也绝不�
   // 公式卡片：视觉模型转写的 LaTeX 渲染成真公式；没有 latex 时退回提示，不留空白
   const cardHtml = S.renderCardFormulaHtml({ id: 1, type: 'formula', visionLatex: '\\hat{Y}_1 = S_\\theta(\\hat{X}_t, \\hat{Y}_t, X_1)', cleanText: 'Y ̂ 1 = S θ X t (2)' });
   check('公式卡片渲染 LaTeX 并标出来源', cardHtml.includes('card-formula-body') && cardHtml.includes('\\hat{Y}_1'), cardHtml.slice(0, 100));
-  check('公式卡片保留字符层原文供核对', cardHtml.includes('Y ̂ 1 = S θ X t'));
+  check('formula card hides the unreliable char-layer text (no .card-formula-raw)', !cardHtml.includes('card-formula-raw') && !cardHtml.includes('Y ̂ 1 = S θ X t'));
   const noLatex = S.renderCardFormulaHtml({ id: 2, type: 'formula', cleanText: 'x' });
   check('没有 LaTeX 时不出现空白卡片', noLatex.trim().length > 0);
   delete window.katex;

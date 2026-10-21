@@ -47,15 +47,61 @@ function extractFn(src, header) {
   const s = src.indexOf(header);
   if (s < 0) throw new Error(`抽不到：${header}`);
   const open = src.indexOf('{', s + header.length - 1);
+  if (open < 0) throw new Error(`找不到函数体：${header}`);
+  const end = matchBrace(src, open);
+  return src.slice(s, end + 1);
+}
+
+/** 按大括号配对，跳过字符串/注释/正则（否则模板串里的 `{` 会把结尾算错） */
+function matchBrace(src, openIdx) {
   let depth = 0;
-  for (let i = open; i < src.length; i++) {
-    if (src[i] === '{') depth++;
-    else if (src[i] === '}') {
-      depth--;
-      if (depth === 0) return src.slice(s, i + 1);
+  let i = openIdx;
+  const isRegexStart = k => {
+    for (let j = k - 1; j >= 0; j--) {
+      const c = src[j];
+      if (c === '\n') return true;
+      if (/\s/.test(c)) continue;
+      return !/[A-Za-z0-9_$)\]}"'`]/.test(c);
     }
+    return true;
+  };
+  while (i < src.length) {
+    const ch = src[i];
+    const next = src[i + 1];
+    if (ch === '/' && next === '/') { const e = src.indexOf('\n', i); i = e < 0 ? src.length : e; continue; }
+    if (ch === '/' && next === '*') { const e = src.indexOf('*/', i); i = e < 0 ? src.length : e + 2; continue; }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      const quote = ch;
+      i++;
+      while (i < src.length) {
+        if (src[i] === '\\') { i += 2; continue; }
+        if (src[i] === quote) { i++; break; }
+        i++;
+      }
+      continue;
+    }
+    if (ch === '/' && isRegexStart(i)) {
+      i++;
+      let inClass = false;
+      while (i < src.length) {
+        const c = src[i];
+        if (c === '\\') { i += 2; continue; }
+        if (c === '\n') break;
+        if (c === '[') inClass = true;
+        else if (c === ']') inClass = false;
+        else if (c === '/' && !inClass) { i++; break; }
+        i++;
+      }
+      continue;
+    }
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) return i;
+    }
+    i++;
   }
-  throw new Error(`括号不配对：${header}`);
+  throw new Error('括号不配对：' + openIdx);
 }
 
 // ---- 抽取真码 --------------------------------------------------------------

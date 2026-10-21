@@ -274,54 +274,26 @@ export class PaperTranslator {
     return vscode.workspace.getConfiguration('academicReader');
   }
 
-  public getGeminiKey(config?: vscode.WorkspaceConfiguration): string {
-    const c = config || this.cfg();
-    const fromConfig = (c.get<string>('geminiApiKey', '') || '').trim();
-    if (fromConfig) return fromConfig;
-    return (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '').trim();
+  public getGeminiKey(_config?: vscode.WorkspaceConfiguration): string {
+    return '';
   }
 
-  /** 用户配置的翻译模型；不做任何"智能改写"，只过滤已明确下线的模型 */
+  /** 用户配置的翻译模型 */
   private translationModel(): string {
-    const raw = (this.cfg().get<string>('geminiModel', '') || '').trim();
-    const usable = filterUsableModel(raw);
-    if (raw && !usable) {
-      this.log(`配置的翻译模型 ${raw} 已下线，改用 ${DEFAULT_TRANSLATION_MODEL}`);
-    }
-    return usable || DEFAULT_TRANSLATION_MODEL;
+    const raw = (this.cfg().get<string>('modelName', 'deepseek-chat') || '').trim();
+    return raw || DEFAULT_TRANSLATION_MODEL;
   }
 
   private assistantModel(): string {
     const raw = (this.cfg().get<string>('aiModel', '') || '').trim();
-    const usable = filterUsableModel(raw);
-    if (usable) return usable;
-    // 未单独配置 AI 模型时，沿用翻译模型（用户可能已换成自己喜欢的）
-    const t = filterUsableModel((this.cfg().get<string>('geminiModel', '') || '').trim());
-    return t || DEFAULT_ASSISTANT_MODEL;
+    return raw || this.translationModel();
   }
 
-  /**
-   * 翻译用的思考配置。默认「关闭思考」（thinkingBudget: 0）：
-   * 实测 gemini-3.5-flash 默认思考会额外消耗约 1000 个思考 token、首字延迟从 ~1s 变成 ~19s，
-   * 而翻译这种确定性任务并不需要推理。设为 -1 可恢复模型默认。
-   */
   private thinkingConfig(): object | undefined {
-    const budget = this.cfg().get<number>('translationThinkingBudget', 0);
-    if (typeof budget === 'number' && budget >= 0) {
-      return { thinkingBudget: budget };
-    }
     return undefined;
   }
 
-  /**
-   * AI 问答用的思考配置。默认「交给模型自己决定」：
-   * 问答需要推理，且流式输出下用户能立刻看到首字，值得换更好的答案质量。
-   */
   private assistantThinkingConfig(): object | undefined {
-    const budget = this.cfg().get<number>('aiThinkingBudget', -1);
-    if (typeof budget === 'number' && budget >= 0) {
-      return { thinkingBudget: budget };
-    }
     return undefined;
   }
 
@@ -361,7 +333,7 @@ export class PaperTranslator {
 
     const cfg = this.cfg();
     const lang = targetLang || cfg.get<string>('targetLanguage', 'zh-CN');
-    const service = cfg.get<string>('translationService', 'gemini');
+    const service = cfg.get<string>('translationService', 'openai-compatible');
 
     // 非叙述性内容（人名名单、机构、图表标签、公式片段）不送去翻译：
     // 模型会把它们原样返回，随后被"照搬原文"校验拦下、在界面上弹出红色报错。
@@ -378,9 +350,8 @@ export class PaperTranslator {
     }
 
     // 缓存与并发去重对所有引擎生效。
-    // （旧版非 Gemini 引擎在这段之前就 return 了，导致 DeepSeek 每次都要重新打 API）
     const engineKey =
-      service === 'gemini' ? this.translationModel() : (cfg.get<string>('modelName', '') || 'default');
+      service === 'openai-compatible' ? (cfg.get<string>('modelName', '') || 'default') : 'builtin';
     const key = contentKey(trimmed, lang, `${service}:${engineKey}`);
 
     const cached = this.paraCache.get(key);
@@ -390,9 +361,7 @@ export class PaperTranslator {
     if (running) return running;
 
     const task = this.gate.run(() =>
-      service !== 'gemini'
-        ? this.translateWithoutGemini(trimmed, sentences || [], lang, service)
-        : this.doTranslateParagraph(trimmed, sentences || [], lang)
+      this.translateWithService(trimmed, sentences || [], lang, service)
     );
     this.inflight.set(key, task);
     try {
@@ -523,82 +492,23 @@ export class PaperTranslator {
   ): Promise<(ParagraphTranslation | Error)[]> {
     const cfg = this.cfg();
     const lang = targetLang || cfg.get<string>('targetLanguage', 'zh-CN');
-    const service = cfg.get<string>('translationService', 'gemini');
 
     const results: (ParagraphTranslation | Error | null)[] = inputs.map(() => null);
 
-    // 非 Gemini 引擎（自定义大模型 / 内置）走各自的单段实现，避免两套逻辑分叉。
-    // 注意：这里必须**并行**（旧版写成串行 for-await，一页 20 段 × 每次 1~3s 会拖到几十秒）。
-    if (service !== 'gemini') {
-      const CONCURRENCY = 3;
-      let cursor = 0;
-      const worker = async () => {
-        for (;;) {
-          const i = cursor++;
-          if (i >= inputs.length) return;
-          try {
-            results[i] = await this.translateParagraph(inputs[i].text, inputs[i].sentences, lang, { forceTranslate: inputs[i].forceTranslate });
-          } catch (e: any) {
-            results[i] = e instanceof Error ? e : new Error(String(e));
-          }
+    const CONCURRENCY = 3;
+    let cursor = 0;
+    const worker = async () => {
+      for (;;) {
+        const i = cursor++;
+        if (i >= inputs.length) return;
+        try {
+          results[i] = await this.translateParagraph(inputs[i].text, inputs[i].sentences, lang, { forceTranslate: inputs[i].forceTranslate });
+        } catch (e: any) {
+          results[i] = e instanceof Error ? e : new Error(String(e));
         }
-      };
-      await Promise.all(new Array(Math.min(CONCURRENCY, inputs.length)).fill(0).map(() => worker()));
-      return results as (ParagraphTranslation | Error)[];
-    }
-
-    const apiKey = this.getGeminiKey(cfg);
-    if (!apiKey) throw new LlmError({ kind: 'no-key' });
-
-    const model = this.translationModel();
-
-    // 1) 先吃掉缓存里已有的
-    const pending: number[] = [];
-    inputs.forEach((it, i) => {
-      const key = contentKey((it.text || '').trim(), lang, model);
-      const cached = this.paraCache.get(key);
-      if (cached) {
-        results[i] = cached;
-      } else {
-        pending.push(i);
       }
-    });
-    if (pending.length === 0) return results as (ParagraphTranslation | Error)[];
-
-    // 2) 只有一个待翻段落时不必绕道批量，直接走单段（含重试与降级）
-    if (pending.length === 1) {
-      const i = pending[0];
-      try {
-        results[i] = await this.translateParagraph(inputs[i].text, inputs[i].sentences, lang, { forceTranslate: inputs[i].forceTranslate });
-      } catch (e: any) {
-        results[i] = e instanceof Error ? e : new Error(String(e));
-      }
-      return results as (ParagraphTranslation | Error)[];
-    }
-
-    // 3) 合并成一次请求；整批失败或个别段落不合格的，再单独补
-    try {
-      const batched = await this.gate.run(() =>
-        this.doTranslateBatch(pending.map(i => inputs[i]), lang, apiKey, model)
-      );
-      batched.forEach((r, k) => {
-        if (r) results[pending[k]] = r;
-      });
-    } catch (err: any) {
-      this.log(`批量翻译整批失败，回退为逐段翻译：${err?.message}`);
-    }
-
-    // 4) 仍为 null 的段落单独重试（每段自己如实报错）
-    for (let k = 0; k < pending.length; k++) {
-      const i = pending[k];
-      if (results[i]) continue;
-      try {
-        results[i] = await this.translateParagraph(inputs[i].text, inputs[i].sentences, lang, { forceTranslate: inputs[i].forceTranslate });
-      } catch (e: any) {
-        results[i] = e instanceof Error ? e : new Error(String(e));
-      }
-    }
-
+    };
+    await Promise.all(new Array(Math.min(CONCURRENCY, inputs.length)).fill(0).map(() => worker()));
     return results as (ParagraphTranslation | Error)[];
   }
 
@@ -1241,11 +1151,10 @@ ${sentences[i]}`
   }
 
   // ==========================================================================
-  // 非 Gemini 引擎（用户显式选择的内置免费翻译 / 自定义 OpenAI 兼容接口）
-  // 注意：不再"偷偷回退"——只有用户把 translationService 设为这些值时才使用。
+  // 翻译引擎分支（自定义 OpenAI 兼容接口 / 内置免费翻译）
   // ==========================================================================
 
-  private async translateWithoutGemini(
+  private async translateWithService(
     text: string,
     sentences: string[],
     lang: string,
@@ -1267,7 +1176,7 @@ ${sentences[i]}`
 
   /**
    * OpenAI 兼容接口（DeepSeek / Kimi / OpenAI 等）的段落翻译。
-   * 与 Gemini 走同一套思路：一次请求拿「整段 + 严格逐句」，同样做译文质量校验，
+   * 一次请求拿「整段 + 严格逐句」，做译文质量校验，
    * 不合格就带着原因重试一次，最后才退化为整段译文。
    * （旧版这里是「整段一次 + 每句各一次」的 N+1 次请求，既慢又丢上下文。）
    */
@@ -1372,7 +1281,7 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
 
     const cfg = this.cfg();
     const lang = targetLang || cfg.get<string>('targetLanguage', 'zh-CN');
-    const service = cfg.get<string>('translationService', 'gemini');
+    const service = cfg.get<string>('translationService', 'openai-compatible');
 
     const cacheKey = `${service}:${lang}:${trimmed}`;
     const hit = this.cache.get(cacheKey);
@@ -1380,39 +1289,14 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
     if (hit) this.cache.delete(cacheKey);
 
     let result: string;
-    if (service === 'gemini') {
-      const apiKey = this.getGeminiKey(cfg);
-      if (!apiKey) throw new LlmError({ kind: 'no-key' });
-      const res = await generate(
-        apiKey,
-        {
-          model: this.translationModel(),
-          fallbackModels: this.fallbackChain(),
-          systemInstruction: `你是世界顶尖学术期刊的专业文献翻译专家。只输出译文正文，不要输出解释、备选或引用块。`,
-          turns: [
-            {
-              role: 'user',
-              text: `请将下面的学术英文内容翻译为${langName(lang)}。保持术语准确、符合中文学术规范；${FORMULA_LATEX_RULE}；只输出译文：\n\n${trimmed}`
-            }
-          ],
-          temperature: 0.2,
-          maxOutputTokens: 8192,
-          thinkingConfig: this.thinkingConfig(),
-          idleTimeoutMs: 60000,
-          totalTimeoutMs: 180000
-        },
-        this.log
-      );
-      result = this.cleanTranslation(res.text);
-      if (!result) throw new LlmError({ kind: 'empty', model: res.model, apiMessage: '划词翻译返回空' });
-    } else if (service === 'openai-compatible') {
+    if (service === 'openai-compatible') {
       result = await this.translateWithOpenAICompatible(trimmed, lang, cfg);
     } else {
       result = await this.translateWithBuiltin(trimmed, lang);
     }
 
     // LLM 路径做语言校验（内置免费引擎返回的是词典释义/机翻短句，不做此校验）
-    if (service === 'gemini' || service === 'openai-compatible') {
+    if (service === 'openai-compatible') {
       const bad = this.checkTranslationSanity(trimmed, result, lang);
       if (bad) {
         throw new LlmError({
@@ -1590,7 +1474,7 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
     throw new LlmError({
       kind: 'network',
       apiMessage: '内置免费翻译引擎不可用（网络受限）',
-      tip: '请改用 Google Gemini 引擎，或在设置中配置可直连的大模型接口'
+      tip: '请在设置中配置可直连的大模型接口'
     });
   }
 
@@ -1838,19 +1722,16 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
     onDelta: (chunk: string) => void
   ): Promise<AcademicAnswer> {
     const cfg = this.cfg();
-    // 【重要】AI 问答必须跟随**用户选的引擎**，不能写死 Gemini。
-    // 否则用户把翻译换成 DeepSeek 之后，问答仍在偷偷调用 Gemini（还可能因为没配 Gemini Key 而直接失败）。
-    const service = cfg.get<string>('translationService', 'gemini');
-    const useOpenAI = service === 'openai-compatible';
-    if (!useOpenAI && service !== 'gemini') {
+    const service = cfg.get<string>('translationService', 'openai-compatible');
+    if (service === 'built-in') {
       throw new LlmError({
         kind: 'invalid-request',
-        apiMessage: `AI 问答暂不支持「${service}」引擎，请在设置里选择 Gemini 或 OpenAI 兼容接口。`
+        apiMessage: 'AI 问答需要配置大模型接口，请在设置中配置自定义大模型（如 DeepSeek / Kimi / 通义等）。'
       });
     }
 
-    const apiKey = useOpenAI ? (cfg.get<string>('apiKey', '') || '').trim() : this.getGeminiKey(cfg);
-    if (!apiKey) throw new LlmError({ kind: 'no-key' });
+    const apiKey = (cfg.get<string>('apiKey', '') || '').trim();
+    if (!apiKey) throw new LlmError({ kind: 'no-key', apiMessage: '未配置大模型 API Key（academicReader.apiKey）' });
 
     const ctrl = new AbortController();
     this.aiRequests.set(options.requestId, ctrl);
@@ -1917,10 +1798,9 @@ B. **通用概念 / 术语 / 背景知识**，或读者的发散思考、联想�
     turns.push({ role: 'user', text: prompt });
 
     try {
-      if (useOpenAI) {
-        // ---- OpenAI 兼容（DeepSeek / 通义 / Kimi / 本地 vLLM…）----
+      // ---- OpenAI 兼容（DeepSeek / 通义 / Kimi / 本地 vLLM…）----
         const endpoint = (cfg.get<string>('apiEndpoint', 'https://api.deepseek.com/v1') || '').replace(/\/+$/, '');
-        // 与 Gemini 路径同样的回退语义：优先 aiModel，未配置则沿用翻译模型
+        // 回退语义：优先 aiModel，未配置则沿用翻译模型
         const model =
           (cfg.get<string>('aiModel', '') || '').trim() ||
           (cfg.get<string>('modelName', 'deepseek-chat') || '').trim() ||
@@ -1949,38 +1829,7 @@ B. **通用概念 / 术语 / 背景知识**，或读者的发散思考、联想�
           ttftMs: res.ttftMs,
           totalMs: Date.now() - startedAt
         };
-      }
 
-      // ---- Gemini 原生 ----
-      const model = this.assistantModel();
-      const res = await generate(
-        apiKey,
-        {
-          model,
-          fallbackModels: this.fallbackChain(),
-          systemInstruction,
-          turns,
-          temperature: cfg.get<number>('aiTemperature', 0.4),
-          maxOutputTokens: this.assistantMaxTokens(answerStyle),
-          thinkingConfig: this.assistantThinkingConfig(),
-          signal: ctrl.signal,
-          onDelta,
-          idleTimeoutMs: 90000,
-          totalTimeoutMs: 420000
-        },
-        this.log
-      );
-
-      const answer = (res.text || '').trim();
-      if (!answer) throw new LlmError({ kind: 'empty', model: res.model, apiMessage: 'AI 返回空回答' });
-
-      return {
-        answer,
-        model: res.model,
-        ttftMs: res.ttftMs,
-        totalMs: res.totalMs,
-        note: this.fallbackNote(res)
-      };
     } finally {
       this.aiRequests.delete(options.requestId);
     }
@@ -1991,47 +1840,14 @@ B. **通用概念 / 术语 / 背景知识**，或读者的发散思考、联想�
   // ==========================================================================
 
   public async parseAndTranslatePage(
-    rawText: string,
-    pageNum: number,
-    targetLang?: string
+    _rawText: string,
+    _pageNum: number,
+    _targetLang?: string
   ): Promise<StructuredParagraph[]> {
-    const apiKey = this.getGeminiKey();
-    if (!apiKey) throw new LlmError({ kind: 'no-key' });
-    const res = await generate(
-      apiKey,
-      {
-        model: this.translationModel(),
-        fallbackModels: this.fallbackChain(),
-        systemInstruction: '你是学术论文结构化助手，只输出严格合法的 JSON 数组。',
-        turns: [
-          {
-            role: 'user',
-            text: `把第 ${pageNum} 页的论文文字流规整为学术段落并翻译为${langName(targetLang)}：
-${rawText.slice(0, 8000)}
-
-只输出 JSON 数组，每项：{"type":"title|abstract|keywords|significance|body","original":"完整英文","translation":"中文译文"}`
-          }
-        ],
-        temperature: 0.1,
-        maxOutputTokens: 16384,
-        jsonSchema: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: {
-              type: { type: 'string' },
-              original: { type: 'string' },
-              translation: { type: 'string' }
-            },
-            required: ['type', 'original', 'translation']
-          }
-        },
-        idleTimeoutMs: 90000,
-        totalTimeoutMs: 300000
-      },
-      this.log
-    );
-    return this.toStructured(res.text, false);
+    throw new LlmError({
+      kind: 'invalid-request',
+      apiMessage: '结构化解析已废弃，请使用 translateParagraph'
+    });
   }
 
   /**
@@ -2393,7 +2209,7 @@ ${rawText.slice(0, 8000)}
   }
 
   // ==========================================================================
-  // 低层 HTTP（仅内置免费翻译与自定义接口使用；Gemini 走 llmClient）
+  // 低层 HTTP（仅内置免费翻译使用；大模型走 llmClient）
   // ==========================================================================
 
   private httpGet(targetUrl: string, timeoutMs = 8000): Promise<string> {

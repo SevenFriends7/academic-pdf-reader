@@ -1117,7 +1117,7 @@ body.debug-text-layer .textLayer span {
   color: #fff;
 }
 
-.badge-gemini {
+.badge-primary, .badge-gemini {
   background: linear-gradient(135deg, #1976d2, #8e24aa);
 }
 
@@ -3772,6 +3772,38 @@ body.theme-paper-dark .article-section-zh {
 }
 .card-formula-body .katex {
   font-size: 1.15em;
+}
+/*
+ * 公式裁图（viewer.js hydrateFormulaCrops）：按 PDF 版式原样截下来的那一块。
+ * 用 #fff 底色而不是主题色——PDF 页面是白纸，深色主题下也必须保持白纸黑字，
+ * 否则读者会以为公式"褪色"了。max-width 100% 防横向滚，height auto 保持比例。
+ */
+.formula-crop-img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  background: #ffffff;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 4px;
+  padding: 2px 4px;
+  box-sizing: content-box;
+}
+/*
+ * 数学很密的正文段：原文栏直接换成版面裁图（见 viewer.js renderSentencePairsHtml）。
+ * 中文译文仍是可选中的文本，只有"原文"这一栏是图像——它本来就是用来核对原话的。
+ */
+.para-crop .formula-crop-img {
+  margin-top: 6px;
+}
+.para-crop-note {
+  font-size: 11px;
+  color: var(--text-muted, #94a3b8);
+  margin-top: 4px;
+}
+.crop-pending {
+  font-size: 12px;
+  color: var(--text-muted, #94a3b8);
+  padding: 6px 0;
 }
 /*
  * 公式卡片工具条：「讲透这条公式」（带着规范 LaTeX 问 AI）与「复制 LaTeX」。

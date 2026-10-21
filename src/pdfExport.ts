@@ -693,14 +693,16 @@ function writeHighlightSheet(
       spaceAfter: 2
     });
     /*
-     * 规范 LaTeX（视觉模型从页面图像转写）。
+     * 规范 LaTeX。**优先取本地模型的识别结果**（modelLatex）。
      *
-     * 【为什么值得写进来】"原文摘录"是 PDF 字符层抽出来的**残渣**（真实例子：
-     * `AttLT (X l, X l, Y) = AttID (X | W l, …)`——上标丢失、`^` 变成 `|`），
-     * 读者把导出的 PDF 当笔记用时，公式是错的、也没法复制去别处。
-     * pdf-lib 不能排版 LaTeX，但把**规范源码**原样写出来是有用的：可复制进 LaTeX 编辑器/搜索。
+     * 两者来源不同、可信度也不同：
+     *   · modelLatex —— 本机 PP-FormulaNet 只"看"这一小块裁图，且结果要和 PDF 文本层的
+     *     字符做守恒比对，对不上直接丢弃（见 viewer.js 的 verifyLatexAgainstText）；
+     *   · visionLatex —— 云端视觉模型看**整页**顺手转写，没有硬校验，
+     *     实测会把邻行正文塞进 `\begin{array}` 里而"看起来像那么回事"。
+     * 所以有模型结果就用模型结果，没有再退回视觉结果。
      */
-    const canonicalLatex = String(entry?.para?.visionLatex || '').trim();
+    const canonicalLatex = String(entry?.para?.modelLatex || entry?.para?.visionLatex || '').trim();
     if (canonicalLatex) {
       writer.paragraph(`公式（规范 LaTeX）：${canonicalLatex}`, {
         size: 9.5,

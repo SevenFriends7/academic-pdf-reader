@@ -104,11 +104,13 @@ function bandLines(lines) {
   return bands.map(b => b.lines);
 }
 
-const PAPERS = {
-  cycle: 'D:\\kx\\上海交大\\梯度校正测验\\梯度校正测验\\cycle.pdf',
-  AOT: 'D:\\kx\\上海交大\\梯度校正测验\\梯度校正测验\\AOT.pdf',
-  STM: 'D:\\kx\\上海交大\\梯度校正测验\\梯度校正测验\\STM.pdf'
-};
+const LEGACY_DIR = 'D:\\kx\\上海交大\\梯度校正测验\\梯度校正测验';
+const PAPERS = {};
+// 先找仓库内 test-papers/（随仓库走），找不到再退回作者本机原来的绝对路径
+for (const name of ['cycle', 'AOT', 'STM']) {
+  const local = require('path').join(ROOT, 'test-papers', `${name}.pdf`);
+  PAPERS[name] = require('fs').existsSync(local) ? local : require('path').join(LEGACY_DIR, `${name}.pdf`);
+}
 
 /** 真跑一遍 commitParagraph：把 viewer 里那段代码抽出来，注入依赖后执行 */
 function runCommit(items, fontNames, lineFilter) {
@@ -116,7 +118,7 @@ function runCommit(items, fontNames, lineFilter) {
   const divs = makeDivs(items);
   const lines = makeLines(divs).filter(lineFilter || (() => true));
   const start = code.indexOf('    function commitParagraph() {');
-  const end = code.indexOf('    for (let i = 0; i < orderedLines.length; i++) {');
+  const end = code.indexOf('    for (let i = 0; i < orderedLines.length; i++) {', start);
   if (start < 0 || end < 0) throw new Error('抽不到 commitParagraph');
   const body = code.slice(start, end);
   const fn = new Function(

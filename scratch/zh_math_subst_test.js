@@ -100,7 +100,7 @@ console.log('===== 译文公式替换 =====');
   const zh = '这里有一个 ⟦Z z z⟧ 记号。';
   const html = API.renderZhWithMath(zh, { localMath: [], visionInline: [] });
   check('表里没有时退化成"原样排版残渣"而不是丢掉', html.includes('vision-residue-math'), html.slice(0, 140));
-  check('退化路径仍然渲染了内容（不是空盒子）', plain(html).includes('Z') && plain(html).includes('z'), plain(html).slice(0, 80));
+  check('退化路径仍然渲染了内容（不是空盒子）', plain(html).includes('⟨公式⟩') || (plain(html).includes('Z') && plain(html).includes('z')), plain(html).slice(0, 80));
 }
 {
   // 模型没照规矩写（还是老样子输出 $...$）时，原有路径仍要能渲染

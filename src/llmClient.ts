@@ -3,7 +3,7 @@ import * as https from 'https';
 import { URL } from 'url';
 
 /**
- * 统一 LLM 客户端 (Gemini 原生协议)
+ * 统一 LLM 客户端 (OpenAI 兼容协议)
  *
  * 设计原则（针对旧版 translator.ts 的教训）：
  * 1. 绝不臆造内容。任何失败都以结构化 LlmError 抛出，由 UI 显式展示原因。
@@ -62,17 +62,17 @@ export class LlmError extends Error {
   public toUserMessage(): string {
     switch (this.kind) {
       case 'no-key':
-        return '未配置 Google Gemini API Key。请执行命令「文献阅读：配置学术翻译引擎与 API Key」填入密钥。';
+        return '未配置大模型 API Key。请执行命令「文献阅读：配置学术翻译引擎与 API Key」填入密钥。';
       case 'auth':
-        return `API Key 无效或已被撤销（HTTP ${this.status || 401}）。请在设置中更新 academicReader.geminiApiKey。`;
+        return `API Key 无效或已被撤销（HTTP ${this.status || 401}）。请在设置中更新 academicReader.apiKey。`;
       case 'permission':
-        return `该 API Key 无权访问此模型${this.model ? `（${this.model}）` : ''}（HTTP ${this.status || 403}）。请确认项目已启用 Generative Language API。`;
+        return `该 API Key 无权访问此模型${this.model ? `（${this.model}）` : ''}（HTTP ${this.status || 403}）。`;
       case 'not-found':
-        return `模型不存在或已下线${this.model ? `（${this.model}）` : ''}（HTTP 404）。请执行命令「文献阅读：从可用模型列表中选择翻译 / AI 问答模型」换用当前可用的模型。`;
+        return `模型不存在或端点不可用${this.model ? `（${this.model}）` : ''}（HTTP 404）。请检查模型名与端点设置。`;
       case 'quota':
         return `该模型在此 API Key 上没有可用配额（HTTP 429）：${
           this.apiMessage || '配额或账单额度已用尽'
-        }。请在命令面板执行「文献阅读：从可用模型列表中选择翻译 / AI 问答模型」换用有配额的模型。`;
+        }。`;
       case 'rate-limit':
         return `请求过于频繁（HTTP ${this.status || 429}）。已自动重试，若持续出现请降低「同时翻译请求数」（academicReader.translateConcurrency）。`;
       case 'invalid-request':
@@ -80,9 +80,9 @@ export class LlmError extends Error {
       case 'safety':
         return `该内容被模型安全策略拦截，无法生成结果。${this.apiMessage ? `原因：${this.apiMessage}` : ''}`;
       case 'server':
-        return `Gemini 服务端暂时故障（HTTP ${this.status || 500}）。请稍后重试。`;
+        return `大模型服务端暂时故障（HTTP ${this.status || 500}）。请稍后重试。`;
       case 'network':
-        return `无法连接 generativelanguage.googleapis.com：${this.apiMessage || '网络不可达'}。请检查网络或代理设置。`;
+        return `无法连接大模型服务接口：${this.apiMessage || '网络不可达'}。请检查网络或代理设置。`;
       case 'timeout':
         return `请求超时（${this.apiMessage || '长时间无响应'}）。请重试；若反复超时，请执行命令「文献阅读：从可用模型列表中选择翻译 / AI 问答模型」换用响应更快的模型。`;
       case 'aborted':
@@ -92,7 +92,7 @@ export class LlmError extends Error {
       case 'parse':
         return `模型返回的内容无法解析为预期格式：${this.apiMessage || '格式错误'}`;
       default:
-        return `调用 Gemini 失败：${this.apiMessage || this.message || '未知错误'}`;
+        return `调用大模型失败：${this.apiMessage || this.message || '未知错误'}`;
     }
   }
 
@@ -160,44 +160,21 @@ export interface GenerateResult {
   retries: number;
 }
 
-const GEMINI_HOST = 'https://generativelanguage.googleapis.com';
-const API_VERSION = 'v1beta';
+export const DEFAULT_TRANSLATION_MODEL = 'deepseek-chat';
+export const DEFAULT_ASSISTANT_MODEL = 'deepseek-chat';
 
-/**
- * 已下线/新用户不可用的模型：直接过滤，避免每次调用都白跑一轮 404。
- * 实测该 key 下 /v1beta/models 仍会列出 gemini-2.5-flash，但调用时返回
- * 404 "no longer available to new users"；gemini-1.5 与 2.0 系列则已完全从列表消失。
- */
-const RETIRED_MODEL_RE = /^gemini-(1\.[0-5]|2\.0|2\.5)(-|$)/i;
-
-/**
- * 默认模型（2026-02 在本机这把 key 上实测的结论）：
- *   可用且快：gemini-3.6-flash（首字约 1s，5 句严格对齐全部 PASS）
- *   可用但慢：gemini-3.5-flash（首字 14~19s，偶发 503）
- *   配额超限：gemini-3.8-flash / gemini-flash-latest / gemini-3.1-pro-preview（HTTP 429）
- *   已不可用：gemini-2.5-flash（404 no longer available to new users）
- * 不同 Key 的配额不同，所以这里只定默认值，真正的可用性靠回退链逐個试。
- */
-export const DEFAULT_TRANSLATION_MODEL = 'gemini-3.6-flash';
-export const DEFAULT_ASSISTANT_MODEL = 'gemini-3.6-flash';
-
-/** 回退链：按"本机实测的速度与可用性"排序，逐个尝试直到成功 */
 export const KNOWN_GOOD_MODELS = [
-  'gemini-3.6-flash',
-  'gemini-3.5-flash-lite',
-  'gemini-3.7-flash',
-  'gemini-3.5-flash',
-  'gemini-3-flash-preview',
-  'gemini-2.5-flash-lite',
-  'gemini-3.8-flash',
-  'gemini-pro-latest'
+  'deepseek-chat',
+  'deepseek-reasoner',
+  'qwen-plus',
+  'moonshot-v1-8k',
+  'glm-4-plus',
+  'gpt-4o-mini'
 ];
-
 
 export function filterUsableModel(name: string | undefined | null): string | undefined {
   const m = (name || '').trim();
   if (!m) return undefined;
-  if (RETIRED_MODEL_RE.test(m)) return undefined;
   return m;
 }
 
@@ -222,282 +199,14 @@ interface RawCallResult {
 }
 
 /**
- * 核心：一次模型调用（内部流式），失败抛 LlmError
+ * Gemini 引擎已移除
  */
 export async function callGeminiStream(
-  apiKey: string,
-  model: string,
-  opts: GenerateOptions
+  _apiKey: string,
+  _model: string,
+  _opts: GenerateOptions
 ): Promise<RawCallResult> {
-  if (!apiKey) {
-    throw new LlmError({ kind: 'no-key' });
-  }
-
-  const lastTurnIdx = opts.turns.length - 1;
-  const body: any = {
-    contents: opts.turns.map((t, idx) => {
-      const parts: any[] = [{ text: t.text }];
-      // 图片只挂在最后一条 user 轮上（视觉分割/识别用）
-      if (opts.images && opts.images.length > 0 && idx === lastTurnIdx && t.role !== 'model') {
-        opts.images.forEach(img => {
-          if (img && img.base64) {
-            parts.push({ inlineData: { mimeType: img.mimeType || 'image/jpeg', data: img.base64 } });
-          }
-        });
-      }
-      return { role: t.role === 'model' ? 'model' : 'user', parts };
-    })
-  };
-  if (opts.systemInstruction) {
-    body.systemInstruction = { parts: [{ text: opts.systemInstruction }] };
-  }
-
-  const generationConfig: any = {};
-  if (typeof opts.temperature === 'number') generationConfig.temperature = opts.temperature;
-  if (typeof opts.maxOutputTokens === 'number') generationConfig.maxOutputTokens = opts.maxOutputTokens;
-  if (opts.jsonSchema) {
-    generationConfig.responseMimeType = 'application/json';
-    generationConfig.responseSchema = opts.jsonSchema;
-  } else if (opts.jsonMode) {
-    generationConfig.responseMimeType = 'application/json';
-  }
-  if (opts.thinkingConfig) {
-    generationConfig.thinkingConfig = opts.thinkingConfig;
-  }
-  if (Object.keys(generationConfig).length > 0) body.generationConfig = generationConfig;
-
-  const url = `${GEMINI_HOST}/${API_VERSION}/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`;
-  const payload = JSON.stringify(body);
-
-  const idleTimeoutMs = opts.idleTimeoutMs ?? 60000;
-  const totalTimeoutMs = opts.totalTimeoutMs ?? 300000;
-
-  return new Promise<RawCallResult>((resolve, reject) => {
-    let settled = false;
-    let ttftMs: number | undefined;
-    const startedAt = Date.now();
-    let buffer = '';
-    let accText = '';
-    let finishReason: string | undefined;
-    let usage: GenerateResult['usage'];
-    let blockReason: string | undefined;
-    let sawAnyPayload = false;
-
-    const timers: NodeJS.Timeout[] = [];
-    let req: http.ClientRequest | undefined;
-
-    const cleanup = () => {
-      timers.forEach(t => clearTimeout(t));
-      timers.length = 0;
-      if (opts.signal) opts.signal.removeEventListener('abort', onAbort);
-    };
-
-    const fail = (err: LlmError) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      try { req?.destroy(); } catch {}
-      reject(err);
-    };
-
-    const succeed = (value: RawCallResult) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      resolve(value);
-    };
-
-    const resetIdle = () => {
-      timers.push(
-        setTimeout(() => {
-          fail(
-            new LlmError({
-              kind: 'timeout',
-              model,
-              apiMessage: `已等待 ${Math.round(idleTimeoutMs / 1000)} 秒未收到新数据`
-            })
-          );
-        }, idleTimeoutMs)
-      );
-    };
-
-    function onAbort() {
-      fail(new LlmError({ kind: 'aborted', model }));
-    }
-
-    if (opts.signal) {
-      if (opts.signal.aborted) {
-        reject(new LlmError({ kind: 'aborted', model }));
-        return;
-      }
-      opts.signal.addEventListener('abort', onAbort);
-    }
-
-    timers.push(
-      setTimeout(() => {
-        fail(
-          new LlmError({
-            kind: 'timeout',
-            model,
-            apiMessage: `整次请求超过 ${Math.round(totalTimeoutMs / 1000)} 秒上限`
-          })
-        );
-      }, totalTimeoutMs)
-    );
-
-    const handlePayload = (jsonText: string) => {
-      let json: any;
-      try {
-        json = JSON.parse(jsonText);
-      } catch {
-        return; // 忽略无法解析的分片，不让它毁掉整个流
-      }
-      sawAnyPayload = true;
-
-      if (json.promptFeedback && json.promptFeedback.blockReason) {
-        blockReason = String(json.promptFeedback.blockReason);
-      }
-
-      const cand = json.candidates && json.candidates[0];
-      if (!cand) return;
-
-      if (cand.finishReason) finishReason = String(cand.finishReason);
-      if (json.usageMetadata) usage = json.usageMetadata;
-
-      const parts = (cand.content && cand.content.parts) || [];
-      for (const p of parts) {
-        // 关键：Gemini 3.x 会返回 thought:true 的思考分片，绝不能混进正文
-        if (p && p.thought === true) continue;
-        const t = p && typeof p.text === 'string' ? p.text : '';
-        if (!t) continue;
-        if (ttftMs === undefined) ttftMs = Date.now() - startedAt;
-        accText += t;
-        if (opts.onDelta) {
-          try { opts.onDelta(t); } catch {}
-        }
-      }
-    };
-
-    let client: typeof https | typeof http;
-    let parsed: URL;
-    try {
-      parsed = new URL(url);
-      client = parsed.protocol === 'https:' ? https : http;
-    } catch (e: any) {
-      reject(new LlmError({ kind: 'invalid-request', apiMessage: `URL 解析失败: ${e.message}` }));
-      return;
-    }
-
-    req = client.request(
-      url,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': apiKey,
-          'Accept': 'text/event-stream',
-          'Content-Length': Buffer.byteLength(payload)
-        }
-      },
-      (res) => {
-        const status = res.statusCode || 0;
-
-        if (status >= 400) {
-          let errData = '';
-          res.setEncoding('utf8');
-          res.on('data', (c) => (errData += c));
-          res.on('end', () => {
-            fail(classifyHttpError(status, errData, model));
-          });
-          res.on('error', (e: any) => {
-            fail(new LlmError({ kind: 'network', model, apiMessage: e.message }));
-          });
-          return;
-        }
-
-        res.setEncoding('utf8');
-        resetIdle();
-
-        res.on('data', (chunk: string) => {
-          if (settled) return;
-          resetIdle();
-          buffer += chunk;
-
-          // 按行切分 SSE；不完整的一行留到下次
-          let nlIdx: number;
-          while ((nlIdx = buffer.indexOf('\n')) >= 0) {
-            const line = buffer.slice(0, nlIdx).replace(/\r$/, '');
-            buffer = buffer.slice(nlIdx + 1);
-            if (!line) continue;
-            if (!line.startsWith('data:')) continue;
-            const data = line.slice(5).trim();
-            if (!data || data === '[DONE]') continue;
-            handlePayload(data);
-          }
-        });
-
-        res.on('end', () => {
-          if (settled) return;
-          // 处理残留的不完整行
-          const rest = buffer.trim();
-          if (rest.startsWith('data:')) {
-            const data = rest.slice(5).trim();
-            if (data && data !== '[DONE]') handlePayload(data);
-          }
-
-          const totalMs = Date.now() - startedAt;
-
-          if (!accText.trim()) {
-            if (blockReason) {
-              fail(new LlmError({ kind: 'safety', model, apiMessage: blockReason }));
-              return;
-            }
-            if (finishReason && /SAFETY|PROHIBITED|BLOCKLIST|RECITATION/i.test(finishReason)) {
-              fail(new LlmError({ kind: 'safety', model, apiMessage: finishReason }));
-              return;
-            }
-            if (usage && usage.candidatesTokenCount && usage.candidatesTokenCount > 0) {
-              // 有输出 token 但正文为空 → 几乎全是思考内容，属于异常
-              fail(
-                new LlmError({
-                  kind: 'empty',
-                  model,
-                  apiMessage: `仅产生思考内容（reasoning tokens: ${usage.thoughtsTokenCount || usage.candidatesTokenCount}），正文为空。可尝试降低思考预算或更换模型。`
-                })
-              );
-              return;
-            }
-            fail(
-              new LlmError({
-                kind: 'empty',
-                model,
-                apiMessage: sawAnyPayload ? '响应中没有文本内容' : '响应为空（未收到任何数据块）'
-              })
-            );
-            return;
-          }
-
-          succeed({ text: accText, finishReason, usage, ttftMs });
-        });
-
-        res.on('error', (e: any) => {
-          fail(new LlmError({ kind: 'network', model, apiMessage: e.message }));
-        });
-      }
-    );
-
-    req.on('error', (e: any) => {
-      const code = e && e.code;
-      if (code === 'ENOTFOUND' || code === 'ECONNREFUSED' || code === 'ECONNRESET' || code === 'EAI_AGAIN' || code === 'EPIPE') {
-        fail(new LlmError({ kind: 'network', model, apiMessage: `${code}: 无法连接 ${parsed.hostname}` }));
-      } else {
-        fail(new LlmError({ kind: 'network', model, apiMessage: `${code || ''} ${e.message || e}`.trim() }));
-      }
-    });
-
-    req.write(payload);
-    req.end();
-  });
+  throw new LlmError({ kind: 'invalid-request', apiMessage: 'Gemini 引擎已移除' });
 }
 
 export interface OpenAICompatOptions {
@@ -806,137 +515,14 @@ export function classifyHttpError(status: number, body: string, model: string): 
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
-/**
- * 带模型回退与可重试重试的调用。
- * - 模型 404 → 静默切下一个候选，并记录到 fellBackFrom（由 UI 提示用户）
- * - 401/403 → 直接失败（换模型没意义）
- * - 429/5xx/网络/超时 → 同一模型退避重试
- */
 export async function generate(
-  apiKey: string,
-  opts: GenerateOptions,
-  log?: (msg: string) => void
+  _apiKey: string,
+  _opts: GenerateOptions,
+  _log?: (msg: string) => void
 ): Promise<GenerateResult> {
-  const chain = buildModelChain(opts.model, opts.fallbackModels);
-  const fellBackFrom: { model: string; reason: string }[] = [];
-  const startedAt = Date.now();
-
-  let lastErr: LlmError | undefined;
-  // 若配置的模型本身是已下线模型，直接说明
-  if (opts.model && filterUsableModel(opts.model) === undefined) {
-    fellBackFrom.push({ model: opts.model, reason: '该模型已下线/已从可用列表中移除' });
-  }
-
-  for (const model of chain) {
-    let attempt = 0;
-    const maxAttempts = 3;
-    // 某些模型不支持某些 thinkingConfig（实测 gemini-3.5-flash-lite 对 thinkingBudget:0
-    // 直接返回 400）。命中一次就摘掉 thinkingConfig 重试，而不是让整次翻译失败。
-    let thinking: object | undefined = opts.thinkingConfig;
-    let droppedThinking = false;
-
-    while (attempt < maxAttempts) {
-      attempt++;
-      try {
-        const r = await callGeminiStream(apiKey, model, { ...opts, thinkingConfig: thinking });
-        if (model !== opts.model && opts.model) {
-          fellBackFrom.push({ model: opts.model, reason: '主模型调用失败' });
-        }
-        return {
-          text: r.text,
-          model,
-          fellBackFrom: fellBackFrom.length ? fellBackFrom : undefined,
-          usage: r.usage,
-          finishReason: r.finishReason,
-          ttftMs: r.ttftMs,
-          totalMs: Date.now() - startedAt,
-          retries: attempt - 1
-        };
-      } catch (e: any) {
-        const err: LlmError = e instanceof LlmError ? e : new LlmError({ kind: 'unknown', model, apiMessage: e?.message });
-        lastErr = err;
-
-        if (err.kind === 'aborted') throw err;
-
-        if (err.kind === 'not-found') {
-          if (log) log(`[llm] 模型 ${model} 不可用：${err.apiMessage}，切换到下一个候选`);
-          break; // 换模型
-        }
-
-        if (err.kind === 'auth' || err.kind === 'permission') {
-          // 换模型不会有帮助
-          throw err;
-        }
-
-        if (err.kind === 'invalid-request') {
-          if (thinking && !droppedThinking) {
-            droppedThinking = true;
-            thinking = undefined;
-            if (log) log(`[llm] ${model} 拒绝 thinkingConfig（${err.apiMessage}），去掉思考参数重试`);
-            continue;
-          }
-          throw err;
-        }
-
-        if (err.retriable && attempt < maxAttempts) {
-          const backoff = err.kind === 'rate-limit' ? 1500 * attempt : 700 * attempt;
-          if (log) log(`[llm] ${model} 第 ${attempt} 次失败（${err.kind}），${backoff}ms 后重试`);
-          await sleep(backoff);
-          continue;
-        }
-
-        break; // 换模型
-      }
-    }
-    if (lastErr && (lastErr.kind === 'auth' || lastErr.kind === 'permission' || lastErr.kind === 'invalid-request')) {
-      throw lastErr;
-    }
-    if (chain.indexOf(model) < chain.length - 1) {
-      fellBackFrom.push({ model, reason: lastErr ? lastErr.kind : '失败' });
-    }
-  }
-
-  throw lastErr || new LlmError({ kind: 'unknown', apiMessage: '所有候选模型均失败' });
+  throw new LlmError({ kind: 'invalid-request', apiMessage: 'Gemini 引擎已移除' });
 }
 
-/** 让 UI 能在设置里列出真实可用模型 */
-let modelListCache: { at: number; models: string[] } | undefined;
-
-export async function listAvailableModels(apiKey: string, force = false): Promise<string[]> {
-  if (!apiKey) throw new LlmError({ kind: 'no-key' });
-  if (!force && modelListCache && Date.now() - modelListCache.at < 10 * 60 * 1000) {
-    return modelListCache.models;
-  }
-  const raw = await new Promise<string>((resolve, reject) => {
-    const url = `${GEMINI_HOST}/${API_VERSION}/models?pageSize=200`;
-    const req = https.request(
-      url,
-      { method: 'GET', headers: { 'x-goog-api-key': apiKey } },
-      (res) => {
-        const status = res.statusCode || 0;
-        let data = '';
-        res.setEncoding('utf8');
-        res.on('data', (c) => (data += c));
-        res.on('end', () => {
-          if (status >= 400) {
-            reject(classifyHttpError(status, data, '(models list)'));
-            return;
-          }
-          resolve(data);
-        });
-      }
-    );
-    req.on('error', (e: any) => reject(new LlmError({ kind: 'network', apiMessage: e.message })));
-    req.end();
-  });
-
-  const json = JSON.parse(raw);
-  const models: string[] = (json.models || [])
-    .filter((m: any) => Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes('generateContent'))
-    .map((m: any) => String(m.name || '').replace(/^models\//, ''))
-    .filter((n: string) => n && !/image|tts|transcribe|lyria|robotics|computer-use|embedding/i.test(n))
-    .sort();
-
-  modelListCache = { at: Date.now(), models };
-  return models;
+export async function listAvailableModels(_apiKey?: string, _force = false): Promise<string[]> {
+  return [...KNOWN_GOOD_MODELS];
 }

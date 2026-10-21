@@ -28,6 +28,16 @@ export interface ArchivedParagraph {
   visionLatex?: string;
   /** 行内公式替换表（find = 文本层残渣子串，latex = 可渲染写法） */
   visionInline?: Array<{ find?: string; latex?: string }>;
+  /**
+   * **本地模型**识别出的整段公式 LaTeX（Python sidecar 的 PP-FormulaNet 结果）。
+   *
+   * 与 visionLatex 分开存、且优先级更高，理由是可信度不同：
+   * 这条有"裁图就是这段文字"的字符守恒校验兜底（对不上直接丢弃），
+   * 而 visionLatex 来自云端整页视觉模型的一次性转写，没有硬校验。
+   */
+  modelLatex?: string;
+  /** 行内公式的模型结果（text = 残渣原文，latex = 模型还原） */
+  modelInline?: Array<{ text?: string; latex?: string }>;
 }
 
 /**
@@ -127,6 +137,15 @@ export function mergeArchivedParagraphs(
       merged.sentenceTranslations = old.sentenceTranslations;
     }
     if (!merged.cacheKey && old.cacheKey) merged.cacheKey = old.cacheKey;
+    /*
+     * 模型识别结果是**花时间算出来的**（每条约 400ms，还要加载模型），
+     * 新快照没带的时候必须保住旧的：段落重新解析后短时间里 modelLatex 是空的，
+     * 直接整体替换会让"翻走再翻回来"把已经识别好的公式全丢掉。
+     */
+    if (!merged.modelLatex && old.modelLatex) merged.modelLatex = old.modelLatex;
+    if ((!merged.modelInline || merged.modelInline.length === 0) && old.modelInline && old.modelInline.length) {
+      merged.modelInline = old.modelInline;
+    }
     return merged;
   });
 }

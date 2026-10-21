@@ -46,6 +46,59 @@ if (start < 0 || end < 0) {
 const ML = new Function(`${code.slice(start, end)}
   return { isMathFontName, mathCharToLatex, mathItemsToLatex, buildPageMathModel, findMathRegions, MATH_FONT_RE };`)();
 
+/*
+ * 公式裁图矩形（1.6.15 引入）：把 span 的 CSS px 盒子并成 PDF 点坐标的裁图框。
+ * 单独按锚点抽出来跑——它守的是"卡片里显示的公式是不是**恰好那块**区域"：
+ * 上标探出字形盒必须算进来，坏数据不能污染并集，越界必须裁到页面内。
+ */
+const cropStart = code.indexOf('  function formulaCropPdfRect(');
+const cropEnd = code.indexOf('  /** 3× PDF 点', cropStart);
+if (cropStart < 0 || cropEnd < 0 || cropEnd <= cropStart) {
+  console.error('❌ viewer.js 里找不到 formulaCropPdfRect（锚点失效）');
+  process.exit(1);
+}
+// eslint-disable-next-line no-new-func
+const CROP = new Function(`${code.slice(cropStart, cropEnd)}
+  return { formulaCropPdfRect, formulaCropRectFromMathRuns };`)();
+
+/*
+ * pdf.js 3.11 把 span 定位写成 `calc(var(--scale-factor)*48.00px)`，
+ * 直接 parseFloat 会得到 NaN —— 实测这会让整条裁图功能**静默失效**（一条都裁不出来）。
+ */
+const lenStart = code.indexOf('  function cssLenToPx(');
+const lenEnd = code.indexOf('  function spanBoxesOf(', lenStart);
+if (lenStart < 0 || lenEnd < 0 || lenEnd <= lenStart) {
+  console.error('❌ viewer.js 里找不到 cssLenToPx（锚点失效）');
+  process.exit(1);
+}
+// eslint-disable-next-line no-new-func
+const CSSLEN = new Function(`${code.slice(lenStart, lenEnd)}
+  return { cssLenToPx };`)();
+
+/*
+ * 拆分切点保护：切点落在公式内部时必须挪到公式边界，不能把式子劈成两半。
+ */
+const snapStart = code.indexOf('  function snapCutOutsideMath(');
+let snapEnd = -1;
+{
+  let depth = 0;
+  for (let i = snapStart; i >= 0 && i < code.length; i++) {
+    const ch = code[i];
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) { snapEnd = i + 1; break; }
+    }
+  }
+}
+if (snapStart < 0 || snapEnd < 0) {
+  console.error('❌ viewer.js 里找不到 snapCutOutsideMath（锚点失效）');
+  process.exit(1);
+}
+// eslint-disable-next-line no-new-func
+const SNAP = new Function(`${code.slice(snapStart, snapEnd)}
+  return { snapCutOutsideMath };`)();
+
 const mk = (str, x, y, size, width, font) => ({
   str, width, height: size, transform: [size, 0, 0, size, x, y], fontName: font
 });
@@ -182,11 +235,16 @@ console.log('\n===== R2 字体族判别 =====');
 }
 
 console.log('\n===== R3/R4/R5/R6 真实 PDF（cycle / AOT / STM） =====');
-const PAPERS = {
-  cycle: 'D:\\kx\\上海交大\\梯度校正测验\\梯度校正测验\\cycle.pdf',
-  AOT: 'D:\\kx\\上海交大\\梯度校正测验\\梯度校正测验\\AOT.pdf',
-  STM: 'D:\\kx\\上海交大\\梯度校正测验\\梯度校正测验\\STM.pdf'
-};
+/*
+ * 论文先找仓库里的 test-papers/（随仓库走，换机器也能跑），
+ * 找不到再退回作者本机原来的绝对路径（那些文件可能已被移走）。
+ */
+const LEGACY_DIR = 'D:\\kx\\上海交大\\梯度校正测验\\梯度校正测验';
+const PAPERS = {};
+for (const name of ['cycle', 'AOT', 'STM']) {
+  const local = path.join(ROOT, 'test-papers', `${name}.pdf`);
+  PAPERS[name] = fs.existsSync(local) ? local : path.join(LEGACY_DIR, `${name}.pdf`);
+}
 
 /** 逐页跑数学层；返回 { runs: [{page, latex, items}], model } */
 async function scan(paper, pages) {
@@ -283,6 +341,68 @@ async function scan(paper, pages) {
   check('findMathRegions 能在一句正文里圈出公式', seg1.length === 1 && seg1[0].latex.includes('\\in'), JSON.stringify(seg1));
   const seg2 = ML.findMathRegions('a 2-fold increase, 3 times faster');
   check('findMathRegions 不把普通数字当公式', seg2.length === 0, JSON.stringify(seg2));
+
+  // R8：公式卡片裁图矩形（formulaCropPdfRect）
+  // 真实几何：pdf.js 文本层把 span 写成相对页面左上角的 CSS px（已乘 currentScale），
+  // 除以 scale 才是 PDF 点；下面的数字按 AOT 那类 612×792 页面取的量级。
+  {
+    const near = (a, b, tol = 0.01) => Number.isFinite(a) && Math.abs(a - b) <= tol;
+    const r1 = CROP.formulaCropPdfRect(
+      [
+        { left: 100, top: 200, width: 40, height: 12 },
+        { left: 142, top: 201, width: 30, height: 10 },
+      ],
+      1.25, 3, 2, 612, 792,
+    );
+    check(
+      '裁图矩形：同排两个 span 并成一块（含左右留白）',
+      r1 && near(r1.x0, 77) && near(r1.x1, 140.6) && near(r1.y0, 158) && near(r1.y1, 171.6),
+      JSON.stringify(r1),
+    );
+
+    // 上标在字形盒**上方**：必须被并进来，否则裁出来的式子会缺上标
+    const r2 = CROP.formulaCropPdfRect(
+      [
+        { left: 100, top: 200, width: 40, height: 12 },
+        { left: 140, top: 195, width: 10, height: 6 },
+      ],
+      1.25, 3, 2, 612, 792,
+    );
+    check('裁图矩形：上标（探出上方）被算进来', r2 && near(r2.y0, 195 / 1.25 - 2), JSON.stringify(r2));
+
+    // 坏数据（NaN / 零宽）不能污染并集
+    const r3 = CROP.formulaCropPdfRect(
+      [
+        { left: NaN, top: 10, width: 5, height: 5 },
+        { left: 10, top: 10, width: 0, height: 5 },
+        { left: 20, top: 20, width: 10, height: 10 },
+      ],
+      1, 0, 0, 612, 792,
+    );
+    check('裁图矩形：坏 span 被跳过，只按有效 span 计算', r3 && near(r3.x0, 20) && near(r3.y0, 20), JSON.stringify(r3));
+
+    check('裁图矩形：全是坏数据时返回 null', CROP.formulaCropPdfRect([{ left: NaN }], 1, 0, 0, 612, 792) === null);
+
+    // 越界必须裁到页面内（否则 drawImage 会取到画布外，得到一块空白）
+    const r4 = CROP.formulaCropPdfRect([{ left: 2, top: 2, width: 10, height: 10 }], 1, 3, 2, 612, 792);
+    check('裁图矩形：左/上越界被夹到 0', r4 && r4.x0 === 0 && r4.y0 === 0, JSON.stringify(r4));
+
+    // 太小的框没有意义（还不如让 KaTeX 兜底）
+    check('裁图矩形：小于 2pt 的框返回 null', CROP.formulaCropPdfRect([{ left: 10, top: 10, width: 1, height: 1 }], 1, 0, 0, 612, 792) === null);
+
+    // scale 非法（0 / NaN）时退回 1，绝不能除以 0 得到 Infinity
+    const r5 = CROP.formulaCropPdfRect([{ left: 100, top: 100, width: 10, height: 10 }], 0, 0, 0, 612, 792);
+    check('裁图矩形：scale=0 不产生 Infinity', r5 && near(r5.x0, 100) && near(r5.x1, 110), JSON.stringify(r5));
+
+    // pdf.js 3.11 的 calc(var(--scale-factor)*Npx) 必须能读出来（否则裁图静默失效）
+    check(
+      'css 长度：calc(var(--scale-factor)*48px) 按 1.25 倍读出 60',
+      CSSLEN.cssLenToPx('calc(var(--scale-factor)*48.00px)', 1.25) === 60,
+      String(CSSLEN.cssLenToPx('calc(var(--scale-factor)*48.00px)', 1.25)),
+    );
+    check('css 长度：普通 48px 不乘 scale', CSSLEN.cssLenToPx('48.00px', 1.25) === 48);
+    check('css 长度：空值/无 px 返回 NaN', Number.isNaN(CSSLEN.cssLenToPx('', 1)) && Number.isNaN(CSSLEN.cssLenToPx('12', 1)));
+  }
 
   console.log(`\n===== 结果: ${pass} 通过 / ${fail} 失败 =====`);
   process.exit(fail === 0 ? 0 : 1);
