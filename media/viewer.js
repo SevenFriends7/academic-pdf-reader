@@ -1224,7 +1224,19 @@
 
   function isCombiningMark(ch) {
     const c = ch.codePointAt(0);
-    return (c >= 0x0300 && c <= 0x036f) || (c >= 0x20d0 && c <= 0x20ff) || c === 0xfe20 || c === 0xfe21;
+    return (
+      (c >= 0x0300 && c <= 0x036f) ||
+      (c >= 0x20d0 && c <= 0x20ff) ||
+      c === 0xfe20 ||
+      c === 0xfe21 ||
+      c === 0x02c6 ||
+      c === 0x02dc ||
+      c === 0x02c9 ||
+      c === 0x00af ||
+      c === 0x02d9 ||
+      c === 0x00a8 ||
+      c === 0x02c7
+    );
   }
 
   /**
@@ -1233,7 +1245,7 @@
    * 例如 `′`（U+2032）不放进来——它可能是 "5′" 这种表示法；`( ) [ ] / = < >` 也不放，
    * 英文正文里到处都是，放了会把整句正文变成公式。
    */
-  const STRONG_MATH_CH_RE = /[\u0300-\u036f\u20d0-\u20ff∈∉∋⊂⊃⊆⊇∪∩∅∀∃¬∧∨⇒⇔→←↔↦∑∏∫∮∂∇√∞≈≃≅≤≥≠≡∼∝±∓×÷⋅∘⊕⊗⊙⌈⌉⌊⌋⟨⟩∥⊥∠ℏℓℜℑℝℕℤℚℂαβγδεζηθικλμνξπρστυφχψωΓΔΘΛΞΠΣΦΨΩ]/;
+  const STRONG_MATH_CH_RE = /[\u0300-\u036f\u20d0-\u20ff\u02c6\u02dc\u02c9\u00af\u02d9\u00a8\u02c7∈∉∋⊂⊃⊆⊇∪∩∅∀∃¬∧∨⇒⇔→←↔↦∑∏∫∮∂∇√∞≈≃≅≤≥≠≡∼∝±∓×÷⋅∘⊕⊗⊙⌈⌉⌊⌋⟨⟩∥⊥∠ℏℓℜℑℝℕℤℚℂαβγδεζηθικλμνξπρστυφχψωΓΔΘΛΞΠΣΦΨΩ]/;
 
   /** 弱数学字符（单独出现不算公式，必须与强信号/相邻字母数字组成"式子"） */
   const WEAK_MATH_CH_RE = /[A-Za-z0-9=+\-*/^_{}[\]()<>|.,′"']/;
@@ -1287,7 +1299,8 @@
       'ψ': '\\psi ', 'ω': '\\omega ', 'Γ': '\\Gamma ', 'Δ': '\\Delta ', 'Θ': '\\Theta ',
       'Λ': '\\Lambda ', 'Ξ': '\\Xi ', 'Π': '\\Pi ', 'Σ': '\\Sigma ', 'Φ': '\\Phi ',
       'Ψ': '\\Psi ', 'Ω': '\\Omega ', '′': "'", '″': "''", '‴': "'''",
-      '̂': '\\hat', '̃': '\\tilde', '̄': '\\bar', '̇': '\\dot', '̈': '\\ddot', '̌': '\\check'
+      '̂': '\\hat', '̃': '\\tilde', '̄': '\\bar', '̇': '\\dot', '̈': '\\ddot', '̌': '\\check',
+      'ˆ': '\\hat', '˜': '\\tilde', 'ˉ': '\\bar', '¯': '\\bar', '˙': '\\dot', '¨': '\\ddot', 'ˇ': '\\check'
     });
     if (map[ch]) return map[ch];
     // 数学字母数字（U+1D400–U+1D7FF，Cambria Math 的斜体/粗体/黑板体等）：还原成基字母
@@ -1343,8 +1356,127 @@
    * 产出示例（cycle 第 4 页真实数据）：
    *   X,^{t-1} = \{X,_{1}\}  →  `X^{t-1}=\{X_{1}\}`
    */
+  function normaliseCmexItems(itemList) {
+    const arr = itemList || [];
+    arr.forEach(it => {
+      if (!it || !/CMEX/i.test(it.font)) return;
+      if (it.str && it.str.length > 1 && it.str.endsWith('∥')) {
+        const below = arr.find(
+          b =>
+            b &&
+            b !== it &&
+            /CMEX/i.test(b.font) &&
+            b.str === '∥' &&
+            it.y - b.y > 0.5 &&
+            it.y - b.y <= 15 &&
+            Math.abs(it.x + (it.width || 0) - (b.width || 3.33) - b.x) <= 3.0
+        );
+        if (below) {
+          it.str = it.str.slice(0, -1);
+          it.normStr = it.str;
+          it.width = Math.max(2, (it.width || 0) - (below.width || 3.33));
+          below.extTop = Math.max(below.extTop || (below.y + (below.height || below.size)), it.y + (it.height || it.size));
+        }
+      }
+    });
+    arr
+      .filter(it => it && /CMEX/i.test(it.font) && it.str === '∥')
+      .sort((a, b) => b.y - a.y)
+      .forEach(it => {
+        const below = arr.find(
+          b =>
+            b &&
+            b !== it &&
+            /CMEX/i.test(b.font) &&
+            b.str === '∥' &&
+            Math.abs(it.x - b.x) <= 1.5 &&
+            it.y - b.y > 0.5 &&
+            it.y - b.y <= 15
+        );
+        if (below) {
+          it.isDelimiterExt = true;
+          below.extTop = Math.max(
+            below.extTop || (below.y + (below.height || below.size)),
+            it.extTop || (it.y + (it.height || it.size))
+          );
+        }
+      });
+    arr.forEach(it => {
+      if (!it || !/CMEX/i.test(it.font) || it.isDelimiterExt || !(it.width > 0) || isCombiningMark(it.str)) return;
+      let minDy = 0;
+      let maxDy = 0;
+      let filterX = null;
+      if (it.str === '∥' || it.str === '|') {
+        minDy = -1.5;
+        maxDy = 4.0;
+        filterX = o => Math.abs(o.x - it.x) <= 40;
+      } else if (/^[()[\]{}⌈⌉⌊⌋⟨⟩]+$/.test(it.str)) {
+        minDy = 7.5;
+        maxDy = 15.0;
+        const isOpen = /^[([{⌈⌊⟨]/.test(it.str);
+        filterX = o => (isOpen ? o.x >= it.x - 2 && o.x <= it.x + 45 : o.x <= it.x + 2 && o.x >= it.x - 45);
+      }
+      if (!filterX) return;
+      const cands = arr.filter(
+        o =>
+          o &&
+          o !== it &&
+          o.math !== false &&
+          !/CMEX/i.test(o.font) &&
+          o.width > 0 &&
+          o.size >= it.size * 0.9 &&
+          filterX(o) &&
+          it.y - o.y >= minDy &&
+          it.y - o.y <= maxDy
+      );
+      if (!cands.length) return;
+      const votes = new Map();
+      cands.forEach(o => {
+        const ky = Math.round(o.y * 10) / 10;
+        const rec = votes.get(ky) || { y: o.y, n: 0, minDx: Infinity };
+        rec.n++;
+        rec.minDx = Math.min(rec.minDx, Math.abs(o.x - it.x));
+        votes.set(ky, rec);
+      });
+      let best = null;
+      votes.forEach(v => {
+        if (!best || v.n > best.n || (v.n === best.n && v.minDx < best.minDx)) best = v;
+      });
+      if (best) {
+        const oldY = it.y;
+        it.extTop = Math.max(it.extTop || 0, it.y + (it.height || it.size));
+        it.y = best.y;
+        it.normY = best.y;
+        // 高定界符（如双竖线范数 ∥...∥^2、大括号 (...)_T）右上角的上标或右下角的下标，
+        // TeX 会排在定界符顶端/底端附近（偏离主基线 6~9pt），容易串入相邻行。
+        // 将其基线同步拉回当前公式行的标准上下标高度（best.y + 3.6pt / best.y - 2.5pt）。
+        const delimRight = it.x + (it.width || 3.33);
+        arr.forEach(s => {
+          if (
+            !s ||
+            s === it ||
+            s.isDelimiterExt ||
+            !(s.size < it.size * 0.9) ||
+            s.x < it.x - 0.5 ||
+            s.x > delimRight + 3.0
+          ) {
+            return;
+          }
+          if (s.y - best.y >= 5.5 && s.y - best.y <= 10.5) {
+            s.extTop = Math.max(s.extTop || 0, s.y + (s.height || s.size));
+            s.y = best.y + 3.6;
+            s.normY = best.y + 3.6;
+          } else if (best.y - s.y >= 5.0 && best.y - s.y <= 9.5) {
+            s.y = best.y - 2.5;
+            s.normY = best.y - 2.5;
+          }
+        });
+      }
+    });
+  }
+
   function mathItemsToLatex(items) {
-    const list = (items || [])
+    const rawList = (items || [])
       .filter(it => it && typeof it.str === 'string')
       .map(it => {
         const m = it.transform || [1, 0, 0, 1, 0, 0];
@@ -1361,6 +1493,8 @@
         };
       })
       .filter(it => it.size > 0 && !it.isSpace);
+    normaliseCmexItems(rawList);
+    const list = rawList.filter(it => !it.isDelimiterExt);
     if (list.length === 0) return '';
 
     /*
@@ -1480,7 +1614,12 @@
           prev.xEnd = Math.max(prev.xEnd, it.x + Math.max(it.width, 0.6) - originX);
           return;
         }
-        if (prev && it.x - prev.xEnd <= 1.6) {
+        if (
+          prev &&
+          it.x - prev.xEnd <= 1.6 &&
+          !/[()[\]{}⌈⌉⌊⌋⟨⟩∥|=+\-−<>≤≥≈≠∈⊂⊆∪∩×÷⋅,;:]/.test(prev.str) &&
+          !/[()[\]{}⌈⌉⌊⌋⟨⟩∥|=+\-−<>≤≥≈≠∈⊂⊆∪∩×÷⋅,;:]/.test(it.str)
+        ) {
           prev.str += it.str;
           prev.xEnd = Math.max(prev.xEnd, it.x + Math.max(it.width, 0.6) - originX);
           return;
@@ -1490,6 +1629,8 @@
           x: it.x - originX,
           xEnd: it.x + Math.max(it.width, 0.6) - originX,
           accent: null,
+          preSup: [],
+          preSub: [],
           sup: [],
           sub: []
         });
@@ -1511,11 +1652,22 @@
            * 正确兜底：取"起点不超过 it 的那些基字符里最靠右的一个"。
            */
           let host = null;
+          let hostIdx = -1;
           let bestX = -Infinity;
           for (let i = 0; i < chars.length; i++) {
-            if (chars[i].x <= it.lx + 0.9 && chars[i].x > bestX) { bestX = chars[i].x; host = chars[i]; }
+            if (chars[i].x <= it.lx + 0.9 && chars[i].x > bestX) {
+              bestX = chars[i].x;
+              host = chars[i];
+              hostIdx = i;
+            }
           }
-          if (!host) host = chars[0];
+          if (!host && chars.length > 0 && !it.isAccent && !/^[′″‴']+$/.test(String(it.str))) {
+            const first = chars[0];
+            if (it.ly > 0.6) first.preSup.push(it);
+            else first.preSub.push(it);
+            return;
+          }
+          if (!host) { host = chars[0]; hostIdx = 0; }
           if (!host) { orphans.push(it); return; }
           if (it.isAccent) { host.accent = mathCharToLatex(it.str); return; }
           /*
@@ -1525,17 +1677,75 @@
            * （TeX 里 `V'` 就是 `V^{\prime}`）。
            */
           if (/^[′″‴']+$/.test(String(it.str))) { host.str += it.str; return; }
+          // 前置上下标（如 `∥ {}^{V_i}\hat{z}`、`- {}^{V_k}\hat{x}`、`(...)^{-1} {}^{V_k}\hat{P}`）
+          const isOpenNorm =
+            host.str === '∥' &&
+            (hostIdx === 0 || /[+\-−=<>≤≥≈≠∈⊂⊆∪∩×÷⋅,;:(\[{⌈⌊⟨]$/.test(chars[hostIdx - 1].str));
+          const isAfterClosedSup =
+            /[)\]}⌉⌋⟩]$/.test(host.str) &&
+            host.sup.length > 0 &&
+            it.lx - host.xEnd >= 8.0;
+          const nextHost = hostIdx >= 0 && hostIdx + 1 < chars.length ? chars[hostIdx + 1] : null;
+          if (
+            nextHost &&
+            /^[A-Za-z\u0370-\u03ff]/.test(nextHost.str) &&
+            nextHost.x - it.lx <= 12 &&
+            (/[+\-−=<>≤≥≈≠∈⊂⊆∪∩×÷⋅,;:(\[{⌈⌊⟨]$/.test(host.str) ||
+              isOpenNorm ||
+              isAfterClosedSup ||
+              nextHost.preSup.length > 0 ||
+              nextHost.preSub.length > 0)
+          ) {
+            if (it.ly > 0.6) nextHost.preSup.push(it);
+            else nextHost.preSub.push(it);
+            return;
+          }
           if (it.ly > 0.6) host.sup.push(it);
           else if (it.ly < -0.6) host.sub.push(it);
           else host.sub.push(it);
         });
 
+      const emitGroup = (grp, d) => {
+        if (!grp || !grp.length) return '';
+        if (grp.length > 1) {
+          const maxS = Math.max(...grp.map(i => i.size));
+          const minS = Math.min(...grp.map(i => i.size));
+          if (minS < maxS * 0.88) {
+            const subMain = grp.filter(i => i.size >= maxS * 0.92 && !isAccentItem(i));
+            if (subMain.length > 0 && subMain.length < grp.length) {
+              return emit(subMain, grp, d);
+            }
+          }
+          const maxY = Math.max(...grp.map(i => i.y));
+          const minY = Math.min(...grp.map(i => i.y));
+          if (maxY - minY >= 0.95) {
+            const subMain = grp.filter(i => i.size >= maxS * 0.92 && !isAccentItem(i) && Math.abs(i.y - maxY) <= 0.55);
+            if (subMain.length > 0 && subMain.length < grp.length) {
+              return emit(subMain, grp, d);
+            }
+          }
+        }
+        return emit(grp, grp, d);
+      };
+
       let out = '';
       chars.forEach(c => {
         let s = String(c.str).split('').map(mathCharToLatex).join('');
-        if (c.accent) s = `${c.accent}{${s}}`;
-        if (c.sub.length) s += `_{${emit(c.sub, c.sub, depth + 1)}}`;
-        if (c.sup.length) s += `^{${emit(c.sup, c.sup, depth + 1)}}`;
+        if (c.accent) {
+          if (c.str.length > 1) {
+            const head = String(c.str.slice(0, -1)).split('').map(mathCharToLatex).join('');
+            const tail = mathCharToLatex(c.str.slice(-1));
+            s = `${head}${c.accent}{${tail}}`;
+          } else {
+            s = `${c.accent}{${s}}`;
+          }
+        }
+        if (c.sub.length) s += `_{${emitGroup(c.sub, depth + 1)}}`;
+        if (c.sup.length) s += `^{${emitGroup(c.sup, depth + 1)}}`;
+        let pre = '';
+        if (c.preSub && c.preSub.length) pre += `_{${emitGroup(c.preSub, depth + 1)}}`;
+        if (c.preSup && c.preSup.length) pre += `^{${emitGroup(c.preSup, depth + 1)}}`;
+        if (pre) s = `{}${pre}${s}`;
         /*
          * 【空白规范化】数学模式里空格对排版毫无影响，但会破坏"函数名/命令"的语义：
          *   · `max (` / `log (1 −` —— TeX 里 `\max` 与 `\log` 才是算子，`max` 只是三个斜体字母，
@@ -1784,9 +1994,11 @@
       };
     });
 
+    normaliseCmexItems(items);
+
     const vGap = Math.max(1.2, (fallbackSize || 10) * 0.18);
     const hGap = 1.6;
-    const visible = items.filter(it => it.str && it.str.trim() && it.math);
+    const visible = items.filter(it => it.str && it.str.trim() && it.math && !it.isDelimiterExt);
     const byIndex = {};
     /** box -> 它所在的组（下标）；用于"找与 b 真正重叠的那个字形所在的组" */
     const boxGroup = new Map();
@@ -1847,10 +2059,17 @@
           const rowMid = g.baseY - 0.5;
           const allow = Math.max(1.6, g.baseSize * 0.85 + 1.2);
           if (Math.abs(b.y - rowMid) > allow) continue;
+          const isPreScriptAnchor =
+            g.baseSize <= b.size * 0.92 && g.baseY - b.y > 0.5 && g.baseY - b.y <= b.size * 0.65;
           let best = null;
           let bestRight = -Infinity;
           g.items.forEach(o => {
-            if (o.y < rowMid) return; // 只认主行字形（上下标不当锚点）
+            const isSubAnchor = b.size <= g.baseSize * 0.92 && Math.abs(b.y - o.y) <= 2.5;
+            const isScriptAnchor =
+              b.size <= g.baseSize * 0.92 &&
+              o.size <= g.baseSize * 0.92 &&
+              Math.abs(b.y - rowMid) <= allow;
+            if (o.y < rowMid && !isSubAnchor && !isPreScriptAnchor && !isScriptAnchor) return; // 只认主行字形（或同层级下标/前置上标锚点/角标相邻锚点）
             const ov = Math.min(boxRight(b), boxRight(o)) - Math.max(boxLeft(b), boxLeft(o));
             const gap = ov > 0 ? 0 : Math.min(Math.abs(boxLeft(b) - boxRight(o)), Math.abs(boxLeft(o) - boxRight(b)));
             if (gap > hGap) return;
@@ -1862,7 +2081,7 @@
         if (host) {
           const dyUp = b.y - host.baseY;
           const vAllow = Math.max(1.6, host.baseSize * 0.85 + 1.2);
-          const accent = !(b.width > 0);
+          const accent = !(b.width > 0) || (b.str.length === 1 && isCombiningMark(b.str));
           /*
            * 【判据一律以**锚点字形**为准，不要混用组的边界】
            * 组一旦合并，它的 x/xEnd 会把上下标也算进去（`X` 与 `t` 合并后 xEnd 是 `t` 的右边缘），
@@ -1895,13 +2114,24 @@
            */
           const scriptOn = !accent && Math.abs(dyUp) > vGap * 0.5 && Math.abs(dyUp) <= vAllow &&
             (ov >= needOv || (touching && smaller && anchorGap <= 0.6));
-          if (sameRowAdjacent || hatOn || scriptOn) {
+          const preScriptOn =
+            !accent &&
+            host.baseSize <= b.size * 0.92 &&
+            host.baseY - b.y > 0.5 &&
+            host.baseY - b.y <= b.size * 0.65 &&
+            touching &&
+            anchorGap <= 1.2;
+          if (sameRowAdjacent || hatOn || scriptOn || preScriptOn) {
             host.items.push(b);
             host.x = Math.min(host.x, b.x);
             host.xEnd = Math.max(host.xEnd, b.x + b.width);
-            host.absTop = Math.max(host.absTop, b.y + (b.height || b.size));
+            host.absTop = Math.max(host.absTop, b.extTop || (b.y + (b.height || b.size)));
             // baseY / baseSize / rowY 只能被"主体级、且非零宽"的字形抬高（帽子同字号但零宽，必须排除）
-            if (b.width > 0 && b.size >= host.baseSize * 0.92) {
+            if (!accent && b.width > 0 && (preScriptOn || b.size > host.baseSize * 1.08)) {
+              host.baseSize = b.size;
+              host.baseY = b.y;
+              host.rowY = b.y;
+            } else if (!accent && b.width > 0 && b.size >= host.baseSize * 0.92) {
               host.baseSize = Math.max(host.baseSize, b.size);
               host.baseY = Math.max(host.baseY, b.y);
               host.rowY = Math.max(host.rowY === undefined ? b.y : host.rowY, b.y);
@@ -1914,7 +2144,7 @@
           items: [b],
           x: b.x,
           xEnd: b.x + b.width,
-          absTop: b.y + (b.height || b.size),
+          absTop: b.extTop || (b.y + (b.height || b.size)),
           baseY: b.y,
           // rowY = 主行基线（只被非零宽的主字形更新），专门用来分"行桶"：
           // 若用 baseY 分桶，`−1`（下标基线 536.87）会与 `Xt`（主体基线 538.36）落到不同桶里，
@@ -1958,13 +2188,18 @@
         const prev = lastOfRow.get(row);
         if (prev) {
           const size = Math.max(prev.baseSize || 10, g.baseSize || 10);
-          if (g.x - prev.xEnd <= size * 0.45 && g.xEnd >= prev.x - size * 0.45) {
+          if (g.x - prev.xEnd <= size * 0.55 && g.xEnd >= prev.x - size * 0.55) {
             prev.items = prev.items.concat(g.items);
             prev.x = Math.min(prev.x, g.x);
             prev.xEnd = Math.max(prev.xEnd, g.xEnd);
+            if ((g.baseSize || 0) > (prev.baseSize || 0) * 1.08) {
+              prev.baseY = g.baseY;
+              prev.rowY = g.rowY !== undefined ? g.rowY : g.baseY;
+            } else if ((prev.baseSize || 0) <= (g.baseSize || 0) * 1.08) {
+              prev.baseY = Math.max(prev.baseY || 0, g.baseY || 0);
+              prev.rowY = Math.max(prev.rowY === undefined ? 0 : prev.rowY, g.rowY === undefined ? 0 : g.rowY);
+            }
             prev.baseSize = size;
-            prev.baseY = Math.max(prev.baseY || 0, g.baseY || 0);
-            prev.rowY = Math.max(prev.rowY === undefined ? 0 : prev.rowY, g.rowY === undefined ? 0 : g.rowY);
             prev.absTop = Math.max(prev.absTop || 0, g.absTop || 0);
             return;
           }
@@ -1975,46 +2210,61 @@
       });
 
     /*
-     * ④b 收尾重扫：按**行档**（`floor(主体基线/8)`）分池，把同一行档里仍相邻的组再并一次。
+     * ④b 收尾重扫：按**主体基线近邻池**（|ΔrowY| <= 3.5pt）分池，把同一行档里仍相邻的组再并一次。
      *
-     * 【为什么用 floor(基线/8) 而不是精确基线】上下标的基线比主体低 1.5pt
-     * （`X`=538.36 / 下标 `t`=536.87），`−1` 这种字形在整页 x 序里排在主体之后，
-     * 落进的是"下标那一档"，用精确基线分池就永远跟主体分开（实测 `X_{t}` + `-1`）。
-     * 而相邻的两行正文行距 ≥12pt，floor(/8) 之后必然落到不同档，不会被误并。
-     * 判据与 ④ 一致（同行档 + 正常词距）。
+     * 【为什么用近邻池而不是 floor(maxY/8)】
+     *   1) 旧写法取 `Math.max(...items.y)` 当主行基线，会把上标的 y（如 392.89）当成主行基线，
+     *      而 392.0 恰好是 8 的整数倍分界线，导致同一行（388.76）上有上标的项落进 49 桶、
+     *      无上标的算子（`−`）落进 48 桶，同一条行内公式被拦腰劈断；
+     *   2) 用 `rowY`（主行基线）+ 3.5pt 近邻池：上下标组（差 1.5~2.5pt）能自然并入同行主池，
+     *      而相邻两行正文（行距 ≥ 11pt）绝不会串池。
      */
     const finalGroups = [];
-    const poolOfRow = new Map();
+    const rowPools = [];
+    const mainRowYOf = gg => (gg.rowY !== undefined ? gg.rowY : gg.baseY || 0);
     mergedGroups
       .slice()
       .sort((a, b) => {
-        const big = gg => Math.max(...gg.items.filter(i => i.width > 0).map(i => i.size), gg.baseSize || 10);
-        const ya = Math.max(...a.items.filter(i => i.width > 0).map(i => i.y), a.baseY || 0);
-        const yb = Math.max(...b.items.filter(i => i.width > 0).map(i => i.y), b.baseY || 0);
-        void big;
-        return Math.floor(ya / 8) - Math.floor(yb / 8) || a.x - b.x;
+        const ya = mainRowYOf(a);
+        const yb = mainRowYOf(b);
+        if (Math.abs(ya - yb) > 3.5) return yb - ya;
+        return a.x - b.x;
       })
       .forEach(g => {
-        const mainY = Math.max(...g.items.filter(i => i.width > 0).map(i => i.y), g.baseY || 0);
-        const key = Math.floor(mainY / 8);
-        let pool = poolOfRow.get(key);
-        if (pool) {
-          const prev = pool[pool.length - 1];
+        const mainY = mainRowYOf(g);
+        let poolObj = null;
+        let bestDy = Infinity;
+        for (const p of rowPools) {
+          const dy = Math.abs(p.y - mainY);
+          if (dy <= 3.5 && dy < bestDy) {
+            bestDy = dy;
+            poolObj = p;
+          }
+        }
+        if (poolObj) {
+          const prev = poolObj.list[poolObj.list.length - 1];
           const size = Math.max(prev.baseSize || 10, g.baseSize || 10);
-          if (g.x - prev.xEnd <= size * 0.45 && g.xEnd >= prev.x - size * 0.45) {
+          if (g.x - prev.xEnd <= size * 0.55 && g.xEnd >= prev.x - size * 0.55) {
             prev.items = prev.items.concat(g.items);
             prev.x = Math.min(prev.x, g.x);
             prev.xEnd = Math.max(prev.xEnd, g.xEnd);
+            if ((g.baseSize || 0) > (prev.baseSize || 0) * 1.08) {
+              prev.baseY = g.baseY;
+              prev.rowY = mainY;
+              poolObj.y = mainY;
+            } else if ((prev.baseSize || 0) <= (g.baseSize || 0) * 1.08) {
+              prev.baseY = Math.max(prev.baseY || 0, g.baseY || 0);
+              prev.rowY = Math.max(prev.rowY === undefined ? 0 : prev.rowY, mainY);
+            }
             prev.baseSize = size;
-            prev.baseY = Math.max(prev.baseY || 0, g.baseY || 0);
             prev.absTop = Math.max(prev.absTop || 0, g.absTop || 0);
             return;
           }
         } else {
-          pool = [];
-          poolOfRow.set(key, pool);
+          poolObj = { y: mainY, list: [] };
+          rowPools.push(poolObj);
         }
-        pool.push(g);
+        poolObj.list.push(g);
         finalGroups.push(g);
       });
 
@@ -2156,8 +2406,17 @@
     // 离屏单测只抽 buildAcademicLayout 这一段，拿不到顶部的 pageMathRuns；有则存、无则跳过
     if (typeof pageMathRuns !== 'undefined') pageMathRuns.set(pageNum, mathModel.runs || []);
     const mathInfoByIdx = mathModel.byIndex || {};
+    const modelItems = mathModel.items || [];
     (textContent.items || []).forEach((it, i) => {
-      if (textDivs[i]) textDivs[i]._mathInfo = mathInfoByIdx[i] || null;
+      if (textDivs[i]) {
+        textDivs[i]._mathInfo = mathInfoByIdx[i] || null;
+        const mi = modelItems[i];
+        if (mi) {
+          if (mi.isDelimiterExt) textDivs[i]._isDelimiterExt = true;
+          if (mi.normStr !== undefined) textDivs[i].textContent = mi.normStr;
+          if (mi.normY !== undefined) textDivs[i]._pdfY = mi.normY;
+        }
+      }
     });
 
     const pagePdfH = (viewport && viewport.viewBox) ? viewport.viewBox[3] : ((viewport && viewport.height) ? viewport.height / (viewport.scale || 1) : 792);
@@ -2165,6 +2424,7 @@
 
     // 1. 深度动态过滤页眉与页脚（彻底消除页码、DOI、出版版权及页底栏线串入正文）
     const spans = rawSpans.filter(span => {
+      if (span._isDelimiterExt) return false;
       const sy = span._pdfY !== undefined ? span._pdfY : 0;
       const sh = span._pdfH !== undefined ? span._pdfH : 9;
       const t = (span.textContent || '').trim();
@@ -2639,6 +2899,7 @@
           curLine.h = Math.max(curLine.h, sh);
         }
       }
+      lines.forEach(l => l.spans.sort((a, b) => (a._pdfX !== undefined ? a._pdfX : 0) - (b._pdfX !== undefined ? b._pdfX : 0)));
       return lines;
     }
 
@@ -3316,52 +3577,82 @@
          * 但**正文必须排在它左边/右边的公式之后或之前**，这一步就是为此。
          */
         const wordCount = t => (t.match(/[A-Za-z]{2,}/g) || []).length;
-        const anchors = group.lines.filter(l => wordCount(textOf(l)) >= 2);
+        const proseTextOf = line =>
+          line.spans
+            .filter(s => !(s && s._mathInfo && s._mathInfo.math))
+            .map(s => (s.textContent || '').trim())
+            .join(' ')
+            .trim();
+        const mainBaselineOf = line => {
+          const mainSpans = line.spans.filter(
+            s => (s._pdfH || 0) >= 9 && !isCombiningMark((s.textContent || '').trim())
+          );
+          if (!mainSpans.length) return line.y;
+          return mainSpans[0]._pdfY !== undefined ? mainSpans[0]._pdfY : line.y;
+        };
+        const proseAnchors = group.lines.filter(l => wordCount(proseTextOf(l)) >= 1);
+        const anchors = [...proseAnchors];
+        group.lines.forEach(l => {
+          if (anchors.includes(l)) return;
+          const hasMainSize = l.spans.some(
+            s => (s._pdfH || 0) >= 9 && !isCombiningMark((s.textContent || '').trim())
+          );
+          if (hasMainSize && anchors.every(a => Math.abs(mainBaselineOf(a) - mainBaselineOf(l)) > 5.5)) {
+            anchors.push(l);
+          }
+        });
+        if (anchors.length === 0 && group.lines.length > 0) {
+          anchors.push(group.lines[0]);
+        }
         let spans = [];
-        if (anchors.length === 0) {
-          group.lines.forEach(l => {
-            [...l.spans].sort((a, b) => (a._pdfX || 0) - (b._pdfX || 0)).forEach(s => spans.push(s));
-          });
-        } else {
-          const rows = anchors
-            .slice()
-            .sort((a, b) => b.y - a.y)
-            .map(a => ({ y: a.y, top: a.y + (a.h || 0), spans: [...a.spans] }));
-          group.lines
-            .filter(l => !anchors.includes(l))
-            .forEach(l => {
-              const lTop = l.y + (l.h || 0);
-              let best = null;
-              let bestOverlap = 0;
+        const rows = anchors
+          .slice()
+          .sort((a, b) => mainBaselineOf(b) - mainBaselineOf(a))
+          .map(a => ({ y: mainBaselineOf(a), top: a.y + (a.h || 0), spans: [...a.spans] }));
+        group.lines
+          .filter(l => !anchors.includes(l))
+          .slice()
+          .sort((a, b) => {
+            const da = Math.min(...rows.map(r => Math.abs(r.y - mainBaselineOf(a))));
+            const db = Math.min(...rows.map(r => Math.abs(r.y - mainBaselineOf(b))));
+            return da - db;
+          })
+          .forEach(l => {
+            const lTop = l.y + (l.h || 0);
+            const lBaseY = mainBaselineOf(l);
+            const lRunIds = new Set(
+              l.spans.map(s => s && s._mathInfo && s._mathInfo.runId).filter(id => id !== null && id !== undefined)
+            );
+            let best = null;
+            let bestDist = Infinity;
+            if (lRunIds.size > 0) {
               rows.forEach(r => {
-                const ov = Math.min(r.top, lTop) - Math.max(r.y, l.y);
-                if (ov > bestOverlap) {
-                  bestOverlap = ov;
+                const d = Math.abs(r.y - lBaseY);
+                if (d <= 7.0 && d < bestDist && r.spans.some(s => s && s._mathInfo && lRunIds.has(s._mathInfo.runId))) {
+                  bestDist = d;
                   best = r;
                 }
               });
-              if (!best) {
-                let bestDist = Infinity;
-                rows.forEach(r => {
-                  const d = Math.abs(r.y - l.y);
-                  if (d < bestDist) {
-                    bestDist = d;
-                    best = r;
-                  }
-                });
-                if (bestDist > 12) best = null;
-              }
-              if (best) {
-                best.spans.push(...l.spans);
-                best.top = Math.max(best.top, lTop);
-              } else {
-                rows.push({ y: l.y, top: lTop, spans: [...l.spans] });
-              }
-            });
-          rows.sort((a, b) => b.y - a.y);
-          rows.forEach(r => r.spans.sort((a, b) => (a._pdfX || 0) - (b._pdfX || 0)));
-          rows.forEach(r => r.spans.forEach(s => spans.push(s)));
-        }
+            }
+            if (!best) {
+              rows.forEach(r => {
+                const d = Math.abs(r.y - lBaseY);
+                if (d <= 7.0 && d < bestDist) {
+                  bestDist = d;
+                  best = r;
+                }
+              });
+            }
+            if (best) {
+              best.spans.push(...l.spans);
+              best.top = Math.max(best.top, lTop);
+            } else {
+              rows.push({ y: lBaseY, top: lTop, spans: [...l.spans] });
+            }
+          });
+        rows.sort((a, b) => b.y - a.y);
+        rows.forEach(r => r.spans.sort((a, b) => (a._pdfX || 0) - (b._pdfX || 0)));
+        rows.forEach(r => r.spans.forEach(s => spans.push(s)));
         const allText = group.lines.map(textOf).join(' ');
         const line = {
           // y 取**最后一行**：段落主循环只用它算与下一行的行距（取顶行会把行距算大，误断段）
@@ -3394,7 +3685,7 @@
         }
         if ((group.mathLines > 0 && fewWords) || numberedFormula) {
           line.__mathGroup = true;
-          if (group.lines.length > 1) line.__mergedFormulaBlock = true;
+          if (rows.length > 1) line.__mergedFormulaBlock = true;
         }
         out.push(line);
         group = null;
@@ -3458,13 +3749,13 @@
       const isHead = t => /^(NOMENCLATURE|NOTATION|NOTATIONS|SYMBOLS|LISTOFSYMBOLS|LISTOFNOTATIONS|ABBREVIATIONS)$/i.test(t.replace(/\s+/g, ''));
       const isSection = t => /^[A-Z]\.\s+[A-Z]/.test(t) && t.length <= 90;
       const out = [];
-      for (let i = 0; i < orderedLines.length; i++) {
-        const head = orderedLines[i];
+      for (let idx = 0; idx < orderedLines.length; idx++) {
+        const head = orderedLines[idx];
         out.push(head);
         if (!isHead(textOf(head))) continue;
         const body = [];
         let lastY = head.y;
-        let j = i + 1;
+        let j = idx + 1;
         for (; j < orderedLines.length; j++) {
           const l = orderedLines[j];
           if (l.section !== head.section) break;
@@ -3490,7 +3781,7 @@
           __mergedMath: true,
           __notationTable: true
         });
-        i = j - 1;
+        idx = j - 1;
       }
       orderedLines = out;
     })();
@@ -3580,7 +3871,7 @@
         const consumed = spanCharsMapped.get(span) || 0;
         para.segments.push({ kind: 'body', text, spanRef: span, spans: [span], items: item ? [item] : [], __off: consumed });
       };
-      const pushMath = (latex, text, itemsIn, spanRef, spanStart, spanEnd, spanLen) => {
+      const pushMath = (latex, text, itemsIn, spanRef, spanStart, spanEnd, spanLen, runId) => {
         /*
          * `spans` 与 `__spanStart/__spanEnd` 是给"本地模型识别"用的定位信息：
          * 模型要的是**这一小块公式**的像素，而不是整个段落。
@@ -3595,7 +3886,8 @@
           items: itemsIn || [],
           __spanStart: spanStart,
           __spanEnd: spanEnd,
-          __spanLen: spanLen
+          __spanLen: spanLen,
+          runId: runId !== undefined ? runId : null
         });
       };
 
@@ -3607,7 +3899,7 @@
 
         // ① span 完全落在一条公式里：整段交给公式
         if (info && info.math && info.latex) {
-          pushMath(info.latex, spanText.replace(/\s+/g, ' ').trim(), item ? [item] : [], span, 0, spanText.length, spanText.length);
+          pushMath(info.latex, spanText.replace(/\s+/g, ' ').trim(), item ? [item] : [], span, 0, spanText.length, spanText.length, info.runId);
           return;
         }
         // ② 普通正文 span：内部可能还夹着公式（行内公式）
@@ -3703,6 +3995,7 @@
             }
           }
           if (needSpace) {
+            seg._hadLeadingSpace = true;
             para.cleanText += ' ';
             /*
              * 合成空格挂 **span: null**，不挂真实 span。
@@ -3740,6 +4033,34 @@
       }
 
       /*
+       * 【合并同一条数学 run 的连续片段】
+       * 放在 charMap 构建与 trim 完成之后，因此绝对不触碰 charMap 与 cleanText 的 1:1 映射；
+       * 同时把同一个 runId 下被拆成多个单字形 span 的 math 片段合成一条完整公式片段，
+       * 让 seg.text 与 cleanText 里的完整公式子串严格一致。
+       */
+      {
+        const coalesced = [];
+        para.segments.forEach(seg => {
+          const prev = coalesced[coalesced.length - 1];
+          if (
+            prev &&
+            prev.kind === 'math' &&
+            seg.kind === 'math' &&
+            prev.runId !== null &&
+            prev.runId !== undefined &&
+            prev.runId === seg.runId
+          ) {
+            prev.text += (seg._hadLeadingSpace ? ' ' : '') + seg.text;
+            prev.spans = prev.spans.concat(seg.spans || []);
+            prev.items = (prev.items || []).concat(seg.items || []);
+            return;
+          }
+          coalesced.push(seg);
+        });
+        para.segments = coalesced;
+      }
+
+      /*
        * 【charMap 必须与 cleanText 严格 1:1——这是划线高亮不错位的唯一保证】
        * 上面那些"去掉连字符 / 补词距空格"的处理都会同时动 cleanText 与 charMap，
        * 只要有一处少弹/多弹一次，**后面所有字符的高亮都会整体错位一位**（用户看到"高亮偏了"）。
@@ -3766,8 +4087,26 @@
          * 整段只有公式（公式片段 + 空白）：标成 formula，卡片直接渲染公式、不送翻译。
          * 正文里夹公式的情况则记下 localMath（逐条行内公式），供原文侧就地渲染与精读稿导出。
          */
-        const hasBody = para.segments.some(s => s.kind === 'body' && s.text.trim());
+        const isEqNumSeg = s =>
+          s &&
+          s.kind === 'body' &&
+          /^\(\s*\d{1,3}(?:\.\d{1,3}|[a-z])?\s*\)$/i.test(String(s.text || '').trim());
+        const hasBody = para.segments.some(s => s.kind === 'body' && s.text.trim() && !isEqNumSeg(s));
         const mathSegs = para.segments.filter(s => s.kind === 'math' && String(s.latex || '').trim());
+        const eqNumSeg = para.segments.find(isEqNumSeg);
+        const buildBlockLatex = () => {
+          let tex = mathSegs[0] ? mathSegs[0].latex : '';
+          if (!para.formulaByMergedRows && mathSegs.length > 1) {
+            const allItems = [];
+            mathSegs.forEach(s => (s.items || []).forEach(it => allItems.push(it)));
+            const comb = allItems.length > 0 ? mathItemsToLatex(allItems) : '';
+            tex = comb || mathSegs.map(s => s.latex).join(' ');
+          }
+          if (tex && eqNumSeg && !para.formulaByMergedRows) {
+            tex = `${tex} \\;\\; ${String(eqNumSeg.text || '').trim()}`;
+          }
+          return tex;
+        };
         /*
          * 【整段都是"公式行"的兜底】数学层没认出字体（或 CMEX 定界符的 str 是控制符）时，
          * mathSegs 可能为空，但这一段的每一行都被 __blockMath 标记为公式行。
@@ -3787,11 +4126,12 @@
         }
         if (!hasBody && mathSegs.length > 0) {
           para.type = 'formula';
-          para.visionLatex = mathSegs[0].latex;
+          para.visionLatex = buildBlockLatex();
+          para.localMath = mathSegs.map(s => ({ text: String(s.text || ''), latex: String(s.latex || '').trim() }));
         } else if (forcedFormula) {
           para.type = 'formula';
           if (mathSegs.length > 0) {
-            para.visionLatex = mathSegs[0].latex;
+            para.visionLatex = buildBlockLatex();
             para.localMath = mathSegs.map(s => ({ text: String(s.text || ''), latex: String(s.latex || '').trim() }));
           } else {
             para.formulaByLayout = true;
@@ -4532,7 +4872,48 @@
       }
     }
     merged.push(cur);
-    return merged;
+
+    // 二次聚合：行内公式的上下标（字号小、top 偏移 ±6px）以及 CMEX 定界符（top 偏高）
+    // 在第一轮会留作独立碎片，导致公式区域叠出几十个带边框的小黄框。
+    // 将同一视觉行内纵向重叠、横向相邻的碎片并入主行高光带（保持主行高度与上下边）。
+    const byWidth = merged
+      .map((r, idx) => ({ ...r, _idx: idx }))
+      .sort((a, b) => b.width - a.width || b.height - a.height);
+    const absorbed = new Set();
+    const rowBars = [];
+    for (const host of byWidth) {
+      if (absorbed.has(host._idx)) continue;
+      absorbed.add(host._idx);
+      let left = host.left;
+      let right = host.left + host.width;
+      const top = host.top;
+      const height = host.height;
+      const centerY = top + height / 2;
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const cand of byWidth) {
+          if (absorbed.has(cand._idx)) continue;
+          const candRight = cand.left + cand.width;
+          const hNear = cand.left <= right + 12 && candRight >= left - 12;
+          if (!hNear) continue;
+          const candCenterY = cand.top + cand.height / 2;
+          const vOverlap = Math.min(top + height, cand.top + cand.height) - Math.max(top, cand.top);
+          const sameVisualRow =
+            Math.abs(centerY - candCenterY) <= Math.max(height, cand.height) * 0.62 ||
+            vOverlap >= Math.min(height, cand.height) * 0.45;
+          if (sameVisualRow) {
+            left = Math.min(left, cand.left);
+            right = Math.max(right, candRight);
+            absorbed.add(cand._idx);
+            changed = true;
+          }
+        }
+      }
+      rowBars.push({ left, top, width: right - left, height });
+    }
+    rowBars.sort((a, b) => (Math.abs(a.top - b.top) > 4 ? a.top - b.top : a.left - b.left));
+    return rowBars;
   }
 
   /**
@@ -5071,7 +5452,7 @@
    */
   function paraCacheSig(para) {
     const sig = getParaSig((para && (para.cleanText || para.text)) || '');
-    return sig && para && para.mergedMath ? `m1_${sig}` : sig;
+    return sig && para && para.mergedMath ? `m2_${sig}` : sig;
   }
 
   function findCachedTranslation(pageNum, para) {
@@ -8002,7 +8383,7 @@
     return String(s == null ? '' : s)
       .replace(/\s+/g, '')
       .replace(/[−–—‐]/g, '-')
-      .replace(/[\u0300-\u036f\u20d0-\u20ff]/g, '')
+      .replace(/[\u0300-\u036f\u20d0-\u20ff\u02c6\u02dc\u02c9\u00af\u02d9\u00a8\u02c7]/g, '')
       .trim();
   }
 
@@ -8032,6 +8413,19 @@
   }
 
 
+  function canRenderBlockFormulaAsKatex(para, latex) {
+    if (!para || !latex || !canRenderMath(latex)) return false;
+    if (para.formulaByMergedRows || para.formulaByLayout || para.formulaByShape) return false;
+    const raw = String(para.cleanText || '');
+    if (/[︷︸⎧⎨⎩⎫⎬⎭∑∏∫√]/.test(raw)) return false;
+    const segs = Array.isArray(para.segments) ? para.segments : [];
+    const mathSegs = segs.filter(s => s && s.kind === 'math' && String(s.text || '').trim());
+    const bodySegs = segs.filter(
+      s => s && s.kind === 'body' && String(s.text || '').trim() && !/^\(\s*\d+(?:\.\d+)*\s*\)$/.test(String(s.text || '').trim())
+    );
+    return mathSegs.length === 1 && bodySegs.length === 0;
+  }
+
   function renderCardFormulaHtml(para, inline) {
     const latex = String(para.visionLatex || '').trim();
     /*
@@ -8041,13 +8435,13 @@
      * 旧代码这时走 renderFigureLabelNoticeHtml（等于把公式丢掉），现在改成出裁图卡片。
      */
     /*
-     * 行间公式段一律用版面裁图（只要开关打开）：
-     * 公式的"内容"是本地永远重建不对的那一半（design-notes 根因四），而裁图是"取样"。
-     * 注意：只有**独立成段**的公式才走这里——整段只有公式（type=formula）。
-     * 正文里夹的行内公式仍走 KaTeX，那属于另一条路。
+     * 单行完整重建的独立公式（如 `b_k \hat{P}_i^t = (\hat{P}_k^t)^{-1} V_k \hat{P}_i^t`）
+     * 直接走矢量 KaTeX 渲染（清晰、适配护眼底色、可直接复制）；
+     * 多行公式、矩阵、大型算子或含 PDF 矢量分式线的行间公式仍走版面裁图。
      */
-    const cropAttr = (!inline && formulaAsImageAllowed) ? ` data-crop-para="${String(para.id)}"` : '';
-    const canCrop = !inline && formulaAsImageAllowed;
+    const preferKatex = !inline && canRenderBlockFormulaAsKatex(para, latex);
+    const cropAttr = (!inline && formulaAsImageAllowed && !preferKatex) ? ` data-crop-para="${String(para.id)}"` : '';
+    const canCrop = !inline && formulaAsImageAllowed && !preferKatex;
     if (!latex && !canCrop) return renderFigureLabelNoticeHtml(para);
     const labelAttr = cropAttr ? ' data-formula-crop-label' : '';
     const bodyHtml = latex
@@ -8083,16 +8477,12 @@
     }
 
     /*
-     * 【数学很密的段落：原文换版面截图】
-     * 实测 Xu 2020 第 4 页：一段里 8~21 处行内公式，逐字符重排出来是
-     * `tion: { ∥ ∑ ∥ ∥ 2 ∥ V t tk min …` 这种符号汤——中文译文是好的，
-     * 坏的是"原文"这一栏。这里把原文放进裁图容器（先保留现有文本当兜底，
-     * 图就绪后替换；裁图失败就什么都不变）。
+     * 【符号表（NOMENCLATURE）整块按版面截图展示】
+     * 普通含行内公式的正文段（含 mergedMath）现在已经通过 CMEX 基线对齐与同行锚点修复了阅读顺序，
+     * 走下方的逐句精读渲染，保留句子级对齐、点击高亮与 KaTeX 行内公式渲染；
+     * 只有隐式双列符号表（notationTable）才整段折叠为版面裁图。
      */
-    if (
-      formulaAsImageAllowed &&
-      (para.mergedMath || (mathRunCount(para) >= MATH_HEAVY_RUNS && hasStructuralLocalMath(para)))
-    ) {
+    if (formulaAsImageAllowed && para.notationTable) {
       return `
         <div class="sentence-pair-row math-heavy-row" data-sent-idx="0">
           <div class="sent-num">1</div>
@@ -8772,7 +9162,7 @@
         </div>
         <div class="article-section-en">${renderParaEnHtml(para.cleanText, para)}</div>
         <div class="article-section-zh" id="flowTrans_${pageNum}_${para.id}">
-          ${cachedTrans ? escapeHtml(cachedTrans) : `<span class="trans-loading"><span class="mini-spinner"></span> 正在请求翻译...</span>`}
+          ${cachedTrans ? renderZhWithMath(cachedTrans, para) : `<span class="trans-loading"><span class="mini-spinner"></span> 正在请求翻译...</span>`}
         </div>
       `;
 
@@ -8799,10 +9189,10 @@
 
   function formatOriginalParagraph(para) {
     /*
-     * 正文与公式混排的段落（8.7 合并出来的视觉行）：文本层的公式上下标与正文交错，
-     * 逐字重排一定错位。原文栏按版面裁图显示，和在「逐句精读」里保持一致。
+     * 隐式双列符号表（8.8 合并出来的 NOMENCLATURE 块）：原文栏按版面裁图显示。
+     * 普通正文与行内公式混排段保持按句切分与 KaTeX 行内公式渲染，确保点击句子高亮可用。
      */
-    if (formulaAsImageAllowed && para.mergedMath) {
+    if (formulaAsImageAllowed && para.notationTable) {
       return `<div class="para-crop" data-crop-para="${String(para.id)}">${renderParaEnHtml(para.cleanText, para)}</div>`;
     }
     if (!para.sentencesEn || para.sentencesEn.length === 0) {
@@ -8835,8 +9225,8 @@
 
     // 只有真的逐句对齐了，才把中文切成可点击的句子。
     // 否则只渲染整段译文——不再用中文标点猜切分，然后让「点中文跳英文」跳到错误的句子。
-    // 【译文也要走公式渲染】译文里的公式现在是 $...$ LaTeX（提示词要求模型转写），
-    // 残渣形式的老译文则靠视觉模型的替换表就地补渲染——两条路都通到 KaTeX。
+    // 【译文也要走公式渲染】译文里的公式现在是 $...$ LaTeX 或 ⟦...⟧ 协议标记，
+    // 统一走 renderZhWithMath 配对本地/视觉 LaTeX 并交由 KaTeX 渲染。
     if (!aligned) {
       return `<div class="zh-paragraph-plain">${renderZhWithMath(transText, para)}</div>`;
     }
@@ -8844,9 +9234,9 @@
     return cached
       .map(
         (s, idx) =>
-          `<span class="zh-sentence" data-sent-idx="${idx}" title="点击在原件中单独高亮此句">${renderEnTextHtml(
+          `<span class="zh-sentence" data-sent-idx="${idx}" title="点击在原件中单独高亮此句">${renderZhWithMath(
             s,
-            para.visionInline
+            para
           )}</span>`
       )
       .join(' ');
@@ -8882,54 +9272,46 @@
    * 不参与任何坐标/高亮：只改**送翻译的文本**，cacheKey 仍按原始 cleanText 算。
    */
   function buildMergedMathTranslateInput(para) {
-    const raw = String((para && para.cleanText) || '').trim();
+    if (!para || para.notationTable) return null;
+    const raw = String(para.cleanText || '').trim();
     if (!raw) return null;
     /*
-     * 【为什么按 token 判而不是按 para.segments】这类段落的数学层只认出零星几个字形
-     * （实测 26 条 localMath 里只有 1 条 segment），按 segment 替换等于没替换。
-     * 文本层里公式与散文的差别在"词形"上：纯符号/数字、单双字母变量、带上下标的短记号；
-     * 常见虚词（is/of/the/and…）与 ≥3 字母的小写词保留。
+     * 将本段已由数学层精确定位的多字符复杂公式片段（含上下标或命令）预先用 `⟦...⟧` 包裹，
+     * 内部保留公式原始文本（绝不再替换成无意义的 `⟦公式⟧` 占位词）：
+     *   1) 翻译模型看到明确的 `⟦...⟧` 边界后，不会把紧邻的英文正文（如 is the residual of...）吞进括号；
+     *   2) 单字母变量（L / D / S / i / j / k / t）保持原样，不再变成满屏的「⟨公式⟩」；
+     *   3) 译文返回后，renderZhWithMath 能用括号内的原始公式文本 100% 精确命中 para.segments 的规范 LaTeX；
+     *   4) 按 para.sentencesEn 逐句映射，严格保持句数一致，确保逐句对齐不失效。
      */
-    const STOP = new Set([
-      'is','of','to','in','on','at','by','as','an','or','we','it','if','be','do','so','no','up','my','he','she',
-      'the','and','for','are','was','were','its','this','that','with','from','can','has','have','not','but','all',
-      'any','our','their','they','them','then','than','when','where','which','while','will','would','should','may',
-      'might','must','also','into','over','under','between','such','each','both','more','most','other','only','same',
-      'very','use','used','using','one','two','three'
-    ]);
-    const isMathToken = tok => {
-      const t = String(tok || '').trim();
-      if (!t) return false;
-      const core = t.replace(/^[([{'"“‘]+/, '').replace(/[)\]}'",.;:!?”’]+$/, '');
-      if (!core) return false;
-      const lower = core.toLowerCase();
-      if (STOP.has(lower)) return false;
-      // 单个大写字母多半是集合/矩阵名（L / D / S），中文里保留它比换成 ⟦公式⟧ 更有信息量
-      if (/^[A-Z]$/.test(core)) return false;
-      const letters = (core.match(/[A-Za-z]/g) || []).length;
-      const digits = (core.match(/\d/g) || []).length;
-      const symbols = (core.match(/[^A-Za-z0-9]/g) || []).length;
-      if (letters === 0) return digits > 0 || symbols > 0;
-      if (symbols > 0 && letters <= 3) return true;
-      if (letters <= 2) return true;
-      if (letters <= 4 && /[A-Z]/.test(core) && /[a-z]/.test(core)) return true;
-      return false;
+    const mathSegs = (Array.isArray(para.segments) ? para.segments : [])
+      .filter(s => s && s.kind === 'math' && String(s.text || '').trim().length >= 4 && /[_^\\]/.test(String(s.latex || '')))
+      .map(s => String(s.text || '').trim())
+      .sort((a, b) => b.length - a.length);
+    if (mathSegs.length === 0) return null;
+    const wrapOne = src => {
+      let out = String(src || '');
+      const stashed = [];
+      mathSegs.forEach(m => {
+        if (!m) return;
+        let searchFrom = 0;
+        for (;;) {
+          const idx = out.indexOf(m, searchFrom);
+          if (idx < 0) break;
+          const token = `\u0000M${stashed.length}\u0000`;
+          stashed.push(`⟦${m}⟧`);
+          out = out.slice(0, idx) + token + out.slice(idx + m.length);
+          searchFrom = idx + token.length;
+        }
+      });
+      return out.replace(/\u0000M(\d+)\u0000/g, (_, i) => stashed[Number(i)]);
     };
-    const out = [];
-    let inMath = false;
-    raw.split(/\s+/).filter(Boolean).forEach(tok => {
-      if (isMathToken(tok)) {
-        if (!inMath) out.push('⟦公式⟧');
-        inMath = true;
-      } else {
-        out.push(tok);
-        inMath = false;
-      }
-    });
-    const text = out.join(' ').replace(/\s+([,.;:!?])/g, '$1').trim();
-    // 清洗后至少要有足够的散文，否则说明判错了，退回原文
-    if ((text.match(/[A-Za-z]/g) || []).length < 30) return null;
-    return { text, sentences: splitEnglishSentencesSmart(text).map(s => s.text) };
+    const baseSentences =
+      Array.isArray(para.sentencesEn) && para.sentencesEn.length > 0
+        ? para.sentencesEn.map(s => s.text)
+        : splitEnglishSentencesSmart(raw).map(s => s.text);
+    const sentences = baseSentences.map(wrapOne);
+    const text = sentences.join(' ');
+    return { text, sentences };
   }
 
   function triggerParagraphTranslate(pageNum, para, force = false) {
@@ -12196,7 +12578,7 @@ let aiPresetQuestion = '';
    *   · ASCII 上标（`Y^t`、`x^2`）。
    * 所以这三类一律转成 LaTeX——比"等模型给表"可靠，也比"不渲染"好。
    */
-  const RESIDUE_HAT_RE = /([A-Za-z])((?:\s*[\u0302\u0303])+)(\s*(?:[A-Za-z]|\d{1,2}))?/g;
+  const RESIDUE_HAT_RE = /([A-Za-z])((?:\s*[\u0302\u0303\u02c6\u02dc])+)(\s*(?:[A-Za-z]|\d{1,2}))?/g;
   const RESIDUE_CARET_RE = /(?<![A-Za-z0-9\\])([A-Za-z])\^(\{[^}]{1,14}\}|[A-Za-z0-9]{1,4})/g;
   /*
    * 裸下标（`Y 1`、`X t`）的判据要**故意收紧**，否则会误伤普通英文：
@@ -12255,7 +12637,7 @@ let aiPresetQuestion = '';
      * 剩下的裸下标再处理，避免 "Y ̂ t" 被下标规则先吃掉一半）。
      */
     s = s.replace(RESIDUE_HAT_RE, (m, letter, hats, sub) => {
-      const hatCount = (hats.match(/[\u0302\u0303]/g) || []).length || 1;
+      const hatCount = (hats.match(/[\u0302\u0303\u02c6\u02dc]/g) || []).length || 1;
       return `<span class="vision-residue-math" title="按文本层残渣转写的公式（原文侧没有 LaTeX 写法）">${renderMathSpan(
         residueToLatex(letter, hatCount, sub),
         false
@@ -12282,7 +12664,7 @@ let aiPresetQuestion = '';
      * 用户看到的是"公式没渲染出来，剩个帽子"。直接去掉。
      * 必须放在三条规则**之后**：否则 "Y ̂ t" 里那个帽子会先被这里吃掉、公式就丢了。
      */
-    s = s.replace(/(^|[^A-Za-z\u0302\u0303])([\u0302\u0303]+)/g, '$1');
+    s = s.replace(/(^|[^A-Za-z\u0302\u0303\u02c6\u02dc])([\u0302\u0303\u02c6\u02dc]+)/g, '$1');
 
     return s.replace(/\u0000M(\d+)\u0000/g, (m, i) => maths[Number(i)]);
   }
@@ -12445,20 +12827,70 @@ let aiPresetQuestion = '';
    */
   function modelLatexFor(para, residue) {
     const segs = para && Array.isArray(para.segments) ? para.segments : [];
-    if (!segs.length) return '';
     const want = normaliseMathText(residue);
     if (!want) return '';
-    const hit = segs.find(
-      s => s && s.kind === 'math' && String(s.modelLatex || '').trim() && normaliseMathText(s.text) === want
+    if (segs.length) {
+      const hitModel = segs.find(
+        s => s && s.kind === 'math' && String(s.modelLatex || '').trim() && normaliseMathText(s.text) === want
+      );
+      if (hitModel) return String(hitModel.modelLatex).trim();
+      const hitLocal = segs.find(
+        s => s && s.kind === 'math' && String(s.latex || '').trim() && normaliseMathText(s.text) === want
+      );
+      if (hitLocal) return String(hitLocal.latex).trim();
+    }
+    const localList = para && Array.isArray(para.localMath) ? para.localMath : [];
+    const hitLM = localList.find(
+      x => x && String(x.latex || '').trim() && normaliseMathText(x.text) === want
     );
-    return hit ? String(hit.modelLatex).trim() : '';
+    return hitLM ? String(hitLM.latex).trim() : '';
   }
 
   function renderParaEnHtml(text, para) {
     const src = String(text == null ? '' : text);
     if (!src) return '';
-    const inline = para && Array.isArray(para.visionInline) ? para.visionInline : [];
-    const regions = findMathRegions(src);
+    const baseInline = para && Array.isArray(para.visionInline) ? para.visionInline : [];
+    const segMath = [];
+    (para && Array.isArray(para.segments) ? para.segments : []).forEach(s => {
+      if (!s || s.kind !== 'math') return;
+      const find = String(s.text || '').trim();
+      const latex = String(s.modelLatex || s.latex || '').trim();
+      if (find.length >= 2 && latex && /[_^\\]/.test(latex)) {
+        segMath.push({ find, latex, isModel: !!String(s.modelLatex || '').trim() });
+      }
+    });
+    (para && Array.isArray(para.localMath) ? para.localMath : []).forEach(x => {
+      const find = String(x && x.text ? x.text : '').trim();
+      const latex = String(x && x.latex ? x.latex : '').trim();
+      if (find.length >= 2 && latex && /[_^\\]/.test(latex) && !segMath.some(p => p.find === find)) {
+        segMath.push({ find, latex, isModel: false });
+      }
+    });
+    const inline = [...segMath.map(x => ({ find: x.find, latex: x.latex })), ...baseInline];
+    const rawRegions = findMathRegions(src);
+    const segHits = [];
+    segMath
+      .slice()
+      .sort((a, b) => b.find.length - a.find.length)
+      .forEach(item => {
+        let from = 0;
+        for (;;) {
+          const at = src.indexOf(item.find, from);
+          if (at < 0) break;
+          const end = at + item.find.length;
+          if (!segHits.some(h => at < h.end && end > h.start)) {
+            segHits.push({ start: at, end, latex: item.latex, isModel: item.isModel });
+          }
+          from = end;
+        }
+      });
+    const regions = [...segHits];
+    rawRegions.forEach(r => {
+      if (!regions.some(h => r.start < h.end && r.end > h.start)) {
+        regions.push(r);
+      }
+    });
+    regions.sort((a, b) => a.start - b.start);
     if (regions.length === 0) return renderEnTextHtml(src, inline);
     const kept = inline.filter(it => {
       const find = it && it.find ? String(it.find) : '';
@@ -12472,29 +12904,21 @@ let aiPresetQuestion = '';
     let cursor = 0;
     regions.forEach(r => {
       if (r.start > cursor) out += renderEnTextHtml(src.slice(cursor, r.start), kept);
-      /*
-       * `data-math-source="local"` 是刻意留的**版本指纹**：
-       * 排查"用户看到的到底是新版还是旧版"时，特征串一查就知道——
-       * 新版原文侧的行内公式一定带这个属性；旧版（≤1.3.9）只会显示文本层残渣
-       * （特征：每个字形之间都有一个空格，如 `AttLT ( X l t , X l m , Y m )`）。
-       *
-       * `data-math-text` / `data-para-id` 是给**本地模型回填**用的抓手：
-       * 模型识别完只需要换掉这些 span 的内容，不必重建整段 HTML
-       * （重建会牵动 charMap 与 cleanText 的 1:1 对应，划线高亮会整体错位）。
-       * 属性值写的是**残渣原文**，回填时按它去 para.segments 里认领对应片段。
-       */
       const residue = src.slice(r.start, r.end);
       const pidAttr = para && para.id != null ? String(para.id) : '';
-      /*
-       * 【优先用本地模型结果】`r.latex` 是 `chainToLatex` 逐字符拼的：
-       * 上下标能对，但根号管到哪、分式的分子分母是谁，逐字符查表拿不到
-       * （实测 `Q_{\sqrt{\,}}\cdot K^{⊤}`——被开方数永远是空的）。
-       * 模型结果有字符守恒校验兜底，可信度高于本地拼装，所以排前面。
-       */
       const modelTex = modelLatexFor(para, residue);
       const latex = modelTex || r.latex;
-      const sourceAttr = modelTex ? 'model' : 'local';
-      const title = modelTex
+      const isModelSource =
+        r.isModel ||
+        !!(
+          para &&
+          Array.isArray(para.segments) &&
+          para.segments.some(
+            s => s && s.kind === 'math' && String(s.modelLatex || '').trim() && normaliseMathText(s.text) === normaliseMathText(residue)
+          )
+        );
+      const sourceAttr = isModelSource ? 'model' : 'local';
+      const title = isModelSource
         ? '公式（本地模型识别，已通过与 PDF 文本层的字符守恒校验）'
         : '公式（本机按 PDF 字体与位置精确抽取，非模型转写）';
       out += `<span class="local-math" data-math-source="${sourceAttr}" data-para-id="${escapeHtml(
@@ -12521,7 +12945,7 @@ let aiPresetQuestion = '';
   function residueKeyOf(s) {
     return String(s == null ? '' : s)
       .replace(/\s+/g, '')
-      .replace(/[̂̃̄̇̈̌]/g, '')
+      .replace(/[̂̃̄̇̈̌ˆ˜ˉ¯˙¨ˇ]/g, '')
       .replace(/[−–—]/g, '-')
       .toLowerCase();
   }
@@ -12555,7 +12979,11 @@ let aiPresetQuestion = '';
      * 在正文里几乎不出现。不加这一条，`S is // the set of ...`（含 `/`）也会被当成公式。
      */
     if (t.length > 30) {
-      const heavy = (t.match(/[∈∉⊂⊃∪∩∑∏∫∂∇√≈≤≥≠‖∥={}|^_]/g) || []).length;
+      const heavy = (
+        t.match(
+          /[∈∉⊂⊃∪∩∑∏∫∂∇√≈≤≥≠‖∥={}|^_\u2212±∓×÷⋅∘⊗⊕\u02c6\u02dc\u02c9\u00af\u02d9\u00a8\u02c7\u0300-\u036f\u0370-\u03ff]/g
+        ) || []
+      ).length;
       if (heavy / t.length < 0.05) return false;
     }
     return /[A-Za-z0-9\u0370-\u03ff∈∉⊂⊃∪∩∑∏∫∂∇√≈≤≥≠×÷⋅+\-*/^_{}[\]()|<>′=‖∥]/.test(t);
@@ -12756,6 +13184,20 @@ let aiPresetQuestion = '';
               bestScore = sc;
             }
           }
+          // 连续 2~3 条数学片段被模型括在同一个 ⟦...⟧ 里时，尝试组合匹配
+          for (let i = 0; i < seqPairs.length; i++) {
+            let combRaw = seqPairs[i].raw;
+            let combTex = seqPairs[i].latex;
+            for (let j = i + 1; j < seqPairs.length && j <= i + 3; j++) {
+              combRaw += ' ' + seqPairs[j].raw;
+              combTex += ' ' + seqPairs[j].latex;
+              const sc = charOverlap(combRaw, inner);
+              if (sc > bestScore) {
+                best = { raw: combRaw, latex: combTex };
+                bestScore = sc;
+              }
+            }
+          }
           if (best && bestScore >= 0.6) latex = best.latex;
         }
         if (latex) {
@@ -12768,19 +13210,13 @@ let aiPresetQuestion = '';
               inner
             )}" title="公式（本机按 PDF 字体与位置精确抽取）">${renderVisionMathHtml(latex, false)}</span>`
           });
+        } else if (String(inner).trim().length <= 24) {
+          // 短行内符号/记号（如 ⟦Eq. 5⟧、⟦(i, j)⟧、⟦Q⟧、⟦Z z z⟧）：直接原样展示可读符号，绝不吞成「⟨公式⟩」
+          asPlainText(inner.trim(), '行内符号（按原文记号显示）');
         } else {
           /*
-           * 表里没有这条：**译文里不要再贴一坨残渣**。
-           *
-           * 【为什么改】译文是给人读中文的。实测 Xu 2020 第 4 页，一句中文里插进
-           * `j ‖ (5) (i,j,t) ∈ DT} ∑ ‖ () − 1() ‖ − Vt1 −` 这种串，读者得先跳过它
-           * 才能找到下一句中文——这比"公式没渲染出来"更难受。
-           * 左侧原文（带高亮）随时可查，所以这里只留一个紧凑占位，
-           * 完整残渣放进 title，需要时悬停即可。
-           *
-           * 注意与上面 `!looksLikeFormulaResidue` 那个分支的区别：那里是"根本不是公式"
-           * （表格、被误括的正文），必须原样显示内容；这里是"是公式但没配上写法"，
-           * 显示残渣没有信息增量。
+           * 长串残渣且表里完全配不上（>24 字符的断裂行间式，如 `j ‖ (5) (i,j,t) ∈ DT} ∑ ‖ () − 1() ‖ − Vt1 −`）：
+           * 译文里不要再贴一长串乱码符号，留紧凑占位并将完整残渣放进 title 供悬停查看。
            */
           pieces.push({
             html: `<span class="vision-residue-math" title="${escapeHtml(
