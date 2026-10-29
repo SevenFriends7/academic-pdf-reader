@@ -7,7 +7,7 @@
     "color": "#0b578a",
     "theme": "dark"
   },
-  "version": "1.8.0",
+  "version": "1.8.1",
   "publisher": "paper-reader",
   "license": "MIT",
   "repository": {
@@ -243,6 +243,11 @@
           "type": "boolean",
           "default": true,
           "description": "【主题联动】纸张选「暗夜」时把 VS Code 颜色主题切到深色（见 paperThemeDark）；切回白纸/羊皮/竹青、或关闭阅读器时，恢复进入暗夜前的原主题。关闭则完全不动 VS Code 主题。"
+        },
+        "academicReader.retainPdfContext": {
+          "type": "boolean",
+          "default": true,
+          "description": "【切页】从阅读器切到其他文件再切回来时，保留阅读器状态（当前页码、滚动位置、已加载的 PDF 与译文），不再重新加载。关闭可节省内存，但每次切回都会重新打开 PDF。修改后需要 Reload Window 生效。"
         },
         "academicReader.paperThemeDark": {
           "type": "string",

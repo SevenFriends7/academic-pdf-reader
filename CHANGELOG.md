@@ -3,6 +3,12 @@
 本文件记录「文献对照翻译阅读器」的重要变更。
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.8.1] - 2026-10-29
+
+### 修复
+- **从阅读器切到其他文件再回来会重新加载**：`registerCustomEditorProvider` 原来固定 `retainContextWhenHidden: false`，切走时 VS Code 会销毁 webview，切回来重新解析 PDF、丢页码与滚动位置。现在按新设置 `academicReader.retainPdfContext`（默认 `true`）保留上下文，切回即恢复原状；关掉可省内存（需 Reload Window 生效）。
+- **同时打开多篇 PDF 时切标签可能用错论文数据**：保留上下文后切回不会重新执行 `resolveCustomEditor`，新增 `tabGroups.onDidChangeTabs` 同步"当前活动阅读器"（记 uri → paperData/webview），命令面板导出笔记/精读稿时不会再拿成另一篇的数据。
+
 ## [1.8.0] - 2026-10-29
 
 ### 新增

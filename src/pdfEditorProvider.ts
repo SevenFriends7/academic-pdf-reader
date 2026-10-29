@@ -34,6 +34,15 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
   private currentActiveWebview: vscode.Webview | undefined;
 
   /**
+   * 所有已打开的阅读器（document uri → 文档数据/webview）。
+   *
+   * 开启 retainContextWhenHidden 后，切换标签**不会**重新走 resolveCustomEditor；
+   * 再从别的 PDF 阅读器切回来时，命令面板（导出笔记/精读稿）必须能找回这个窗口的
+   * paperData 与 webview，否则会拿成另一篇论文的数据。
+   */
+  private readers = new Map<string, { uri: vscode.Uri; paperData: PaperMetadata; webview: vscode.Webview }>();
+
+  /**
    * 纸张主题联动：进入「暗夜」纸张前用户正在用的 VS Code 主题。
    * 切回白纸/羊皮/竹青、或关闭阅读器时恢复它；未进入过暗夜时为 undefined。
    */
@@ -104,6 +113,25 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
     this.formulaModel.dispose();
     // 关扩展/窗口时别把用户永久留在暗夜主题里
     void this.restorePaperTheme();
+  }
+
+  /**
+   * 根据当前激活标签同步"当前活动阅读器"。
+   *
+   * retainContextWhenHidden=true 后，切回已打开的 PDF **不会**重新执行 resolveCustomEditor，
+   * 所以 currentActiveDocUri/paperData 必须靠标签切换事件更新；否则同时开着两篇 PDF 时，
+   * 命令面板导出会用成上一篇的数据。
+   */
+  private syncActiveReaderFromTabs(): void {
+    const group = vscode.window.tabGroups.activeTabGroup;
+    const input: any = group && group.activeTab && group.activeTab.input;
+    if (!input || !(input instanceof vscode.TabInputCustom)) return;
+    if (input.viewType !== PdfDualReaderProvider.viewType) return;
+    const entry = this.readers.get(input.uri.toString());
+    if (!entry) return;
+    this.currentActiveDocUri = entry.uri;
+    this.currentActivePaperData = entry.paperData;
+    this.currentActiveWebview = entry.webview;
   }
 
   /**
@@ -270,16 +298,30 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
     disposable: vscode.Disposable;
   } {
     const provider = new PdfDualReaderProvider(context);
+    /*
+     * 【切到别的文件再切回来不要重新加载】——用户反馈："每次从阅读器切到其他文件再回来
+     * 就要重新加载一下"。旧配置 retainContextWhenHidden=false，VS Code 会把 webview 销毁，
+     * 切回来时重新 resolveCustomEditor + 重新下载/解析 PDF，页码和滚动位置也丢。
+     * 打开后保留 webview 上下文，切回即恢复原状；代价是每个打开过的阅读器常驻内存，
+     * 所以留了 academicReader.retainPdfContext 开关（默认 true）。
+     */
+    const retainPdfContext = vscode.workspace
+      .getConfiguration('academicReader')
+      .get<boolean>('retainPdfContext', true);
     const disposable = vscode.window.registerCustomEditorProvider(
       PdfDualReaderProvider.viewType,
       provider,
       {
         webviewOptions: {
-          retainContextWhenHidden: false,
+          retainContextWhenHidden: retainPdfContext,
           enableFindWidget: true
         },
         supportsMultipleEditorsPerDocument: false
       }
+    );
+    // 切换标签/打开另一篇 PDF 时，同步"当前活动阅读器"（命令面板导出用）
+    context.subscriptions.push(
+      vscode.window.tabGroups.onDidChangeTabs(() => provider.syncActiveReaderFromTabs())
     );
     return { provider, disposable };
   }
@@ -308,6 +350,7 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
       if (this.currentActiveWebview === webviewPanel.webview) {
         this.currentActiveWebview = undefined;
       }
+      this.readers.delete(document.uri.toString());
       // 关掉阅读器：把进入暗夜纸张前的 VS Code 主题恢复回来
       void this.restorePaperTheme();
     });
@@ -323,6 +366,11 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
     // 加载已有的批注和翻译数据
     const paperData = await this.storageManager.loadPaperData(document.uri);
     this.currentActivePaperData = paperData;
+    this.readers.set(document.uri.toString(), {
+      uri: document.uri,
+      paperData,
+      webview: webviewPanel.webview
+    });
 
     /**
      * 一次性清理历史遗留的"假译文"。

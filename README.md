@@ -54,6 +54,7 @@
 
 ## 🆕 最近更新
 
+- **1.8.1**：从阅读器切到其他文件再切回来不再重新加载——保留页码、滚动位置与已加载的 PDF/译文；同时修多篇 PDF 切标签时导出用错论文数据的问题。
 - **1.8.0**：纸张主题联动 VS Code——选「暗夜」纸张自动切到深色主题，切回白纸/羊皮/竹青或关闭阅读器恢复原主题；本来就是深色主题则不改。
 - **1.7.4**：修复逐句对齐反复失败——`i.i.d.` / `w.r.t.` 等学术缩写与列表编号不再被当句末；整段译文句数与英文句数严格相等时自动按句对齐；「重新尝试逐句对齐 / 重译」现在会真正绕过宿主缓存重新请求。
 - **1.7.3**：修复整页大表被误判为双栏导致的正文碎片（`7.05%.` 单独成段、列表项被拆开），表格注不再吞掉整张表；`Table 1 compares…` 这类正文引用不再把章节标题标成图表标签；编号列表项不再被当标题；公式段不再因单个符号片段被降级成正文。
@@ -111,6 +112,7 @@ DeepSeek Key 可在 [platform.deepseek.com](https://platform.deepseek.com/) 创�
 | --- | --- | --- |
 | `academicReader.formulaAsImage` | `true` | 独立公式按版面原图裁切；关闭则用 KaTeX 重建 |
 | `academicReader.followPaperTheme` | `true` | 选「暗夜」纸张时把 VS Code 切到深色主题；切回浅色纸张/关闭阅读器时恢复原主题 |
+| `academicReader.retainPdfContext` | `true` | 切到其他文件再回来不重新加载 PDF（保留页码/滚动/译文）；关闭可省内存，需 Reload Window |
 | `academicReader.paperThemeDark` | `Default Dark Modern` | 「暗夜」纸张对应的 VS Code 颜色主题名 |
 | `academicReader.segmentationEngine` | `local` | `local` 纯本地；`auto` 可疑页请视觉模型；`vision` 每页都请视觉模型 |
 | `academicReader.visionModel` | 空 | 视觉分割使用的多模态模型（如 `deepseek-flash`、`qwen-vl-max`） |
