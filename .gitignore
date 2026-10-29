@@ -49,3 +49,11 @@ scratch/vision/crop_*.png
 
 # Zotero 客户端单测的临时编译产物（由 npm run test:zotero 生成）
 dist-test/
+
+# ---- 本机测试论文（体积大，测试脚本会跳过缺失文件）----
+test-papers/
+py/__pycache__/
+*.pyc
+scratch/dstest/out-storage/
+out_vision.json
+

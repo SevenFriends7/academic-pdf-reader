@@ -77,7 +77,7 @@ jobs:
       # 每次 CI 都产出一个可下载的 vsix：这样不用发布到商店也能让别人拿到安装包，
       # 也方便在别的机器上下载安装（Actions 运行页面底部 → Artifacts）。
       - name: 打包 VSIX
-        run: npx --yes @vscode/vsce package --no-dependencies
+        run: npx --yes @vscode/vsce package --no-dependencies --baseContentUrl https://github.com/SevenFriends7/academic-pdf-reader/blob/main/ --baseImagesUrl https://fastly.jsdelivr.net/gh/SevenFriends7/academic-pdf-reader@main/
 
       - name: 上传 VSIX 产物
         uses: actions/upload-artifact@v4

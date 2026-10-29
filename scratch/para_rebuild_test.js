@@ -52,7 +52,7 @@ const check = (label, ok, extra) => {
 const build = new Function(`
   ${mathLayer}
   ${code.slice(spStart, spEnd + 1)}
-  return { buildPageMathModel, findMathRegions, splitEnglishSentencesSmart };
+  return { buildPageMathModel, findMathRegions, splitEnglishSentencesSmart, mathItemsToLatex };
 `);
 const ML = build();
 
@@ -124,6 +124,7 @@ function runCommit(items, fontNames, lineFilter) {
   const fn = new Function(
     'orderedLines', 'curParaLines', 'curParaType', 'paras', 'textContent', 'mathInfoByIdx',
     'findMathRegions', 'splitEnglishSentencesSmart', 'segmentGap', 'paraSpanGap', 'console',
+    'mathItemsToLatex',
     `${body}
      curParaLines = orderedLines.map(l => ({ ...l }));
      commitParagraph();
@@ -132,7 +133,8 @@ function runCommit(items, fontNames, lineFilter) {
   return fn(
     lines.map(l => ({ ...l })), [], 'body', [], { items }, model.byIndex,
     ML.findMathRegions, ML.splitEnglishSentencesSmart, () => null, () => 0,
-    { log() {}, warn() {}, error() {} }
+    { log() {}, warn() {}, error() {} },
+    ML.mathItemsToLatex
   );
 }
 

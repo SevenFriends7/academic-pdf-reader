@@ -736,14 +736,21 @@ console.log('\n===== T10 图注识别正则 =====');
     '(a) Figure 2: Our framework',
     '(3) Fig. 2: Architecture',
     'Box 1. Definitions',
-    'Algorithm 1: Training'
+    'Algorithm 1: Training',
+    // 3a / 3b 这类子图编号必须仍是图注
+    'Figure 3a: Sub-figure',
+    'Fig. 2b. Details'
   ];
   const negatives = [
     'as shown in Fig. 2, the model performs well.',
     'In Figure 2 we show the overall architecture.',
     'We compare with Table 1 results and find improvements.',
     'The proposed method achieves state-of-the-art results on DAVIS.',
-    '2. Related Work'
+    '2. Related Work',
+    // 表格数据行以方法名开头，不能因为 `Box`/`Algorithm` 前缀 + 罗马数字字母被当成图注
+    'BoxInst-RBox [2021] 2 ×',
+    'Algorithmic reasoning [2022] 1 ×',
+    'Point2Mask-RBox [2023] 2 ×'
   ];
   const missed = positives.filter(t => !re.test(t));
   const wrong = negatives.filter(t => re.test(t));

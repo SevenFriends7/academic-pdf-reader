@@ -3,12 +3,23 @@
 # vsce / vsce publish 按本文件过滤内容。语义与 .gitignore 相同：
 #   ** 后面的规则可以覆盖前面的规则（这与 .gitignore 一致）。
 #
-# 曾经踩过的坑：末尾写了 `!media/**` 作为"保留"规则，结果它把
-# `media/screenshots/**`（本该排除的截图）又收了回来，包体积从 524 KB 涨到 1.38 MB。
-# 现在不再使用 ! 取反规则——只排除不该进包的东西，其余默认保留。
+# 截图策略（重要）：
+#   - README 里的预览图必须用绝对 HTTPS 地址（fastly jsDelivr）：VS Code 扩展详情页
+#     的 sanitizer 默认禁止相对图片路径（allowRelativeMediaPaths=false），webview 的
+#     CSP 也只允许 img-src https: / data:。即使截图在扩展目录里也不会显示。
+#   - 市场包（vsce）：下面排除 media/screenshots/**，控制体积；图片由 README 的绝对
+#     URL 从 CDN 加载。
+#   - 本机包（package-vsix.js）：不走本文件，仍会复制整个 media（含 screenshots），
+#     但详情页实际还是走 README 里的绝对 URL。
+#   - package.json 的 vsix / publish:* 与 CI 保留
+#       --baseImagesUrl https://fastly.jsdelivr.net/gh/SevenFriends7/academic-pdf-reader@main/
+#       --baseContentUrl https://github.com/SevenFriends7/academic-pdf-reader/blob/main/
+#     作为兜底：以后若 README 又出现相对图片/链接，商店包会被改写成绝对地址；
+#     本机包不受这个兜底保护，改回相对路径会再次破图。
 #
 # 注意：本地打包脚本 package-vsix.js 用的是自己的白名单（只复制
-# package.json / README / CHANGELOG / LICENSE / 第三方声明 / dist / media），与本文件无关。
+# package.json / README / CHANGELOG / LICENSE / 第三方声明 / dist / media / py），
+# 它本来就会把 media 整个复制进包，与本文件的排除规则无关。
 
 # ---- 开发与测试资料 ----
 scratch/**
@@ -17,7 +28,14 @@ docs/**
 .vscode/**
 node_modules/**
 src/**
+test-papers/**
+dist-test/**
+mineru_out_test/**
+py/__pycache__/**
+*.pyc
+out_vision.json
 esbuild.js
+esbuild-wasm.js
 package-vsix.js
 package-all.js
 package-lock.json
@@ -37,7 +55,7 @@ tsconfig.json
 # ---- 源码映射（体积大且会暴露源码）----
 dist/*.map
 
-# ---- 商店展示用截图：README 里引用，市场从 GitHub 加载，无需进包 ----
+# ---- 商店展示截图：市场包走 CDN，本机包由 package-vsix.js 单独复制 ----
 media/screenshots/**
 
 # ---- 密钥与个人数据（万一误放于仓库根目录）----

@@ -32,6 +32,16 @@ npm run package
 > （市场的 manifest 校验更严格，要求 `<Properties>` 引擎声明、图标/许可证 `<Asset>` 等字段）。
 > 上传商店、Open VSX、以及 CI 产物，一律用 `npm run vsix`（即官方 `vsce package`）。
 
+> 🖼️ **README 截图必须用绝对 HTTPS 地址。** VS Code 扩展详情页的 sanitizer 默认禁止相对
+> 图片路径（`allowRelativeMediaPaths=false`），webview 的 CSP 也只允许 `img-src https: data:`；
+> 截图即使放在扩展目录里也不会显示。源 README 直接使用 fastly jsDelivr 绝对地址，
+> 本机包和商店包都从 CDN 加载。
+>
+> 发布脚本里的 `--baseContentUrl` / `--baseImagesUrl` 保留作兜底：以后若 README 又出现
+> 相对图片/链接，商店包会被改写成绝对地址；本机包不受这个兜底保护，改回相对路径会再次破图。
+> 如果 jsDelivr 的某个节点不可达，可以把 `fastly.jsdelivr.net` 换成
+> `gcore.jsdelivr.net` / `cdn.jsdelivr.net` 等可达镜像，并同步修改 `.vscodeignore` 里的说明。
+
 修改 `media/viewer.js` / `media/viewer.css` 不需要编译，但**需要重启 IDE 才会生效**（或 `Developer: Reload Window`）。
 
 ### 测试

@@ -91,6 +91,10 @@ function buildVsix() {
   <Default Extension="css" ContentType="text/css"/>
   <Default Extension="md" ContentType="text/markdown"/>
   <Default Extension="png" ContentType="image/png"/>
+  <Default Extension="jpg" ContentType="image/jpeg"/>
+  <Default Extension="jpeg" ContentType="image/jpeg"/>
+  <Default Extension="gif" ContentType="image/gif"/>
+  <Default Extension="webp" ContentType="image/webp"/>
 </Types>`;
   fs.writeFileSync(path.join(tempVsixDir, '[Content_Types].xml'), contentTypesXml, 'utf-8');
 

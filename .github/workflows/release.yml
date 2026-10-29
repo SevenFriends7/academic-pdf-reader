@@ -65,8 +65,10 @@ jobs:
           fi
 
       # ---- 打包（vscode:prepublish 会自动先编译）----
+      # README 里的截图是相对路径，必须在这里改写成 CDN 绝对地址；否则商店页
+      # 会把 media/screenshots/... 解析成 marketplace.visualstudio.com/media/... 而 404。
       - name: 打包 VSIX
-        run: npx --yes @vscode/vsce package --no-dependencies --allow-missing-repository
+        run: npx --yes @vscode/vsce package --no-dependencies --allow-missing-repository --baseContentUrl https://github.com/SevenFriends7/academic-pdf-reader/blob/main/ --baseImagesUrl https://fastly.jsdelivr.net/gh/SevenFriends7/academic-pdf-reader@main/
 
       - name: 收集产物名
         id: vsix

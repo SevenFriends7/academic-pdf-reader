@@ -404,6 +404,43 @@ async function scan(paper, pages) {
     check('css 长度：空值/无 px 返回 NaN', Number.isNaN(CSSLEN.cssLenToPx('', 1)) && Number.isNaN(CSSLEN.cssLenToPx('12', 1)));
   }
 
+  /*
+   * R9：纯 LaTeX 论文（ICLR/NeurIPS 原版）的正文就是 Computer Modern。
+   *
+   * 【守的是什么】用户实测 Point2RBox-v3（ICLR 2026）整篇被识别成"一堆公式"：
+   * 正文 CMR10、标题 CMSSBX10、作者 CMSS12 全部命中 MATH_FONT_RE；
+   * 于是 buildPageMathModel 把它们全当公式字形，段落 hasBody 永远为 false → 整页公式卡。
+   * 这里用一页最小样本断言：正文/标题/作者判为正文，公式（CMMI/CMSY 主体 + CMR 罗马字/括号）
+   * 仍然是公式，公式编号 `(1)` 留在正文侧。
+   */
+  {
+    const items = [
+      // #0 正文：CMR10 一整行
+      mk('Driven by the growing need for Oriented Object Detection (OOD), learning from point annotations', 70, 500, 10, 460, 'CMR10'),
+      // #1 论文标题：CMSSBX10（17pt）
+      mk('Point2RBox-v3: Self-Bootstrapping from', 145, 700, 17, 320, 'CMSSBX10'),
+      // #2 作者：CMSS12
+      mk('Teng Zhang', 75, 590, 12, 70, 'CMSS12'),
+      // #3~#8 公式 `V = Voronoi(X), (1)`：主体 CMMI，`= Voronoi(` 与 `)` 是 CMR 正体
+      mk('V', 268, 475, 10, 5.8, 'CMMI10'),
+      mk('= Voronoi(', 279, 475, 10, 48.2, 'CMR10'),
+      mk('X', 327, 475, 10, 8.3, 'CMMI10'),
+      mk(')', 336, 475, 10, 3.9, 'CMR10'),
+      mk(',', 340, 475, 10, 2.8, 'CMSY10'),
+      mk('(1)', 529, 475, 10, 12.7, 'CMR10'),
+    ];
+    const model = ML.buildPageMathModel(items, k => k, 10);
+    const mathIdx = new Set(Object.keys(model.byIndex).map(Number));
+    check('CMR10 正文行不被标成数学', !mathIdx.has(0));
+    check('CMSSBX10 标题不被标成数学', !mathIdx.has(1));
+    check('CMSS12 作者名不被标成数学', !mathIdx.has(2));
+    check('公式里的 CMMI 主体是数学', mathIdx.has(3) && mathIdx.has(5));
+    check('公式中夹的 CMR 罗马字/括号被吸收回公式（= Voronoi( / )）', mathIdx.has(4) && mathIdx.has(7));
+    check('公式编号 (1) 不被吸收（留在正文侧）', !mathIdx.has(8));
+    const runLatex = model.runs.map(r => r.latex).join(' | ');
+    check('公式 LaTeX 保留 Voronoi 且不是整页正文', /Voronoi/.test(runLatex) && !/growing need/.test(runLatex), runLatex);
+  }
+
   console.log(`\n===== 结果: ${pass} 通过 / ${fail} 失败 =====`);
   process.exit(fail === 0 ? 0 : 1);
 })().catch(e => { console.error(e); process.exit(1); });

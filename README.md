@@ -3,17 +3,21 @@
 专为学术论文研读设计的 **VS Code 双语阅读扩展**：**左侧原版 PDF、右侧对照翻译、公式按版面原图显示、双向高光联动、划线便签批注、一键导出双语精读稿**。
 
 [![VS Marketplace](https://vsmarketplacebadges.dev/version-short/paper-reader.academic-pdf-reader.svg)](https://marketplace.visualstudio.com/items?itemName=paper-reader.academic-pdf-reader)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/SevenFriends7/academic-pdf-reader/blob/main/LICENSE)
 
 **VS Code 插件市场一键安装**：[Bilingual Paper Reader](https://marketplace.visualstudio.com/items?itemName=paper-reader.academic-pdf-reader)
 
 ---
 
+<!-- 截图必须用绝对 HTTPS 地址：VS Code 扩展详情页的 sanitizer 不允许相对图片路径
+     （allowRelativeMediaPaths=false，CSP 也只放行 https: / data:），
+     图片即使放在扩展目录里也不会显示。 -->
+
 ## 🖼️ 界面预览
 
 | 左右对照与高光联动 | 划线与便签批注 | AI 论文问答 |
 | :---: | :---: | :---: |
-| ![双栏阅读](media/screenshots/01-reading-highlights.jpg) | ![批注笔记](media/screenshots/02-annotations.jpg) | ![AI 问答](media/screenshots/03-ai-qa.jpg) |
+| ![双栏阅读](https://fastly.jsdelivr.net/gh/SevenFriends7/academic-pdf-reader@main/media/screenshots/01-reading-highlights.jpg) | ![批注笔记](https://fastly.jsdelivr.net/gh/SevenFriends7/academic-pdf-reader@main/media/screenshots/02-annotations.jpg) | ![AI 问答](https://fastly.jsdelivr.net/gh/SevenFriends7/academic-pdf-reader@main/media/screenshots/03-ai-qa.jpg) |
 
 ---
 
@@ -50,11 +54,14 @@
 
 ## 🆕 最近更新
 
+- **1.7.3**：修复整页大表被误判为双栏导致的正文碎片（`7.05%.` 单独成段、列表项被拆开），表格注不再吞掉整张表；`Table 1 compares…` 这类正文引用不再把章节标题标成图表标签；编号列表项不再被当标题；公式段不再因单个符号片段被降级成正文。
+- **1.7.2**：纯 LaTeX（Computer Modern）论文不再整篇被识别成公式——按整页字体统计区分 CMR/CMSS 正文与公式字体；连续编号式子不再拼成错误 LaTeX；作者栏人名与折行 URL/DOI 不再被公式吞掉。
+- **1.7.1**：修复扩展详情页三张界面预览图不显示的问题（README 图片改为绝对 HTTPS CDN 地址）。
 - **1.7.0**：智能公式展示模式——单行独立公式直接走高清矢量 KaTeX 渲染（跳过截图裁切，支持直接复制与 AI 答疑），复杂多行与矩阵保持原图裁切；修复编号式子（如 `(2)`、`(3)`）被误判为散文而漏卡/翻译胡乱糊词的问题；优化译文公式符号清洗与 PDF 句子划线高亮二次凝聚。
 - **1.6.32**：文档重构与各模块说明完善。
 - **1.6.31**：修复段落顺序（图注误判、公式碎片乱序）、公式裁图上下留白、符号表按版面原图显示；翻译回包后补裁图；混排段落送翻前清洗公式。
-- **1.6.20**：新增**本地公式识别**（可选，默认关闭）：用本机 PP-FormulaNet 把公式裁图转成 LaTeX，供精读稿导出、问 AI 与公式索引使用。详见 [docs/formula-local-model.md](docs/formula-local-model.md)。
-- 完整版本记录见 [CHANGELOG.md](CHANGELOG.md)。
+- **1.6.20**：新增**本地公式识别**（可选，默认关闭）：用本机 PP-FormulaNet 把公式裁图转成 LaTeX，供精读稿导出、问 AI 与公式索引使用。详见 [docs/formula-local-model.md](https://github.com/SevenFriends7/academic-pdf-reader/blob/main/docs/formula-local-model.md)。
+- 完整版本记录见 [CHANGELOG.md](https://github.com/SevenFriends7/academic-pdf-reader/blob/main/CHANGELOG.md)。
 
 ---
 
@@ -92,7 +99,7 @@ DeepSeek Key 可在 [platform.deepseek.com](https://platform.deepseek.com/) 创�
 - 识别结果要过字符守恒校验（覆盖率、多余字符、结构合法性），不通过就保留原图；
 - **不参与找框**：框仍由 PDF 文本层决定，模型只负责"框里是什么"。
 
-安装与排错见 [py/README.md](py/README.md) 与 [docs/formula-local-model.md](docs/formula-local-model.md)。
+安装与排错见 [py/README.md](https://github.com/SevenFriends7/academic-pdf-reader/blob/main/py/README.md) 与 [docs/formula-local-model.md](https://github.com/SevenFriends7/academic-pdf-reader/blob/main/docs/formula-local-model.md)。
 
 ---
 
@@ -141,6 +148,6 @@ code --install-extension academic-pdf-reader-<version>.vsix --force
 
 ## 📄 许可证与开源声明
 
-- 遵循 [MIT License](LICENSE)。
-- 内嵌 [pdf.js](https://github.com/mozilla/pdf.js) (Apache-2.0) 与 [KaTeX](https://github.com/KaTeX/KaTeX) (MIT)，第三方声明详见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
+- 遵循 [MIT License](https://github.com/SevenFriends7/academic-pdf-reader/blob/main/LICENSE)。
+- 内嵌 [pdf.js](https://github.com/mozilla/pdf.js) (Apache-2.0) 与 [KaTeX](https://github.com/KaTeX/KaTeX) (MIT)，第三方声明详见 [THIRD-PARTY-NOTICES.md](https://github.com/SevenFriends7/academic-pdf-reader/blob/main/THIRD-PARTY-NOTICES.md)。
 - 欢迎提交 [Issues](https://github.com/SevenFriends7/academic-pdf-reader/issues) 或 Pull Request。

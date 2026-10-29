@@ -1222,6 +1222,99 @@
     return MATH_FONT_RE.test(n);
   }
 
+  /**
+   * 【数学字体里的「正文字体」】——这是纯 LaTeX 论文（ICLR/NeurIPS/arXiv 原版）的致命坑。
+   *
+   * 上面 MATH_FONT_RE 为了抓住公式里 CMR 的正体数字/括号，把 `CMR` 也算成数学族；
+   * 但 LaTeX 排版的原版论文**正文本身就是 CMR**（标题 CMSSBX、作者 CMSS、正文 CMR9/CMR10，
+   * 连 URL 都是 CMTT）。于是整页每一个字都命中 isMathFontName：
+   *   · buildPageMathModel 把整页正文都当成公式字形；
+   *   · 行间公式判据 mathRatio = 1.0、proseWords = 0 → 每一行都 __blockMath；
+   *   · commitParagraph 的 hasBody 永远为 false → **整篇论文变成一堆公式卡**。
+   * 实测 Point2RBox-v3（ICLR 2026）第 1 页 12 段里 9 段被判成 formula，标题/摘要都在内。
+   *
+   * 判据只认「既是数学族、又可能当正文」的族名，真正的数学族（CMMI/CMSY/CMEX/MSAM/MSBM/
+   * CambriaMath/STIX/LMMath/TeXGyre*Math）**绝不**进这里：
+   *   CM 正文族：CMR（衬线）、CMSS（无衬线）、CMTT（等宽）、CMBX（粗体）、CMTI（斜体）…
+   *   Latin Modern 正文族：LatinModernRoman…（`LatinModernMath` 是数学，必须排除）
+   *   TeX Gyre 正文族：Pagella/Termes/Bonum/Schola/Heros/Cursor（`…Math` 同样排除）
+   *
+   * 【绝不能只凭族名就把它们从数学层踢掉】Word/Elsevier 的论文正文是 Times/Nimbus，
+   * CMR 只出现在公式里（cycle/AOT/STM 三篇实测都是这样）；那种页面上 CMR 必须继续算数学。
+   * 所以真正决定「这一页的 CMR 是正文还是公式」的是 **detectBodyMathFonts 的整页统计**。
+   */
+  const MATH_TEXT_FONT_RE = /(^|[+\-])(CM(R|SS|TT|BX|TI|SL|U|Sans)|LatinModern(?!Math)|TeXGyre(Pagella|Termes|Bonum|Schola|Heros|Cursor)(?!Math))/i;
+
+  function isMathTextFontName(name) {
+    const n = String(name == null ? '' : name).replace(/^[A-Z]{6}\+/, '');
+    if (!n || !isMathFontName(n)) return false;
+    return MATH_TEXT_FONT_RE.test(n);
+  }
+
+  /**
+   * 整页统计：哪些「数学族里的正文字体」这一页真的当正文在用。
+   *
+   * 两个信号任一成立（在 cycle/AOT/STM 与 Point2RBox 共 4 篇真实 PDF 上校准过）：
+   *   ① 该字体占本页非空白字符 ≥22% —— LaTeX 正文字体一定是绝对多数（实测 CMR10 占 67%~97%）；
+   *   ② 该字体累计字母 ≥24 且至少有一个 item 含 ≥2 个英文词 —— 标题/作者/单位/URL 这类
+   *      只出现一两行的字体（CMSSBX10 / CMSS12 / CMTT9 / CMR9）靠这条兜住。
+   *
+   * 【为什么不能只看「含不含英文词」】AOT 第 5 页的 CMMI10 里就有 `sof tmax` 这种带空格的
+   * 公式片段——所以这套统计只作用于 isMathTextFontName 的族，真正的数学族不参与。
+   * 【为什么门槛是 22%】AOT/cycle/STM 每页正文占 84%~93%，公式里的 CMR 只占 0.2%~2.5%，
+   * 两边差了一个数量级，留足余量；即使某页公式特别多也不会误把 CMR 当正文。
+   */
+  function detectBodyMathFonts(items) {
+    const stats = new Map();
+    let totalChars = 0;
+    const sizeVotes = new Map();
+    (items || []).forEach(it => {
+      const t = String((it && it.str) || '');
+      if (!t.trim()) return;
+      const chars = t.replace(/\s+/g, '').length;
+      totalChars += chars;
+      const size = Math.abs((it && it.transform && it.transform[3]) || (it && it.height) || 0);
+      if (isMathTextFontName(it.font)) {
+        const rec = stats.get(it.font) || { letters: 0, chars: 0, multiWord: 0, minSize: Infinity };
+        rec.letters += (t.match(/[A-Za-z]/g) || []).length;
+        rec.chars += chars;
+        if ((t.match(/[A-Za-z]{2,}/g) || []).length >= 2) rec.multiWord += 1;
+        if (size > 0) rec.minSize = Math.min(rec.minSize, size);
+        stats.set(it.font, rec);
+      }
+      // 正文基准字号（按字母数加权投票）——标题/章节标题通常比正文大一档
+      if (size > 0 && /[A-Za-z]/.test(t)) {
+        const key = Math.round(size * 2) / 2;
+        sizeVotes.set(key, (sizeVotes.get(key) || 0) + chars);
+      }
+    });
+    let bodySize = 0;
+    let bestVote = -1;
+    sizeVotes.forEach((vote, size) => {
+      if (vote > bestVote) {
+        bestVote = vote;
+        bodySize = size;
+      }
+    });
+    const bodyFonts = new Set();
+    stats.forEach((rec, font) => {
+      const share = totalChars > 0 ? rec.chars / totalChars : 0;
+      const typewriter = /CMTT/i.test(font);
+      const isHeading = bodySize > 0 && rec.letters >= 3 && rec.minSize >= bodySize * 1.1;
+      if (
+        share >= 0.22 ||
+        (rec.letters >= 24 && rec.multiWord >= 1) ||
+        // 等宽体正文（URL/DOI/代码）：字符少但一定是正文，门槛单独放宽
+        (typewriter && rec.letters >= 6 && rec.multiWord >= 1) ||
+        // 比正文大一档的字体（标题 CMSSBX17、章节标题 CMSSBX12）：11 个字母也可能只是 "Conclusion"
+        isHeading
+      ) {
+        bodyFonts.add(font);
+      }
+    });
+    return bodyFonts;
+  }
+
   function isCombiningMark(ch) {
     const c = ch.codePointAt(0);
     return (
@@ -1996,9 +2089,17 @@
 
     normaliseCmexItems(items);
 
+    /*
+     * 这一页里哪些「数学族」其实是正文字体（纯 LaTeX 论文的 CMR/CMSS/CMTT…）：
+     * 它们不再作为公式种子；只有被式子夹住/紧贴的字形才会在下面被"吸收"回公式。
+     */
+    const bodyMathFonts = detectBodyMathFonts(items);
+
     const vGap = Math.max(1.2, (fallbackSize || 10) * 0.18);
     const hGap = 1.6;
-    const visible = items.filter(it => it.str && it.str.trim() && it.math && !it.isDelimiterExt);
+    const visible = items.filter(
+      it => it.str && it.str.trim() && it.math && !it.isDelimiterExt && !bodyMathFonts.has(it.font)
+    );
     const byIndex = {};
     /** box -> 它所在的组（下标）；用于"找与 b 真正重叠的那个字形所在的组" */
     const boxGroup = new Map();
@@ -2155,6 +2256,95 @@
         groups.push(g);
         boxGroup.set(b, g);
       });
+
+    /*
+     * ⑤ 把「正文字体夹在式子中间的字形」吸收回公式 ——— 否则 CMR 里那些 `= Voronoi(`、
+     *    括号、数字、`\mathrm` 词会留在正文侧，一条式子被拆成两半（实测式(1) 会变成
+     *    `V` + `X,` 两个公式残片、中间夹一段正文）。
+     *
+     * 【判据】只吸收数学族里的正文字体（bodyMathFonts）；且必须
+     *   ① 同一基线：|y − 组主行基线| ≤ max(2.5, 0.55×组字号)，10pt 时约 5.5pt
+     *      （上下标基线偏移 2.5~3.6pt，正文行距 ≥11pt，两头都不误伤）；
+     *   ② 横向与某一组重叠或间隙 ≤ max(1.0, 0.18×字号)：
+     *      公式里的括号/逗号/数字是紧贴的（实测 `X` 右边缘 335.9、`)` 起点 336.7 → 0.8pt），
+     *      而正文词与行内公式之间总有词距（本页实测 ≥2.5pt）。
+     *   ③ 目标组里必须至少有一个**严格数学族**字形，防止把两段正文中间的短词吸收进来。
+     *
+     * 【宽度要去掉首尾空白】pdf.js 的 item.width 含尾随空格（`annotations ` 的宽度把词距
+     * 也算进去了）；不减掉的话，紧跟在行内公式前的正文词会以"间隙 0"被吸收进公式。
+     * 空格按 0.333em 估（CMR10 的空格宽就是 3.33pt）。
+     *
+     * 跑两轮：`= Voronoi(` 先贴到右侧的 `X` 组，组边界扩到 `=` 之后，左侧可能还有
+     * 下标/括号能接上。两轮足够（真实式子最多三层），再多只会增加误吸收风险。
+     */
+    if (bodyMathFonts.size > 0) {
+      const spaceEm = 0.333;
+      const trimmedBox = b => {
+        const s = String(b.str || '');
+        const lead = (/^\s+/.exec(s) || [''])[0].length;
+        const trail = (/\s+$/.exec(s) || [''])[0].length;
+        const adv = (b.size || 10) * spaceEm;
+        return { left: b.x + lead * adv, right: b.x + (b.width || 0) - trail * adv };
+      };
+      const absorbable = items.filter(
+        it => it.str && it.str.trim() && it.math && !it.isDelimiterExt && bodyMathFonts.has(it.font)
+      );
+      const hasStrictGlyph = g => g.items.some(i => !bodyMathFonts.has(i.font));
+      const looksLikeProseItem = b => {
+        const t = String(b.str || '').trim();
+        if (t.length < 25) return false;
+        return (t.match(/[A-Za-z]{2,}/g) || []).length >= 3;
+      };
+      /*
+       * 人名/机构名：纯字母 + 空格、且每个词都大写开头（`Teng Zhang` / `Shanghai Jiao Tong University`）。
+       * 它们紧挨着上标数字（`Teng Zhang^1`），若按"贴着公式"吸收，整条作者行会被吞成一条公式
+       * （实测：第 1 页作者栏 12 个人名全被并进 math run）。公式里的罗马字是
+       * `= Voronoi(`（带运算符/括号）或 `arg max score`（全小写），不会命中这条。
+       */
+      const looksLikeNameItem = b => {
+        const t = String(b.str || '').trim();
+        if (!/^[A-Za-z][A-Za-z .'-]*$/.test(t)) return false;
+        const words = t.match(/[A-Za-z]{2,}/g) || [];
+        if (words.length < 2) return false;
+        return words.every(w => /^[A-Z]/.test(w));
+      };
+      for (let pass = 0; pass < 2; pass++) {
+        let absorbed = 0;
+        absorbable.forEach(b => {
+          if (b._absorbedToMath) return;
+          /*
+           * 长句绝不能吸收：表格单元格里的说明文字（实测 Point2RBox-v3 第 6 页
+           * `simple prior knowledge (e.g., expected shape). A full description …`）
+           * 会正好落在同一行两侧的数字中间，被"夹在式子里"的判据整段吞掉。
+           * 真正的公式罗马字/括号都短（`= Voronoi(`、`,`、`(`），25 字符 + 3 个词足够区分。
+           */
+          if (looksLikeProseItem(b) || looksLikeNameItem(b)) return;
+          const bb = trimmedBox(b);
+          let host = null;
+          let hostGap = Infinity;
+          groups.forEach(g => {
+            if (!hasStrictGlyph(g)) return;
+            const gy = g.rowY === undefined ? g.baseY : g.rowY;
+            if (Math.abs(b.y - gy) > Math.max(2.5, (g.baseSize || 10) * 0.55)) return;
+            const overlap = Math.min(bb.right, g.xEnd) - Math.max(bb.left, g.x);
+            const gap = overlap >= 0 ? 0 : Math.min(Math.abs(bb.left - g.xEnd), Math.abs(g.x - bb.right));
+            const tol = Math.max(1.0, (b.size || 10) * 0.18);
+            if (gap <= tol && gap < hostGap) {
+              hostGap = gap;
+              host = g;
+            }
+          });
+          if (!host) return;
+          host.items.push(b);
+          host.x = Math.min(host.x, bb.left);
+          host.xEnd = Math.max(host.xEnd, bb.right);
+          host.absTop = Math.max(host.absTop || 0, b.y + (b.height || b.size));
+          b._absorbedToMath = true;
+          absorbed += 1;
+        });
+        if (absorbed === 0) break;
+      }
+    }
 
     /*
      * ④ 按基线分桶后，**在每一桶内部**按 x 顺序把"被排版间距分开的同一行片段"并起来。
@@ -2491,21 +2681,23 @@
           }
         }
         if (!r) {
-          r = { y, segs: [], textLen: 0 };
+          r = { y, segs: [], textLen: 0, text: '' };
           rows.push(r);
         }
         r.textLen += len;
+        r.text += ' ' + (s.textContent || '');
         // 就近并入已有片段（间隙足够小）
         let placed = false;
         for (const sg of r.segs) {
           if (Math.min(sg.maxX, x + w) - Math.max(sg.minX, x) >= -SEG_GAP) {
             sg.minX = Math.min(sg.minX, x);
             sg.maxX = Math.max(sg.maxX, x + w);
+            sg.text = (sg.text || '') + ' ' + (s.textContent || '');
             placed = true;
             break;
           }
         }
-        if (!placed) r.segs.push({ minX: x, maxX: x + w });
+        if (!placed) r.segs.push({ minX: x, maxX: x + w, text: s.textContent || '' });
       });
       if (rows.length < 10) return FALLBACK;
 
@@ -2563,6 +2755,36 @@
         const gap = rightStart - leftClusterEnd;
         if (gap < pageW * 0.02) continue; // 太窄，不可能是沟槽
         if (rightStart < pageW * 0.2 || leftClusterEnd > pageW * 0.8) continue; // 沟槽应在页面中段
+        /*
+         * 【挡掉"表格列冒充双栏"】——这是 Point2RBox-v3 第 8 页（整页大表 Table 1）的根因。
+         *
+         * 那一页真正的结构是：上半页一张通栏表，下半页通栏正文。表格内部"方法名列（x=76~197）"
+         * 与"数字列（x=205~537）"之间恰好有一条 8pt 空白，两个簇的起点被当成了左右栏首，
+         * 于是 page 被误判成双栏（分栏线 x=210）。
+         * 后果：表格下半页的正文行按"行宽是否越过假分栏线"被劈开——
+         *   `…improvement of 3.48%…by ` / `7.05%.`（短尾变独立一段），
+         *   `…Point2RBox-v2 (56.86% / 41.`（数字被截断），读序也被打乱。
+         *
+         * 真双栏的每栏宽度约为半页（A4/Letter 实测 ~230~270pt）；表格列宽只有 ~130pt。
+         * 用"右栏起点 − 左栏起点"占页宽的比例一刀切开，两边差一倍，留足余量。
+         */
+        const colSpan = rightStart - clusters[i - 1].min;
+        if (colSpan < pageW * 0.28) continue;
+        /*
+         * 内容闸门：两侧都必须是"有正文的栏"。表格的一侧通常全是数字
+         * （本页右栏 33 行里一个英文词都没有），真双栏两侧都有成句的正文。
+         */
+        const proseLines = side => rows.filter(r => {
+          const letters = r.segs.reduce((sum, sg) => {
+            const onSide = side === 'left'
+              ? sg.minX <= leftClusterEnd + 8
+              : sg.minX >= rightStart - 8;
+            if (!onSide) return sum;
+            return sum + ((String(sg.text || '').match(/[A-Za-z]/g) || []).length);
+          }, 0);
+          return letters >= 8;
+        }).length;
+        if (proseLines('left') < 4 || proseLines('right') < 4) continue;
 
         const leftEnds = [];
         const rightEnds = [];
@@ -2609,7 +2831,7 @@
         // 两侧都必须存在"接近满栏宽的长行"。
         // 这一条专门挡掉"表格单元格被切成片段"造成的假双栏——那些片段都是短行，
         // 一旦误判成双栏，整页文字会被拆成"先左栏全部、再右栏全部"，读序彻底乱掉。
-        const colWidth = rightStart - clusters[0].min;
+        const colWidth = colSpan;
         const longLine = w => w >= colWidth * 0.55;
         if (leftWidths.filter(longLine).length < 6) continue;
         if (rightWidths.filter(longLine).length < 6) continue;
@@ -2808,7 +3030,7 @@
     // Box/Algorithm/Scheme/Chart，以及 "(a) Figure 2:" 这种带子图编号前缀的写法。
     // 注意：必须锚定在行首（正文里的 "as shown in Fig. 2" 不会命中，避免把正文误判成图注）。
     const captionLabelRegex =
-      /^(?:[(\[](?:[a-h]|\d{1,2})[)\]]\s+)?(?:(?:Extended\s+Data|Supplement(?:ary|al)?|SI)\s+)?(?:Fig(?:\.|ure)?|Tab(?:\.|le)?|Box|Algorithm|Scheme|Chart|Exhibit|TABLE)\s*\.?\s*(?:\d+|[IVXLCDM]+)(?:\s*[.:：)—–-])?/i;
+      /^(?:[(\[](?:[a-h]|\d{1,2})[)\]]\s+)?(?:(?:Extended\s+Data|Supplement(?:ary|al)?|SI)\s+)?(?:Fig(?:\.|ure)?|Tab(?:\.|le)?|Box|Algorithm|Scheme|Chart|Exhibit|TABLE)(?:\.\s*|\s+)(?:\d+[A-Za-z]?|[IVXLCDM]+)\b(?:\s*[.:：)—–-])?/i;
 
     // 4. 将 spans 严格按物理分栏分流（先分栏！绝对禁止跨栏同行排序！）
     const topHeaders = [];
@@ -3002,8 +3224,33 @@
             }
           }
           // 发现栏内图表注首行 (如 Figure 1: ...)
+          /*
+           * 【"Table 1 compares …" 是正文引用，不是表格注】——Point2RBox-v3 第 7 页实测：
+           * 这一行 99 字、以冒号结尾，下一句延续到第 8 页；它只是正文在说"表 1 比较了…"。
+           * 若当表注处理，会去扫描它**上方**的短行（`4.2 Main Results on DOTA-v1.0`），
+           * 把章节标题标成 figure-label，标题卡片直接消失。
+           */
+          const isTableReference =
+            /^(?:Tab(?:\.|le)?|TABLE)\s+\d+\s+(?:compares|shows|presents|summarizes|reports|lists|gives|provides)\b/i.test(lineText);
+          if (isTableReference) {
+            line.section = colName;
+            processed.push(line);
+            continue;
+          }
           line.section = 'caption';
           processed.push(line);
+          /*
+           * 【表格注的折行吸收必须立刻停】——Point2RBox-v3 第 8 页 Table 1 的根因之一。
+           *
+           * 表格注 `Table 1 Detection … on the DOTA-v1.0.` 本身以句号结束，**已经完整**；
+           * 旧逻辑仍按"行距 ≤ 1.8 倍行高"继续吸收折行，而表格数据行的行距只有 8.6pt，
+           * 于是一路把 30 多行表数据全吞成一条 2645 字的 caption 段落
+           * （卡片上是几千个数字，还会整段送去翻译）。
+           * 表格注以句末标点结束 → 不再吸收；万一表格注是多行（第一行没有句号），
+           * 遇到"一行里 3 个以上数字"的数据行也要停（与 extendCaptionBlocks 的口径一致）。
+           */
+          const isTableCap = /^(?:(?:Extended\s+Data|Supplement(?:ary|al)?|SI)\s+)?(?:Tab(?:\.|le)?|TABLE)\b/i.test(lineText);
+          let tableCapDone = isTableCap && /[.!?。！？]\s*$/.test(lineText);
 
           // 检查该图注上方的若干行是否为图表内部标签 (如 (d), Memory, Read, First 等)
           for (let prevIdx = processed.length - 2; prevIdx >= 0; prevIdx--) {
@@ -3029,14 +3276,25 @@
             const nextText = nextL.spans.map(s => (s.textContent || '').trim()).join(' ').trim();
             const vGap = Math.abs(lastCapY - nextL.y);
 
+            if (tableCapDone) break;
             if (captionLabelRegex.test(nextText)) break;
             if (vGap > Math.max(capFontH, 9) * 1.8) break;
             if (Math.abs(nextL.h - capFontH) > 2.0 && nextL.h > capFontH + 1.0) break;
+            /*
+             * 图注折行里绝不会出现"一行 3 个以上数字"：那是表格数据行。
+             * 不加这条时，只要某行被误认成图表注（如 `BoxInst-RBox…` 被 `Box+I` 这种
+             * 罗马数字写法命中），后面 30 多行表数据都会以 8.6pt 行距被吞进同一条 caption。
+             */
+            {
+              const numCount = (nextText.match(/(?:^|[^\w.])\d+(?:\.\d+)?/g) || []).length;
+              if (numCount >= 3) break;
+            }
 
             nextL.section = 'caption';
             processed.push(nextL);
             lastCapY = nextL.y;
             i++;
+            if (isTableCap && /[.!?。！？]\s*$/.test(nextText)) tableCapDone = true;
           }
         } else {
           line.section = colName;
@@ -3254,6 +3512,15 @@
         // 表格特征（会议、年份、多重引用、表格竖线）绝非正文句子
         if (/\b(ICLR|CVPR|ICCV|ECCV|NeurIPS|ICML|EMNLP|arXiv|AAAI|ACL)\b/i.test(t)) return false;
         if (/\[\d+\]\s+.*?\b20\d\d\b/.test(t) || t.includes('|')) return false;
+        /*
+         * 表格数据行：一行里 5 个以上数字、且字母占比很低（本页 Table 1 的数据行有 16 个数字、
+         * 字母只占 ~10%）。旧口径用"长度 > 90 就算正文"的兜底，把这类行直接判成正文，
+         * 于是 markFigureRegions 一遇到第一行数据就 break，后面 30 多行全都留在正文/图注里。
+         * 先把它排除掉，表格区域才能整块标成 figure-label（不翻译、不出卡片）。
+         */
+        const numTokens = (t.match(/(?:^|[^\w.])\d+(?:\.\d+)?/g) || []).length;
+        const lettersInT = (t.match(/[A-Za-z]/g) || []).length;
+        if (numTokens >= 5 && lettersInT < t.replace(/\s+/g, '').length * 0.35) return false;
 
         if (/^(\d+(\.\d+)*\.?|[IVXLC]+\.)\s+[A-Z]/.test(t)) return true; // 章节标题
         if (
@@ -3295,10 +3562,34 @@
             .filter(l => isTopCross || !(l.maxX < cap.minX - 25 || l.minX > cap.maxX + 25))
             .sort((a, b) => b.y - a.y); // 由近及远向下
 
+          /*
+           * 【表格区域的判据必须看内容，不能只看行距】——同一天踩过两次坑：
+           *   · 只看"第一行是不是正文"：表头 100+ 字符会被旧 `definitelyBody` 判成正文，
+           *     第一行就 break，后面 30 多行数据全留在正文（Point2RBox-v3 第 8 页）；
+           *   · 只看"行距是否变大"：表格后面紧挨着的公式/正文（行距 11~14pt）会被整段吞成
+           *     figure-label（实测 AOT 第 4 页 3 条式子、STM 第 4 页 3 条式子）。
+           * 现在只把**确实是表格行**的行标成 figure-label：数字 >=3 个、或以数字为主、
+           * 或表头/分组/表注行；遇到公式或正文立刻停。
+           */
+          const looksTableLine = t => {
+            const nums = (t.match(/(?:^|[^\w.])\d+(?:\.\d+)?/g) || []).length;
+            const letters = (t.match(/[A-Za-z]/g) || []).length;
+            const nonSpace = t.replace(/\s+/g, '').length;
+            if (nums >= 3) return true;
+            if (nums >= 1 && letters < nonSpace * 0.45) return true;
+            if (/^Methods\b/.test(t)) return true;
+            if (/^[▼▽•·]/.test(t)) return true;
+            if (/^\s*(?:[*∗†‡]|\d{1,2}\s+[A-Z]{1,3}\s*:)/.test(t)) return true;
+            return false;
+          };
+          let prevY = cap.y;
           for (const line of below) {
-            if (captionLabelRegex.test(textOf(line))) break;
-            if (line.section === 'footnote') break;
-            if (definitelyBody(line)) break;
+            if (prevY - line.y > Math.max(18, (cap.h || 9) * 1.9)) break;
+            prevY = line.y;
+            const t = textOf(line);
+            if (captionLabelRegex.test(t)) break;
+            if (line.section === 'footnote' || line.section === 'header' || line.section === 'metadata') break;
+            if (!looksTableLine(t)) break;
             line.section = 'figure-label';
           }
         } else {
@@ -4091,9 +4382,40 @@
           s &&
           s.kind === 'body' &&
           /^\(\s*\d{1,3}(?:\.\d{1,3}|[a-z])?\s*\)$/i.test(String(s.text || '').trim());
-        const hasBody = para.segments.some(s => s.kind === 'body' && s.text.trim() && !isEqNumSeg(s));
+        /*
+         * 【正文片段必须含字母】只有 `0` / `=` / `,` / 控制符这类片段的段落仍是公式段。
+         * 实测 Point2RBox-v3 第 7 页式(7)：公式被 CMR 正体数字切成 13 条 math 段 + 5 条
+         * 单字符 body 段（`0`、`=`、`,`、`\u0012`），旧判据只要看到**任意** body 片段
+         * 就判 hasBody=true → 整条式子降级成正文段，公式卡消失（用户看到的"公式被切走"）。
+         * 真正的混排正文段一定有成词字母，不会只由标点/数字组成。
+         */
+        const hasBody = para.segments.some(
+          s => s.kind === 'body' && /[A-Za-z\u4e00-\u9fff]/.test(s.text) && !isEqNumSeg(s)
+        );
         const mathSegs = para.segments.filter(s => s.kind === 'math' && String(s.latex || '').trim());
         const eqNumSeg = para.segments.find(isEqNumSeg);
+        /*
+         * 【跨多行的公式块不能拼成一条 LaTeX】
+         * 连续几条编号式子（实测 Point2RBox-v3 第 5 页式(1)(2)(3) 行距只有 15pt）会被 8.7
+         * 的"视觉行合并"并成同一个 `__mergedFormulaBlock`。此时 mathSegs 有 3 条、分属 3 条基线，
+         * `mathItemsToLatex(items)` 把三行的字形按 x 硬拼，产出
+         * `{}^{S}P L^{{}_{= Watershed(}V}= minAreaRect(…` 这种**能渲染、内容全错**的式子
+         * （比不显示危险）。这类段落一律标 formulaByMergedRows：卡片走整段版面裁图，
+         * 三条式子按 PDF 原样显示，和 1.6.28 对矩阵/式(5) 的处理口径一致。
+         * 单条式子里的上/下标最多让基线差 ~6pt，所以门槛取 0.8 倍行高（10pt 字 → 8pt）。
+         */
+        if (mathSegs.length > 1 && !para.formulaByMergedRows) {
+          const ys = [];
+          mathSegs.forEach(s => (s.items || []).forEach(it => {
+            // seg.items 是 pdf.js 的原始 textContent item（基线在 transform[5]），不是 buildPageMathModel 的 {x,y}
+            const y = Number(it && it.transform && it.transform[5]);
+            if (Number.isFinite(y)) ys.push(y);
+          }));
+          const baseH = Math.max(6, (curParaLines[0] && curParaLines[0].h) || 10);
+          if (ys.length > 1 && Math.max(...ys) - Math.min(...ys) > baseH * 0.8) {
+            para.formulaByMergedRows = true;
+          }
+        }
         const buildBlockLatex = () => {
           let tex = mathSegs[0] ? mathSegs[0].latex : '';
           if (!para.formulaByMergedRows && mathSegs.length > 1) {
@@ -4124,11 +4446,29 @@
         if (forcedFormula && curParaLines.some(l => l && l.__mergedFormulaBlock)) {
           para.formulaByMergedRows = true;
         }
-        if (!hasBody && mathSegs.length > 0) {
+        /*
+         * 【URL / DOI 折行绝不能变成公式卡】参考文献里的
+         * `https://doi.org/` + `10.1145/116873.116880.` 是同一串链接被排版折成两行；
+         * 第二行只有数字与标点、又贴着上一行，8.7 的"公式碎片"判据会把它并进视觉行，
+         * 于是孤立成一个 formula 段（实测 Point2RBox-v3 第 12 页）。它不是式子，
+         * 放回正文（不翻译时至少保留原文，不会冒出一张莫名其妙的公式图）。
+         */
+        const urlLikePara =
+          !/[\u4e00-\u9fff]/.test(para.cleanText) &&
+          /^(?:https?:\/\/|www\.|doi:\s*|10\.\d{4,}\/)/i.test(para.cleanText.trim());
+        /*
+         * 公式类型只允许把「正文段」升级成公式段。图注/表格行/章节标题这些**语义类型**必须保留：
+         * 否则表格行（只有 `✓` / `×` 这种没有字母的 body 片段）会被判成公式卡
+         * （实测 Point2RBox-v3 第 8 页 Table 1 的 `S²A-Net…` / `BoxInst-RBox…` 三行）。
+         */
+        const allowFormulaType = ![
+          'figure-label', 'caption', 'heading', 'title', 'metadata', 'footnote', 'noise', 'keywords'
+        ].includes(curParaType);
+        if (allowFormulaType && !hasBody && mathSegs.length > 0) {
           para.type = 'formula';
           para.visionLatex = buildBlockLatex();
           para.localMath = mathSegs.map(s => ({ text: String(s.text || ''), latex: String(s.latex || '').trim() }));
-        } else if (forcedFormula) {
+        } else if (allowFormulaType && forcedFormula && !urlLikePara) {
           para.type = 'formula';
           if (mathSegs.length > 0) {
             para.visionLatex = buildBlockLatex();
@@ -4138,7 +4478,7 @@
           }
         } else if (mathSegs.length > 0) {
           para.localMath = mathSegs.map(s => ({ text: String(s.text || ''), latex: String(s.latex || '').trim() }));
-        } else if (allBlockMath) {
+        } else if (allowFormulaType && allBlockMath && !urlLikePara) {
           para.type = 'formula';
           para.formulaByLayout = true;
         }
@@ -4148,7 +4488,7 @@
          * 于是被当散文送进翻译队列，回来的译文是一坨符号与中文糊在一起的东西。
          * 这里按**文本形状**再兜一层：只把"明显是一条式子"的段落改成不可翻译。
          */
-        if (para.type !== 'formula' && typeof looksLikeDisplayFormula === 'function' && looksLikeDisplayFormula(para.cleanText)) {
+        if (allowFormulaType && para.type !== 'formula' && typeof looksLikeDisplayFormula === 'function' && looksLikeDisplayFormula(para.cleanText)) {
           para.type = 'formula';
           para.formulaByShape = true;
         }
@@ -4359,6 +4699,13 @@
           (curParaLines.length === 0 || prevEndedSentence) &&
           !hasDropCap &&
           !endsWithHyphen &&
+          /*
+           * 编号列表项不是章节标题：`2. Epochs: 12 for all datasets.` 这类行
+           * 又短又以 `数字.` 开头，旧判据把它（和 `3. Augmentation: …`）当标题，
+           * 于是实验设置被拆成一张张"核心章节"卡片。真正的章节标题是
+           * `4.2 Main Results on DOTA-v1.0` / `4 Experiments`，**编号后没有冒号标签**。
+           */
+          !/^\d{1,2}\.\s+[^:]{0,40}:\s/.test(text) &&
           ((line.h > normalLineHeight * 1.28 && line.spans.length <= 5) ||
             (/^[0-9]+(\.[0-9]+)*\.?\s+[A-Z]/.test(text) && text.length <= 60) ||
             (/^(abstract|introduction|related work|background|method|methods|methodology|approach|experiments?|results?|discussion|conclusions?|references|acknowledg(e)?ments?|appendix)\b/i.test(
@@ -4387,9 +4734,37 @@
         } else if (curParaType === 'keywords' && !isKeywordLine) {
           shouldStartNew = true; nextType = 'body';
         } else if (curParaType === 'body') {
-          if (isSameColumn && prevEnded && (isIndented || (largeVGap && /^[A-Z“"'(]/.test(text)))) {
+          /*
+           * 【编号列表项不能被"首行缩进"拆开】——Point2RBox-v3 第 8 页实测：
+           *   `1. End-to-end training. These methods … test set.`
+           *   `   Our method, demonstrates an improvement of 8.61% …`
+           * 列表项的续行本来就比 `1.` 的左边距多缩进 ~13pt，旧判据把它当成"新段首行缩进"，
+           * 于是同一项被劈成两张卡片（第二张从 "Our method," 开始，看着像丢了一半）。
+           * 现在：段落首行是列表标记时，只有遇到**下一个列表编号**（且回到左边距）才断段；
+           * 普通缩进续行一律留在本段。
+           */
+          const firstLineText = curParaLines.length > 0
+            ? curParaLines[0].spans.map(s => s.textContent || '').join(' ').trim()
+            : '';
+          const paraList = /^(\d{1,2})[.)]\s+[A-Z]/.exec(firstLineText);
+          const curList = /^(\d{1,2})[.)]\s+[A-Z]/.exec(text);
+          const paraLeft = curParaLines.length > 0 ? (curParaLines[0].minX || 0) : line.minX;
+          const backToLeftEdge = line.minX <= paraLeft + 2;
+          const startsNextListItem = !!(paraList && curList && curList[1] !== paraList[1] && backToLeftEdge);
+          /*
+           * 列表项后面接普通正文段（如第 8 页 "2. Two-stage training…" 之后的
+           * "Class-wise Analysis. …"）：没有编号标记、回到左边距、而且行距明显变大。
+           * 这条必须保留，否则"列表项不按缩进断段"会把后面的正文整段并进最后一项。
+           */
+          const startsNewParagraphAfterList = !!(
+            paraList && !curList && largeVGap && prevEnded && backToLeftEdge && /^[A-Z“"'(]/.test(text)
+          );
+          if (startsNextListItem || startsNewParagraphAfterList) {
+            shouldStartNew = true;
+            nextType = 'body';
+          } else if (isSameColumn && !paraList && prevEnded && (isIndented || (largeVGap && /^[A-Z“"'(]/.test(text)))) {
             shouldStartNew = true; nextType = 'body';
-          } else if (!isSameColumn && prevEnded && isIndented && /^[A-Z“"'(]/.test(text)) {
+          } else if (!isSameColumn && !paraList && prevEnded && isIndented && /^[A-Z“"'(]/.test(text)) {
             shouldStartNew = true; nextType = 'body';
           }
         }
