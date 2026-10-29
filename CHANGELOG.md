@@ -3,6 +3,12 @@
 本文件记录「文献对照翻译阅读器」的重要变更。
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.8.0] - 2026-10-29
+
+### 新增
+- **纸张主题联动 VS Code 颜色主题**：纸张选「暗夜」时自动把 VS Code 切到深色主题（默认 `Default Dark Modern`）；切回白纸/羊皮/竹青，或关闭阅读器时恢复进入暗夜前的原主题。若 VS Code 本来就是深色主题（Monokai / Dark+ 等）则保持不动，不会强行换成默认深色。
+- 设置项：`academicReader.followPaperTheme`（默认 `true`，关掉则完全不动 VS Code 主题）、`academicReader.paperThemeDark`（指定「暗夜」对应的主题名，主题不存在时自动退回一个内置深色主题）。
+
 ## [1.7.4] - 2026-10-29
 
 ### 修复（逐句对齐反复失败）

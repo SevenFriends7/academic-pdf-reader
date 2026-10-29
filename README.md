@@ -54,6 +54,7 @@
 
 ## 🆕 最近更新
 
+- **1.8.0**：纸张主题联动 VS Code——选「暗夜」纸张自动切到深色主题，切回白纸/羊皮/竹青或关闭阅读器恢复原主题；本来就是深色主题则不改。
 - **1.7.4**：修复逐句对齐反复失败——`i.i.d.` / `w.r.t.` 等学术缩写与列表编号不再被当句末；整段译文句数与英文句数严格相等时自动按句对齐；「重新尝试逐句对齐 / 重译」现在会真正绕过宿主缓存重新请求。
 - **1.7.3**：修复整页大表被误判为双栏导致的正文碎片（`7.05%.` 单独成段、列表项被拆开），表格注不再吞掉整张表；`Table 1 compares…` 这类正文引用不再把章节标题标成图表标签；编号列表项不再被当标题；公式段不再因单个符号片段被降级成正文。
 - **1.7.2**：纯 LaTeX（Computer Modern）论文不再整篇被识别成公式——按整页字体统计区分 CMR/CMSS 正文与公式字体；连续编号式子不再拼成错误 LaTeX；作者栏人名与折行 URL/DOI 不再被公式吞掉。
@@ -109,6 +110,8 @@ DeepSeek Key 可在 [platform.deepseek.com](https://platform.deepseek.com/) 创�
 | 设置 | 默认 | 说明 |
 | --- | --- | --- |
 | `academicReader.formulaAsImage` | `true` | 独立公式按版面原图裁切；关闭则用 KaTeX 重建 |
+| `academicReader.followPaperTheme` | `true` | 选「暗夜」纸张时把 VS Code 切到深色主题；切回浅色纸张/关闭阅读器时恢复原主题 |
+| `academicReader.paperThemeDark` | `Default Dark Modern` | 「暗夜」纸张对应的 VS Code 颜色主题名 |
 | `academicReader.segmentationEngine` | `local` | `local` 纯本地；`auto` 可疑页请视觉模型；`vision` 每页都请视觉模型 |
 | `academicReader.visionModel` | 空 | 视觉分割使用的多模态模型（如 `deepseek-flash`、`qwen-vl-max`） |
 | `academicReader.visionSurgery` | `true` | 允许视觉模型合并/拆分段落（只改分段，不动坐标） |

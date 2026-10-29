@@ -34,6 +34,13 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
   private currentActiveWebview: vscode.Webview | undefined;
 
   /**
+   * 纸张主题联动：进入「暗夜」纸张前用户正在用的 VS Code 主题。
+   * 切回白纸/羊皮/竹青、或关闭阅读器时恢复它；未进入过暗夜时为 undefined。
+   */
+  private paperThemeBeforeDark: string | undefined;
+  private paperThemeDarkActive = false;
+
+  /**
    * 翻译请求合并队列。
    * 免费档 API Key 的瓶颈是「每分钟请求数(RPM)」——逐段翻译时一页 20 段就是 20 次请求，
    * 必然 429，而重试退避又让每次慢几秒，于是用户感觉"越翻越慢"。
@@ -95,6 +102,88 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
 
   dispose(): void {
     this.formulaModel.dispose();
+    // 关扩展/窗口时别把用户永久留在暗夜主题里
+    void this.restorePaperTheme();
+  }
+
+  /**
+   * 纸张主题 → VS Code 主题联动。
+   *
+   * 用户的阅读习惯：白纸/羊皮/竹青这三档是"正常阅读"，暗夜纸张才是夜读。
+   * 所以只在**进入暗夜**时把窗口切到深色主题，并记住进入前的主题；
+   * 切回任意浅色纸张（或关闭阅读器）时恢复原主题。
+   *
+   * 不做"浅色纸张强制切白"：用户可能本来就用深色 VS Code，强行切白会把整个窗口闪一下，
+   * 而且离开论文后还得再改回来。恢复原主题才是"正常"。
+   */
+  private async applyPaperTheme(paperTheme: string): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration('academicReader');
+    if (!cfg.get<boolean>('followPaperTheme', true)) return;
+    const workbench = vscode.workspace.getConfiguration('workbench');
+    const current = workbench.get<string>('colorTheme', '') || '';
+
+    if (paperTheme === 'dark') {
+      /*
+       * 用户本来就是深色主题（Monokai/Dark+…）时不要强行换成 Default Dark Modern：
+       * 暗夜纸张只要求"窗口是深色"，没必要改掉他习惯的配色。
+       */
+      const activeKind = vscode.window.activeColorTheme.kind;
+      const alreadyDark =
+        activeKind === vscode.ColorThemeKind.Dark || activeKind === vscode.ColorThemeKind.HighContrast;
+      if (alreadyDark) {
+        if (!this.paperThemeDarkActive) {
+          this.paperThemeDarkActive = true;
+          // 重载窗口/重开阅读器后，内存里的原主题丢了；用 globalState 里持久化的值恢复
+          this.paperThemeBeforeDark = this.context.globalState.get<string>('paperThemeBeforeDark');
+        }
+        return;
+      }
+      if (!this.paperThemeDarkActive) {
+        this.paperThemeDarkActive = true;
+        const saved = this.context.globalState.get<string>('paperThemeBeforeDark');
+        this.paperThemeBeforeDark = saved || current || undefined;
+        if (!saved && current) await this.context.globalState.update('paperThemeBeforeDark', current);
+      }
+      const wanted = this.pickColorTheme(cfg.get<string>('paperThemeDark', 'Default Dark Modern'), 'dark');
+      if (wanted && current !== wanted) {
+        await workbench.update('colorTheme', wanted, vscode.ConfigurationTarget.Global);
+      }
+      return;
+    }
+
+    // 浅色纸张：只有我们真的改过主题才恢复，避免无意义地重写 settings.json
+    if (this.paperThemeDarkActive) await this.restorePaperTheme();
+  }
+
+  /** 恢复进入暗夜前的主题（幂等） */
+  private async restorePaperTheme(): Promise<void> {
+    if (!this.paperThemeDarkActive) return;
+    const saved = this.context.globalState.get<string>('paperThemeBeforeDark');
+    const restore = this.paperThemeBeforeDark || saved;
+    this.paperThemeDarkActive = false;
+    this.paperThemeBeforeDark = undefined;
+    await this.context.globalState.update('paperThemeBeforeDark', undefined);
+    if (!restore) return;
+    const workbench = vscode.workspace.getConfiguration('workbench');
+    if (workbench.get<string>('colorTheme', '') === restore) return;
+    await workbench.update('colorTheme', restore, vscode.ConfigurationTarget.Global);
+  }
+
+  /**
+   * 按名称找已安装的颜色主题；设置里填的主题名不存在（换机器/卸载主题）时，
+   * 退回到内置的深色/浅色主题，避免 `workbench.colorTheme` 被写成一个空主题名。
+   */
+  private pickColorTheme(wanted: string, kind: 'dark' | 'light'): string | undefined {
+    const themes: any[] = [];
+    vscode.extensions.all.forEach(ext => {
+      const list = ext.packageJSON && ext.packageJSON.contributes && ext.packageJSON.contributes.themes;
+      if (Array.isArray(list)) themes.push(...list);
+    });
+    const byName = new Map(themes.map(t => [String(t.label || '').toLowerCase(), t]));
+    const hit = wanted ? byName.get(String(wanted).toLowerCase()) : undefined;
+    if (hit && hit.label) return String(hit.label);
+    const fallback = themes.find(t => (kind === 'dark' ? t.uiTheme === 'vs-dark' : t.uiTheme === 'vs'));
+    return fallback && fallback.label ? String(fallback.label) : undefined;
   }
 
   /**
@@ -219,6 +308,8 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
       if (this.currentActiveWebview === webviewPanel.webview) {
         this.currentActiveWebview = undefined;
       }
+      // 关掉阅读器：把进入暗夜纸张前的 VS Code 主题恢复回来
+      void this.restorePaperTheme();
     });
 
     webviewPanel.webview.options = {
@@ -258,6 +349,16 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
     // 处理来自 Webview 的交互消息
     webviewPanel.webview.onDidReceiveMessage(async (message) => {
       switch (message.type) {
+        case 'paperThemeChanged': {
+          // 纸张底色切换（default/sepia/green/dark）：按需联动 VS Code 颜色主题
+          try {
+            await this.applyPaperTheme(String(message.theme || 'default'));
+          } catch (err: any) {
+            console.warn('[AcademicReader] 切换 VS Code 主题失败（不影响阅读）:', err?.message);
+          }
+          break;
+        }
+
         case 'webviewReady': {
           try {
             const fileData = await vscode.workspace.fs.readFile(document.uri);

@@ -672,6 +672,14 @@
     try {
       localStorage.setItem('academic_paper_theme', theme);
     } catch (e) {}
+    /*
+     * 纸张主题联动 VS Code 颜色主题：
+     * 「暗夜」→ 宿主切到深色主题并记住原主题；切回 default/sepia/green → 恢复原主题。
+     * 是否真的执行由设置 academicReader.followPaperTheme 控制（默认开）。
+     */
+    try {
+      vscode.postMessage({ type: 'paperThemeChanged', theme });
+    } catch (e) {}
   }
   applyPaperTheme(currentPaperTheme);
 

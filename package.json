@@ -7,7 +7,7 @@
     "color": "#0b578a",
     "theme": "dark"
   },
-  "version": "1.7.4",
+  "version": "1.8.0",
   "publisher": "paper-reader",
   "license": "MIT",
   "repository": {
@@ -238,6 +238,16 @@
           "type": "boolean",
           "default": true,
           "description": "【公式卡片】直接显示按 PDF 版式裁下来的公式原图（推荐）。公式长得和原文一模一样，根号、分式、矩阵、上下标都不会走样；关掉则退回用文本层抽取的 LaTeX 重新排版，遇到需要结构信息的式子（根号、分式、嵌套上标）会明显更差。"
+        },
+        "academicReader.followPaperTheme": {
+          "type": "boolean",
+          "default": true,
+          "description": "【主题联动】纸张选「暗夜」时把 VS Code 颜色主题切到深色（见 paperThemeDark）；切回白纸/羊皮/竹青、或关闭阅读器时，恢复进入暗夜前的原主题。关闭则完全不动 VS Code 主题。"
+        },
+        "academicReader.paperThemeDark": {
+          "type": "string",
+          "default": "Default Dark Modern",
+          "description": "【主题联动】「暗夜」纸张要切换到的 VS Code 颜色主题名（设置 → 颜色主题 里显示的名称，如 Default Dark Modern / Default Dark+ / Monokai）。主题不存在时自动退回一个内置深色主题。"
         },
         "academicReader.formulaModel.enabled": {
           "type": "boolean",
