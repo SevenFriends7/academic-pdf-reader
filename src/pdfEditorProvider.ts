@@ -47,6 +47,8 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
     sentences: string[];
     /** 标题/摘要等已确认可翻的段落：跳过 looksNonProse 短路 */
     forceTranslate?: boolean;
+    /** 重译/重新对齐：绕过 translator 的段落内存缓存 */
+    force?: boolean;
     webview: vscode.Webview;
   }[] = [];
   private translateTimer: NodeJS.Timeout | null = null;
@@ -412,7 +414,7 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
         }
 
         case 'requestTranslate': {
-          const { page, paraIndex, cacheKey, text, sentences, forceTranslate } = message;
+          const { page, paraIndex, cacheKey, text, sentences, forceTranslate, force } = message;
           this.enqueueTranslate(webviewPanel.webview, document.uri, paperData, {
             page,
             paraIndex,
@@ -420,7 +422,9 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
             text: text || '',
             sentences: sentences || [],
             // 标题/摘要/章节标题即使很短也必须翻 —— 否则会被"非叙述内容原样保留"短路成英文
-            forceTranslate: forceTranslate === true
+            forceTranslate: forceTranslate === true,
+            // 「重译 / 重新尝试逐句对齐」必须绕过宿主内存缓存
+            force: force === true
           });
           break;
         }
@@ -768,6 +772,7 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
       text: string;
       sentences: string[];
       forceTranslate?: boolean;
+      force?: boolean;
     }
   ): void {
     if (!item.text.trim()) return;
@@ -804,7 +809,12 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
     try {
       results = await this.translator.translateParagraphsBatch(
         // forceTranslate 必须逐项透传：标题/摘要即使很短也不能被"非叙述内容"短路成英文
-        batch.map(b => ({ text: b.text, sentences: b.sentences, forceTranslate: b.forceTranslate }))
+        batch.map(b => ({
+          text: b.text,
+          sentences: b.sentences,
+          forceTranslate: b.forceTranslate,
+          force: b.force
+        }))
       );
     } catch (err: any) {
       const e = err instanceof Error ? err : new Error(String(err));

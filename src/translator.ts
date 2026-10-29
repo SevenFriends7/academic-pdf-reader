@@ -22,7 +22,7 @@ export interface StructuredParagraph {
 }
 
 /** 逐句对齐的取得方式——UI 需要如实告知用户，不能假装对齐成功 */
-export type AlignmentMode = 'sentence-json' | 'per-sentence' | 'unaligned';
+export type AlignmentMode = 'sentence-json' | 'per-sentence' | 'paragraph-split' | 'unaligned';
 
 /**
  * 容易被硬译成中文生造词的英文构词后缀（如 object-agnostic → "对象无关"）。
@@ -324,6 +324,12 @@ export class PaperTranslator {
        * 所以对**已经由版面/视觉确认是标题、摘要、章节标题**的段落，直接开这条路。
        */
       forceTranslate?: boolean;
+      /**
+       * 强制重新请求：点「重新翻译 / 重新尝试逐句对齐」时必须绕过 host 的内存缓存。
+       * 旧实现只清了 webview 侧缓存，宿主 `paraCache` 仍返回上一次的未对齐结果，
+       * 于是按钮点多少次都是同一张卡（用户反馈"怎么老是这样"）。
+       */
+      force?: boolean;
     }
   ): Promise<ParagraphTranslation> {
     const trimmed = (text || '').trim();
@@ -355,7 +361,11 @@ export class PaperTranslator {
     const key = contentKey(trimmed, lang, `${service}:${engineKey}`);
 
     const cached = this.paraCache.get(key);
-    if (cached) return cached;
+    if (cached && !opts?.force) return cached;
+    if (cached && opts?.force) {
+      // 强制重译：连宿主内存缓存一起丢掉，否则点按钮只会拿回同一份旧结果
+      this.paraCache.delete(key);
+    }
 
     const running = this.inflight.get(key);
     if (running) return running;
@@ -487,7 +497,7 @@ export class PaperTranslator {
    * 返回数组与 inputs 一一对应；某一项是 Error 表示该段需要单独重试/上报。
    */
   public async translateParagraphsBatch(
-    inputs: { text: string; sentences: string[]; forceTranslate?: boolean }[],
+    inputs: { text: string; sentences: string[]; forceTranslate?: boolean; force?: boolean }[],
     targetLang?: string
   ): Promise<(ParagraphTranslation | Error)[]> {
     const cfg = this.cfg();
@@ -502,7 +512,10 @@ export class PaperTranslator {
         const i = cursor++;
         if (i >= inputs.length) return;
         try {
-          results[i] = await this.translateParagraph(inputs[i].text, inputs[i].sentences, lang, { forceTranslate: inputs[i].forceTranslate });
+          results[i] = await this.translateParagraph(inputs[i].text, inputs[i].sentences, lang, {
+            forceTranslate: inputs[i].forceTranslate,
+            force: inputs[i].force
+          });
         } catch (e: any) {
           results[i] = e instanceof Error ? e : new Error(String(e));
         }
@@ -853,6 +866,17 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
     // translateText 内部同样会做语言校验：若整段译文也是照搬原文，它会抛错如实上报，
     // 而不是把英文当成"中文译文"显示出来。
     const whole = await this.translateText(text, lang);
+    const bySentenceCount = this.alignBySentenceCount(whole, N);
+    if (bySentenceCount) {
+      return {
+        translation: whole,
+        sentences: bySentenceCount,
+        aligned: true,
+        mode: 'paragraph-split',
+        model,
+        note: '逐句 JSON 未对齐，已按整段译文的中文句数与英文一一对应'
+      };
+    }
     return {
       translation: whole,
       sentences: [],
@@ -1154,6 +1178,30 @@ ${sentences[i]}`
   // 翻译引擎分支（自定义 OpenAI 兼容接口 / 内置免费翻译）
   // ==========================================================================
 
+  /**
+   * 兜底对齐：模型没有按 N 条返回逐句数组时，把**整段中文译文**按中文句末标点切开。
+   *
+   * 只接受"切出来的句数**恰好等于**英文句数"这一种情况——顺序天然一致，
+   * 数量严格相等，不是按标点比例硬切，也不会把两句并成一句 / 一句拆成两句。
+   * 实测 1312.6114（VAE）第 2 页：模型 JSON 只回了 4/8 条，但整段译文本身
+   * 正好是 5/8 个中文句子，按句数对齐后每句都能一一对应。
+   */
+  private splitChineseSentencesForAlign(text: string): string[] {
+    const src = String(text || '').trim();
+    if (!src) return [];
+    return (src.match(/[^。！？!?]+[。！？!?]?/g) || [])
+      .map(s => s.trim())
+      .filter(Boolean);
+  }
+
+  private alignBySentenceCount(translation: string, n: number): string[] | null {
+    if (n < 2) return null;
+    const parts = this.splitChineseSentencesForAlign(translation);
+    if (parts.length !== n) return null;
+    if (parts.some(s => !isUsable(s))) return null;
+    return parts;
+  }
+
   private async translateWithService(
     text: string,
     sentences: string[],
@@ -1265,6 +1313,22 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
     }
 
     const whole = await this.translateWithOpenAICompatible(text, lang, cfg);
+    /*
+     * 最后一道兜底：整段译文的中文句数若与英文句数严格相等，按句数 1:1 对齐。
+     * 这比"整段译文 + 英文单列 + 红色失败提示"对读者有用得多，且没有猜切分
+     * （顺序与数量都严格一致才采用）。
+     */
+    const bySentenceCount = this.alignBySentenceCount(whole, N);
+    if (bySentenceCount) {
+      return {
+        translation: whole,
+        sentences: bySentenceCount,
+        aligned: true,
+        mode: 'paragraph-split',
+        model: modelName,
+        note: `逐句 JSON 未对齐（${mismatch}），已按整段译文的中文句数与英文一一对应`
+      };
+    }
     return {
       translation: whole,
       sentences: [],

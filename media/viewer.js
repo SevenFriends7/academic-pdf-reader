@@ -4939,8 +4939,10 @@
     // 极其常见，结果是整段被吞成一句、逐句对齐彻底失效。
     // 单字母缩写（J. Smith）在正文里远少于变量名后跟句号，两害相权取其轻。
     const ABBREV_RE = new RegExp(
-      '(?:\\b(?:et\\s+al|e\\.g|i\\.e|cf|vs|etc|fig|figs|tab|eq|eqs|ref|refs|no|vol|pp|sec|secs|ch|chap|' +
-        'dr|mr|mrs|ms|prof|approx|ca|min|max|avg|std|ed|eds|al|inc|ltd|univ|dept|resp|suppl)\\.)$',
+      '(?:\\b(?:et\\s+al|e\\.g|i\\.e|i\\.i\\.d|w\\.r\\.t|a\\.k\\.a|s\\.t|w\\.l\\.o\\.g|cf|vs|etc|fig|figs|tab|eq|eqs|ref|refs|no|vol|pp|sec|secs|ch|chap|' +
+        'dr|mr|mrs|ms|prof|approx|ca|min|max|avg|std|ed|eds|al|inc|ltd|univ|dept|resp|suppl)\\.' +
+        // 任意 "i.i.d." / "w.r.t." / "U.S." 形式的点号缩写：至少两个"字母+点"
+        '|(?:^|[\\s(])(?:[A-Za-z]\\.){2,})$',
       'i'
     );
     // 纯序号/列表标记："1." "2)" "(3)" "III." "a)" —— 它们不是句子，必须跟后面的文字在一起
@@ -4956,6 +4958,22 @@
         searchFrom = match.index + match[0].length;
         continue;
       }
+
+      /*
+       * 【列表编号不能当句末】——实测 1312.6114（VAE）第 2 页：
+       *   `… three related problems in the above scenario: 1. Efficient approximate ML …`
+       * 被切成「… scenario: 1.」+「Efficient approximate ML …」两句，整段逐句对齐因此错位。
+       * 纯数字编号（`1.` / `2.`）后面紧跟大写正文时，它属于下一句的引导标记。
+       */
+      const nextRaw = text.slice(endPos).replace(/^\s+/, '');
+      if (/(?:^|:\s*)\d{1,2}\.$/.test(body) && /^[A-Z]/.test(nextRaw)) continue;
+      /*
+       * 【分号后的 (2)/(3) 是列表枚举，不是公式编号】：
+       *   `The process consists of two steps: (1) …; (2) a value x(i) is generated …`
+       * 旧逻辑把 `; (2)` 当"公式编号收尾"，在 `(2)` 后断句，下一句以 `a value` 开头。
+       * 下一句以小写开头时，保留在同一句里。
+       */
+      if (/^[,;]/.test(match[1]) && /^[a-z]/.test(nextRaw)) continue;
 
       // 检查是否有公式序号被粘在末尾：形如 "... . (3)"
       const trailingEqMatch = body.match(/([.?!]["'”’)\]]?)\s*(\((?:[1-9]\d{0,2}|[A-Z]?\d+(?:\.\d+)*)\))$/);
@@ -9791,7 +9809,9 @@
       cacheKey: cacheKey,
       text: sendText,
       sentences: sendSentences,
-      forceTranslate: forceTranslate
+      forceTranslate: forceTranslate,
+      // 重译 / 重新尝试逐句对齐：必须让宿主绕过它自己的内存缓存
+      force: force === true
     });
 
     const watchdog = setTimeout(() => {

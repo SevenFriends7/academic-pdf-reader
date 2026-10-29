@@ -7,7 +7,7 @@
     "color": "#0b578a",
     "theme": "dark"
   },
-  "version": "1.7.3",
+  "version": "1.7.4",
   "publisher": "paper-reader",
   "license": "MIT",
   "repository": {
@@ -318,6 +318,7 @@
     "prevsix": "node scratch/check_version.js",
     "test:para": "node scratch/para_rebuild_test.js",
     "test:math": "node scratch/math_layer_test.js",
+    "test:sentence": "node scratch/sentence_split_test.js",
     "test:formula-crop": "node scratch/formula_crop_extra_test.js",
     "test:zhmath": "node scratch/zh_math_subst_test.js",
     "test:zotero": "npx tsc src/zoteroClient.ts --outDir dist-test --module commonjs --target es2020 --skipLibCheck --esModuleInterop && node scratch/zotero/zotero_client_test.js && node scratch/zotero/viewer_zotero_test.js && node scratch/zotero/vision_index_test.js && node scratch/zotero/highlight_map_test.js",
