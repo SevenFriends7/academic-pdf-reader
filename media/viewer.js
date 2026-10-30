@@ -5284,6 +5284,156 @@
       }
     })();
 
+    /*
+     * ============ 9.6 跨页续接：上一页的残句并到本页首条正文上 ============
+     *
+     * 【问题】一页排不下的一句话被页边界切断后，两半各自成为"段落"：
+     *   p4 末段 “… It follows”           → 单独送去翻译，译文停在半句上；
+     *   p5 首段 “that a differentiable …” → 以小写字母开头，模型只能猜着翻，读起来是断句。
+     * 基准里的 `lower-start` 一大半就是这种形状（VAE p4→p5、Point2RBox-v2 p2→p3 都是）。
+     *
+     * 【为什么是"并到本页首段"而不是"存一份 pending 状态等翻译"】
+     * 本阅读器一次只装一页 DOM，译文卡片也只按当前页渲染；把上一页的残句拼进**本页首段的
+     * cleanText**，翻译、逐句对齐、精读稿导出、AI 上下文全都是一条完整句子，不需要第二套状态机，
+     * 也不会出现"两段各翻一遍、卡片里同一句话出现两次"。
+     * 翻回上一页时那一段仍是原样（它自己就是残句，没有第二页的信息可用），所以合并是单向的、
+     * 幂等的：本页重建多少次，拼出来的文本都完全一样。
+     *
+     * 【数据来源】pageParaArchive（每页渲染完就归档的轻量快照：type/cleanText/sentencesEn）。
+     * 它**不含 DOM**、按页号索引、重开文档后还能从宿主回填，所以"直接跳到第 5 页"时
+     * 只要第 4 页读过一次，照样能接上。
+     *
+     * 【只认"确实是残句"】宁可漏接，也绝不把两段无关的正文粘起来：
+     *   · 只处理 type=body，且是本页**第一条正文**（标题/图注/公式/脚注/算法块一律不参与）；
+     *   · 本页首段必须以**小写字母**开头（新句子不会这样开头）；
+     *   · 上一页最后一条正文必须**没有收句**（句末无 `.!?`），也不是列表/公式引导（冒号结尾）；
+     *   · 上一页末段与本页首段之间不能隔着章节标题（那说明已经另起一节了）；
+     *   · `where/which/here…` 开头的是上式的解释子句，不是续句，明确排除。
+     *
+     * 【两类实测误粘，靠文本形状挡掉（都不看具体论文）】
+     *   ① 上一页末段其实是**作者/机构块**（页 1 的 affiliation 常被归成 body，见 P2），
+     *      末尾没有句号 → 会被当成残句。这类文本里机构名/邮箱密度极高，≥3 处直接放弃。
+     *   ② 本页首段其实是**表格行**（`wO E2E DOTA FCOS …`），只是碰巧以小写字母开头。
+     *      真散文一定含英文虚词，整行短标签/数字/大写缩写则没有 —— 用这一条挡。
+     *      被挡掉的表格行不占位：继续看本页下一条正文（表格页的续句常在其后）。
+     */
+    (function joinAcrossPageBreak() {
+      if (!(pageNum > 1)) return;
+
+      const prevParas = (() => {
+        try {
+          if (typeof stubs !== 'undefined' && stubs && stubs.pageParaArchive) {
+            return stubs.pageParaArchive.get(pageNum - 1) || null;
+          }
+          if (typeof pageParaArchive !== 'undefined' && pageParaArchive && typeof pageParaArchive.get === 'function') {
+            return pageParaArchive.get(pageNum - 1) || null;
+          }
+        } catch (e) {
+          /* 拿不到上一页就当没有跨页续接，绝不影响本页版面 */
+        }
+        return null;
+      })();
+      if (!Array.isArray(prevParas) || prevParas.length === 0) return;
+
+      // 上一页最后一条正文；倒着找，但一遇到标题就说明这句已经在上一个章节里结束了
+      let tailPara = null;
+      for (let i = prevParas.length - 1; i >= 0; i--) {
+        const p = prevParas[i];
+        if (!p) continue;
+        if (p.type === 'heading' || p.type === 'title') return;
+        if (p.type === 'body') {
+          tailPara = p;
+          break;
+        }
+      }
+      if (!tailPara) return;
+      const prevText = String(tailPara.cleanText || '').trim();
+      if (!prevText) return;
+      /*
+       * 作者/机构块不是句子：即便它没有句号，也不能拿它当前缀。
+       * 判据是"机构名/邮箱的密度"，不是行数或长度（pointobb 第 1 页那块有 1583 字）。
+       */
+      const affiliationHits = (prevText.match(/(?:universit|institut|department|dept\.|college|academy|laborator|school of|e-?mail|correspond(?:ing)? author|@)/gi) || []).length;
+      if (affiliationHits >= 3) return;
+      /*
+       * 去掉句末的公式/控制符碎片再判断：页底常挂着一条式子的半个字形
+       * （实测 VAE p4 正文末尾是 `… A proof is as follows. ∏`，那个 ∏ 是下面式子的积分号），
+       * 直接判"末尾不是句号"会把整段当成残句。
+       * 结尾的 ASCII 连字符必须**保留**——`… Single Point Super-` 是折行断词，
+       * 下面的折词拼接口径要靠它（去掉就会拼成 `Super vised`）。
+       */
+      const cleanedPrev = prevText.replace(/[\u0000-\u001f]+/g, ' ').trim().replace(/[^\w\s,;:)\]}'"-]+$/u, '').trim();
+      if (!cleanedPrev) return;
+      if (/[.!?。！？]["'”’)\]]*$/.test(cleanedPrev)) return; // 已经收句
+      if (/[:：;]\s*$/.test(cleanedPrev)) return; // 列表/公式引导，不是半句
+
+      /*
+       * 残句 = 最后一个句末标点之后的那一截。
+       * 没有句末标点（整段就是半句）时整段都算残句。
+       */
+      const lastBoundary = cleanedPrev.match(/[\s\S]*[.!?。！？]["'”’)\]]*\s+/);
+      let tail = (lastBoundary ? cleanedPrev.slice(lastBoundary[0].length) : cleanedPrev).trim();
+      if (!tail) return;
+      // 纯公式/数字碎片（`(3)`、`∏`）没有可续的词，接上去只会更乱
+      if (!/[A-Za-z]/.test(tail)) return;
+      /*
+       * 超过 240 字就不是"半句话"了：整段照搬过来会让本页卡片里重复一大段刚读过的内容。
+       * 只截取尾部、在词边界处断开，并用 `… ` 明确标出省略。
+       */
+      const TAIL_MAX = 240;
+      if (tail.length > TAIL_MAX) {
+        const cut = tail.slice(tail.length - TAIL_MAX);
+        const spaceAt = cut.indexOf(' ');
+        tail = `… ${spaceAt >= 0 ? cut.slice(spaceAt + 1) : cut}`;
+      }
+
+      /*
+       * 在本页的正文段里找"该接上这句"的那一段：按阅读顺序看，第一条合格的才接。
+       * 表格行/公式碎片会被下面的虚词判据挡掉，于是续句落到它后面那段真正的散文上。
+       */
+      const PROSE_WORD_RE = /\b(?:a|an|the|of|and|to|in|is|are|was|were|that|this|these|those|with|for|by|be|as|we|it|on|at|from|which|can|has|have|not|but|or|its|their|our)\b/i;
+      let target = null;
+      let headRaw = '';
+      for (const cand of paras) {
+        if (!cand || cand.type !== 'body') continue;
+        // 算法块/符号表整块是"按版面裁图 + 一句说明"，拼字进去只会打乱裁图范围
+        if (cand.algorithm || cand.notationTable) continue;
+        const raw = String(cand.cleanText || '');
+        const text = raw.trim();
+        if (!/^[a-z]/.test(text)) continue;
+        // 上式解释子句（`where L is …`）：它承接的是一条公式，不是上一页的句子
+        if (/^(where|which|whom|whose|here|thereby|whereas)\b/i.test(text)) continue;
+        // 表格行/短标签不是散文：没有虚词就跳过（继续看下一条正文）
+        if (!PROSE_WORD_RE.test(text.slice(0, 240))) continue;
+        target = cand;
+        headRaw = raw;
+        break;
+      }
+      if (!target) return;
+
+      /*
+       * 折行连字符（`… Point Super-` + `vised …`）按跨栏续接的同一口径处理：
+       * 去掉连字符、不加空格，拼回一个词。
+       */
+      const splitWord = /-$/.test(tail);
+      const prefix = splitWord ? tail.slice(0, -1) : `${tail} `;
+
+      target.cleanText = prefix + headRaw;
+      /*
+       * charMap 必须与 cleanText 严格 1:1。前缀这些字**不在本页的文字层里**
+       * （它们在上一页的 DOM 上，早已销毁），所以挂 span: null ——
+       * 这正是本文件既有的"安全垫"口径：span 为 null 的字符不参与高亮，
+       * 不会把高亮画到别的字上，也不会有跨页的悬空节点。
+       */
+      const pad = new Array(prefix.length);
+      for (let i = 0; i < prefix.length; i++) pad[i] = { span: null, offset: 0 };
+      target.charMap = pad.concat(target.charMap || []);
+      // 句子的 startIdx/endIdx 必须按**拼好之后**的文本重算，否则首句高亮会整体偏移
+      target.sentencesEn = splitEnglishSentencesSmart(target.cleanText);
+      target.continuedFromPage = pageNum - 1;
+      target.continuedText = tail;
+    })();
+
     let bodyCount = 0;
     paras.forEach(p => {
       if (p.type === 'body') {
@@ -9484,12 +9634,24 @@
         metaLabel = `<span class="para-index-tag">正文 第 ${para.bodyIndex || (para.id + 1)} 段</span>`;
       }
       const typeTag = typeBadgeMap[para.type] || '';
+      /*
+       * 跨页续接标记。
+       *
+       * 这一段的首句开头那几个词是**上一页**的残句（见 buildAcademicLayout 的 9.6）：
+       * 它们参与了翻译，所以必须显示出来，读者才知道中文为什么从半句中间开始讲；
+       * 但它们不在本页的文字层里，点首句高亮时只有属于本页的后半截会被框住。
+       * 不标出来，读者会以为卡片里的原文和左侧页面显示的不是同一段。
+       */
+      const continuedTag = para.continuedFromPage
+        ? `<span class="para-type-tag type-continued" title="句首承接第 ${para.continuedFromPage} 页末句；左侧本页只显示属于本页的那部分">⟵ 承接第 ${para.continuedFromPage} 页</span>`
+        : '';
 
       card.innerHTML = `
         <div class="trans-card-header">
           <div class="para-meta">
             ${metaLabel}
             ${typeTag}
+            ${continuedTag}
           </div>
           <div class="card-actions">
             <div class="view-mode-pill">

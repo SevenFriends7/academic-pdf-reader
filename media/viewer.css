@@ -1245,9 +1245,20 @@ body.debug-text-layer .textLayer span {
 .para-type-tag.type-body, [data-type="body"] .para-type-tag {
   background: #f3e8ff; color: #6d28d9; border: 1px solid #d8b4fe;
 }
+/*
+ * 跨页续接标记：这一段的首句是从上一页接过来的。
+ * 用中性灰蓝而不是"正文紫"，一眼能和段落类型标签区分开——
+ * 它是**来源提示**，不是内容分类。
+ */
+.para-type-tag.type-continued, [data-type="continued"] .para-type-tag {
+  background: #eef2f7; color: #475569; border: 1px dashed #94a3b8; font-weight: 500;
+}
 
 body.theme-paper-dark .para-type-tag.type-title {
   background: rgba(245, 158, 11, 0.2); color: #fcd34d; border-color: rgba(245, 158, 11, 0.4);
+}
+body.theme-paper-dark .para-type-tag.type-continued {
+  background: rgba(148, 163, 184, 0.18); color: #cbd5e1; border-color: rgba(148, 163, 184, 0.5);
 }
 body.theme-paper-dark .para-type-tag.type-abstract {
   background: rgba(14, 165, 233, 0.2); color: #7dd3fc; border-color: rgba(14, 165, 233, 0.4);

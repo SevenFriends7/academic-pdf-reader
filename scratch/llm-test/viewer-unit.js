@@ -1504,6 +1504,149 @@ console.log('\n===== T14 跨栏续接（真实数据） =====');
   checkTrue('中间隔着正文 → 不跨段合并', p6.length === 3, `剩 ${p6.length} 段`);
 })();
 
+// ---------- 14b. 跨页续接：上一页的残句并到本页首条正文（P0） ----------
+console.log('\n===== T14b 跨页续接（真实文本形态） =====');
+(function pageBreakJoinTest() {
+  const start = code.indexOf('(function joinAcrossPageBreak() {');
+  /*
+   * 【右锚点必须带缩进】这段 IIFE 内部还有 `(() => { … })();`（取上一页快照的那个箭头函数），
+   * 直接找 `})();` 会切在它自己的结尾上 → 切出来的片段缺右花括号，
+   * `new Function` 抛 `SyntaxError: Unexpected end of input`（本测试第一次跑就踩到了）。
+   * 外层 IIFE 的结尾缩进是 4 个空格，内层是 6 个，用 `\n    })();` 才能唯一命中。
+   */
+  const end = code.indexOf('\n    })();', start);
+  if (start < 0 || end < 0) {
+    checkTrue('从产物中抽出 joinAcrossPageBreak', false, '未找到该片段');
+    return;
+  }
+  /*
+   * 这段 IIFE 依赖四样东西：本页页号、本页段落、切句器、上一页的段落快照。
+   * 真实 webview 里快照来自 pageParaArchive（每页渲染完即归档，不含 DOM）；测试用 Map 顶替。
+   */
+  // eslint-disable-next-line no-new-func
+  const run = new Function(
+    'pageNum',
+    'paras',
+    'splitEnglishSentencesSmart',
+    'pageParaArchive',
+    // `\n    })();` 共 10 个字符，切片要把它整个带上（少带一个字符就是语法错误）
+    `${code.slice(start, end + 10)}`
+  );
+  const split = t => t.split(/(?<=[.!?])\s+/).filter(Boolean);
+  /*
+   * 跨页续接要重算 sentencesEn 的 startIdx/endIdx，必须用**真实切句器**，
+   * 上面那个只返回字符串的 split 不够（句子高亮靠的就是这两个下标）。
+   */
+  const realSplit = T.splitEnglishSentencesSmart;
+  const spanStub = () => ({ setAttribute() {} });
+  const mkPara = (id, type, text, extra) => Object.assign({
+    id,
+    type,
+    cleanText: text,
+    charMap: Array.from(text).map(() => ({ span: spanStub(), offset: 0 })),
+    rawSpans: [spanStub()],
+    sentencesEn: []
+  }, extra || {});
+  const archiveOf = (pageNum, paras) => {
+    const m = new Map();
+    m.set(pageNum, paras.map(p => ({ id: p.id, type: p.type, cleanText: p.cleanText })));
+    return m;
+  };
+  const charMapOk = p => (p.charMap || []).length === String(p.cleanText || '').length;
+  const sentOk = p => (p.sentencesEn || []).every(s => String(p.cleanText).slice(s.startIdx, s.endIdx) === s.text);
+
+  // 正例（真实 VAE p1→p2）：上一页以 "It is, for example," 收尾，本页从 half-sentence 接上
+  const prevPage = [mkPara(0, 'heading', '2.2 Optimizing the VAE', null), mkPara(1, 'body', 'inference on the (global) parameters, and variational inference on the latent variables. It is, for example,')];
+  const b1 = mkPara(0, 'body', 'straightforward to extend this scenario to the case where we also perform variational inference on the global parameters; that algorithm is put in the appendix.');
+  const page1 = [b1];
+  run(2, page1, realSplit, archiveOf(1, prevPage));
+  checkTrue('残句被并到本页首条正文', b1.continuedFromPage === 1, `continuedFromPage=${b1.continuedFromPage}`);
+  checkTrue(
+    '合并后是一整句（It is, for example, straightforward to …）',
+    /^It is, for example, straightforward to extend this scenario/.test(b1.cleanText),
+    b1.cleanText.slice(0, 80)
+  );
+  checkTrue('charMap 与 cleanText 仍严格 1:1', charMapOk(b1), `${(b1.charMap || []).length} vs ${b1.cleanText.length}`);
+  checkTrue('前缀字符挂 span:null（不参与高亮）', b1.charMap[0].span === null, JSON.stringify(b1.charMap[0]));
+  checkTrue('句子下标按合并后重算且自洽', sentOk(b1) && (b1.sentencesEn[0] || {}).text.startsWith('It is, for example,'), JSON.stringify((b1.sentencesEn[0] || {}).text || '').slice(0, 60));
+
+  // 正例（真实 VAE p4→p5，验收项）：上一页正文收在 "It follows"（这一页的下一句就是它的续句）
+  const page4 = [mkPara(0, 'body', 'Therefore, ∫ q φ (z | x) f (z) dz = p (ε) f (g φ (ε, x)) d ε. It follows')];
+  const b2 = mkPara(3, 'body', 'that a differentiable estimator can be constructed: ∫ q φ (z | x) f (z) dz where ε ∼ p (ε).');
+  run(5, [b2], realSplit, archiveOf(4, page4));
+  checkTrue(
+    'VAE p4→p5：It follows / that a differentiable… 合成一张卡',
+    b2.continuedFromPage === 4 && /^It follows that a differentiable estimator/.test(b2.cleanText),
+    `from=${b2.continuedFromPage} ${b2.cleanText.slice(0, 60)}`
+  );
+
+  /*
+   * 反例（同一页的真实形态）：段落**已经用句号收句**，只是页底还挂着式子的半个字形 `∏`。
+   * 去掉尾部的公式碎片后是一个完整句子 → 不许把下一页的 "that a differentiable…" 接上去。
+   */
+  const b3 = mkPara(0, 'body', 'that a differentiable estimator can be constructed: ∫ f (z) dz.');
+  run(5, [b3], realSplit, archiveOf(4, [mkPara(0, 'body', 'This reparameterization is useful. A proof is as follows. ∏')]));
+  checkTrue('句末只有公式碎片（∏）不算残句 → 不合并', !b3.continuedFromPage, b3.cleanText.slice(0, 50));
+
+  // 反例 1：上一页已经收句 → 不合并
+  const donePage = [mkPara(0, 'body', 'Common applications include image denoising and super-resolution.')];
+  const c1 = mkPara(0, 'body', 'which can also be written as: a product of two factors.');
+  run(2, [c1], split, archiveOf(1, donePage));
+  checkTrue('上一页已收句 → 不合并', !c1.continuedFromPage, c1.cleanText.slice(0, 40));
+
+  // 反例 2：本页首段大写开头（新句子）→ 不合并
+  const c2 = mkPara(0, 'body', 'Methods based on point supervision are affordable.');
+  run(2, [c2], split, archiveOf(1, [mkPara(0, 'body', 'the previous page stops in the middle of')]));
+  checkTrue('本页首段大写开头 → 不合并', !c2.continuedFromPage);
+
+  // 反例 3：`where …` 是上式解释子句，不是续句
+  const c3 = mkPara(0, 'body', 'where the minibatch X M is a randomly drawn sample of M datapoints.');
+  run(2, [c3], split, archiveOf(1, [mkPara(0, 'body', 'the previous page stops in the middle of')]));
+  checkTrue('where 子句 → 不跨页合并', !c3.continuedFromPage);
+
+  // 反例 4（真实 Point2RBox-v3 p1→p2）：上一页末段其实是作者/机构块
+  const affil = '1 Shanghai Jiao Tong University, 2 South China University of Technology, 3 Nankai University, 4 The Chinese University of Hong Kong, 5 Nanjing University';
+  const c4 = mkPara(0, 'body', 'a horizontal box (HBox) and 104.8% more than a point [46], highlighting the potential.');
+  run(2, [c4], split, archiveOf(1, [mkPara(0, 'body', affil)]));
+  checkTrue('作者/机构块不当残句 → 不合并', !c4.continuedFromPage, c4.cleanText.slice(0, 50));
+
+  // 反例 5（真实 Point2RBox-v2 p6→p7）：本页第一条正文其实是表格行，
+  // 它以小写开头但没有虚词 → 跳过它，接在后面那条真正的散文上
+  const tableRow = mkPara(0, 'body', 'wO E2E DOTA FCOS E2E HRSC FCOS wW E2E DOTA FCOS E2E HRSC FCOS');
+  const prose = mkPara(1, 'body', 'labels on train/val sets, with which the FCOS detector is trained in a supervised manner.');
+  run(7, [tableRow, prose], split, archiveOf(6, [mkPara(0, 'body', '2) Two-stage training. These methods generate RBox')]));
+  checkTrue('表格行不被当前缀目标（原文不变）', tableRow.cleanText === 'wO E2E DOTA FCOS E2E HRSC FCOS wW E2E DOTA FCOS E2E HRSC FCOS', tableRow.cleanText.slice(0, 40));
+  checkTrue(
+    '跳表格行，续句落到真正的散文段上',
+    prose.continuedFromPage === 6 && /^These methods generate RBox labels on train\/val sets/.test(prose.cleanText),
+    `${prose.continuedFromPage} ${prose.cleanText.slice(0, 60)}`
+  );
+
+  // 正例：折行连字符（上一页 `… Point Super-`，本页 `vised Object Detection.`）
+  const d1 = mkPara(0, 'body', 'vised Object Detection, and we propose a new benchmark.');
+  run(2, [d1], split, archiveOf(1, [mkPara(0, 'body', 'This task is called Single Point Super-')]));
+  checkTrue('折行连字符拼回一个词（Supervised）', /Supervised Object Detection/.test(d1.cleanText), d1.cleanText.slice(0, 50));
+
+  // 正例：无上一页（第 1 页 / 归档缺失）→ 静默不合并
+  const e1 = mkPara(0, 'body', 'lowercase start with no previous page.');
+  run(1, [e1], split, new Map());
+  checkTrue('没有上一页时静默跳过', !e1.continuedFromPage);
+
+  // 正例：残句过长时只取尾部并加省略号（避免整段重复）
+  const longTail = `${'word '.repeat(80)}ending fragment`;
+  const f1 = mkPara(0, 'body', 'that follows the long fragment with a lowercase start.');
+  run(2, [f1], split, archiveOf(1, [mkPara(0, 'body', longTail)]));
+  checkTrue('超长残句截断为尾部并标 …', /^… /.test(f1.cleanText) && f1.cleanText.length < 320, `${f1.cleanText.length} 字：${f1.cleanText.slice(0, 30)}`);
+  checkTrue('截断后 charMap 仍严格 1:1', charMapOk(f1));
+
+  /*
+   * 卡片上的「承接第 N 页」标记：合并后的首句里有上一页的字，
+   * 不标出来读者会以为卡片原文和左侧页面不符。这里钉住"标记只在真合并时输出"与样式存在。
+   */
+  checkTrue('卡片会在 continuedFromPage 时输出"承接上页"标记', /para\.continuedFromPage\s*\?/.test(code) && /type-continued/.test(code));
+  checkTrue('viewer.css 定义了 .para-type-tag.type-continued 样式', /\.para-type-tag\.type-continued/.test(css || ''), CSS_PATH);
+})();
+
 // ---------- 15. AI 问答：打开弹窗不得自动发问；发送按钮只能有一个 ----------
 console.log('\n===== T15 AI 弹窗不自动分析 / 按钮不重复 =====');
 (function aiModalNoAutoSendTest() {
