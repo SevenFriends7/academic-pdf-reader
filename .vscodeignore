@@ -23,6 +23,7 @@
 
 # ---- 开发与测试资料 ----
 scratch/**
+output_test/**
 docs/**
 .github/**
 .vscode/**

@@ -1110,8 +1110,9 @@
        *   ② commonObjs 里对象上的 name。
        */
       const fontNames = {};
+      let opList = null;
       try {
-        await page.getOperatorList();
+        opList = await page.getOperatorList();
       } catch (e) {
         console.warn('[Viewer] getOperatorList 失败，字体名可能取不全：', e && e.message);
       }
@@ -1152,7 +1153,9 @@
       dom.pdfViewerContainer.appendChild(newPageWrapper);
 
       // 提取文献学术段落结构（字符级映射引擎）
-      buildAcademicLayout(pageNum, textContent, textDivs, viewport, fontNames);
+      const pdfH = viewport.viewBox ? viewport.viewBox[3] : viewport.height / (viewport.scale || 1);
+      const pdfW = viewport.viewBox ? viewport.viewBox[2] : viewport.width / (viewport.scale || 1);
+      buildAcademicLayout(pageNum, textContent, textDivs, viewport, fontNames, extractPageGraphics(opList, pdfH, pdfW));
 
       // 绑定 PDF 点击与段落高亮双向联动事件
       bindPdfClickAlignment(textLayerDiv);
@@ -2571,7 +2574,174 @@
   }
 
   // ====================== 核心：学术文献双栏高保真版面解析器 ======================
+
+  /**
+   * 从 PDF 操作符流提取"矢量结构"：横线、竖线、矩形。
+   *
+   * 这是版式判断里比"字符坐标 + 正则"更稳定的信号：
+   *   · 页底脚注分隔线——一条很短的水平线；
+   *   · Algorithm 框——上下两条通栏水平线（有时还有 caption 分隔线）；
+   *   · 表格网格——成组的横/竖线；
+   *   · 双栏沟槽——通常没有线，仍靠 x 投影，但有线时可直接确认。
+   *
+   * 不依赖具体论文：所有坐标都来自 PDF 自身的绘制指令，阈值用页面宽高/正文字号的比例。
+   */
+  function extractPageGraphics(opList, pageH, pageW) {
+    const empty = { hLines: [], vLines: [], rects: [] };
+    if (!opList || !Array.isArray(opList.fnArray) || !Array.isArray(opList.argsArray)) return empty;
+    let OPS = null;
+    try {
+      if (typeof window !== 'undefined' && window.pdfjsLib && window.pdfjsLib.OPS) OPS = window.pdfjsLib.OPS;
+    } catch { /* 离屏测试没有 window */ }
+    if (!OPS) {
+      OPS = { save: 10, restore: 11, transform: 12, moveTo: 13, lineTo: 14, curveTo: 15, closePath: 18, rectangle: 19, constructPath: 91 };
+    }
+    const mul = (m, n) => [
+      m[0] * n[0] + m[2] * n[1],
+      m[1] * n[0] + m[3] * n[1],
+      m[0] * n[2] + m[2] * n[3],
+      m[1] * n[2] + m[3] * n[3],
+      m[0] * n[4] + m[2] * n[5] + m[4],
+      m[1] * n[4] + m[3] * n[5] + m[5]
+    ];
+    const pt = (m, x, y) => [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]];
+    const hLines = [];
+    const vLines = [];
+    const rects = [];
+    const addSeg = (x1, y1, x2, y2) => {
+      if (Math.abs(y1 - y2) <= 1.4 && Math.abs(x1 - x2) >= 10) {
+        hLines.push({ x1: Math.min(x1, x2), x2: Math.max(x1, x2), y: (y1 + y2) / 2 });
+      } else if (Math.abs(x1 - x2) <= 1.4 && Math.abs(y1 - y2) >= 10) {
+        vLines.push({ x: (x1 + x2) / 2, y1: Math.min(y1, y2), y2: Math.max(y1, y2) });
+      }
+    };
+    const addRect = (x, y, w, h) => {
+      if (!(w > 0) || !(h > 0)) return;
+      // 细长矩形 = 一条线（很多 PDF 用填充矩形画横线/竖线）
+      if (h <= 2.4 && w >= 10) hLines.push({ x1: x, x2: x + w, y: y + h / 2 });
+      else if (w <= 2.4 && h >= 10) vLines.push({ x: x + w / 2, y1: y, y2: y + h });
+      else if (w >= 16 && h >= 16) rects.push({ x, y, w, h });
+    };
+
+    let ctm = [1, 0, 0, 1, 0, 0];
+    const stack = [];
+    let last = null;
+    for (let i = 0; i < opList.fnArray.length; i++) {
+      const fn = opList.fnArray[i];
+      const args = opList.argsArray[i];
+      if (fn === OPS.save) stack.push(ctm.slice());
+      else if (fn === OPS.restore) ctm = stack.pop() || [1, 0, 0, 1, 0, 0];
+      else if (fn === OPS.transform && args && args.length >= 6) ctm = mul(ctm, args);
+      else if (fn === OPS.moveTo && args) {
+        last = pt(ctm, Number(args[0]) || 0, Number(args[1]) || 0);
+      } else if (fn === OPS.lineTo && args) {
+        const p = pt(ctm, Number(args[0]) || 0, Number(args[1]) || 0);
+        if (last) addSeg(last[0], last[1], p[0], p[1]);
+        last = p;
+      } else if (fn === OPS.rectangle && args) {
+        const p = pt(ctm, Number(args[0]) || 0, Number(args[1]) || 0);
+        const q = pt(ctm, (Number(args[0]) || 0) + (Number(args[2]) || 0), (Number(args[1]) || 0) + (Number(args[3]) || 0));
+        const x = Math.min(p[0], q[0]);
+        const y = Math.min(p[1], q[1]);
+        addRect(x, y, Math.abs(q[0] - p[0]), Math.abs(q[1] - p[1]));
+        last = null;
+      } else if (fn === OPS.constructPath && args && args[0] && args[1] && typeof args[0].length === 'number' && typeof args[1].length === 'number') {
+        const ops = args[0];
+        const coords = args[1];
+        let k = 0;
+        last = null;
+        for (const op of ops) {
+          if (op === OPS.moveTo) {
+            last = pt(ctm, Number(coords[k++]) || 0, Number(coords[k++]) || 0);
+          } else if (op === OPS.lineTo) {
+            const p = pt(ctm, Number(coords[k++]) || 0, Number(coords[k++]) || 0);
+            if (last) addSeg(last[0], last[1], p[0], p[1]);
+            last = p;
+          } else if (op === OPS.rectangle) {
+            const x = Number(coords[k++]) || 0;
+            const y = Number(coords[k++]) || 0;
+            const w = Number(coords[k++]) || 0;
+            const h = Number(coords[k++]) || 0;
+            const p = pt(ctm, x, y);
+            const q = pt(ctm, x + w, y + h);
+            addRect(Math.min(p[0], q[0]), Math.min(p[1], q[1]), Math.abs(q[0] - p[0]), Math.abs(q[1] - p[1]));
+            last = null;
+          } else if (op === OPS.curveTo) {
+            k += 6;
+            last = null;
+          } else if (op === OPS.closePath) {
+            last = null;
+          }
+        }
+      }
+    }
+
+    const inPage = (x, y) => x >= -10 && x <= pageW + 10 && y >= -10 && y <= pageH + 10;
+    const dedupe = (arr, keyOf) => {
+      const out = [];
+      for (const s of arr) {
+        if (!inPage(s.x1 !== undefined ? s.x1 : s.x, s.y !== undefined ? s.y : s.y1)) continue;
+        const k = keyOf(s);
+        if (!out.some(o => keyOf(o) === k)) out.push(s);
+      }
+      return out.slice(0, 1500);
+    };
+    hLines.sort((a, b) => b.y - a.y || a.x1 - b.x1);
+    vLines.sort((a, b) => b.x - a.x || a.y1 - b.y1);
+    return {
+      hLines: dedupe(hLines, s => `${Math.round(s.y)}:${Math.round(s.x1)}:${Math.round(s.x2)}`),
+      vLines: dedupe(vLines, s => `${Math.round(s.x)}:${Math.round(s.y1)}:${Math.round(s.y2)}`),
+      rects: rects.slice(0, 500)
+    };
+  }
+
+  /**
+   * 页面自适应统计：正文字号、左/右边距。
+   *
+   * 用"字号直方图按字符数加权"估计正文，而不是写死 10pt：
+   * 双栏论文正文 9/10pt、Nature 8.5pt、预印本 11pt 都能落到自己的值上。
+   */
+  function estimatePageStats(spans, pageH, pageW) {
+    const hist = new Map();
+    let left = [];
+    let right = [];
+    (spans || []).forEach(s => {
+      const t = String(s.textContent || '').trim();
+      if (!t) return;
+      const h = Number(s._pdfH);
+      const x = Number(s._pdfX);
+      const w = Number(s._pdfW);
+      if (h >= 5 && h <= 22 && t.length >= 2) {
+        const k = Math.round(h * 2) / 2;
+        hist.set(k, (hist.get(k) || 0) + t.length);
+      }
+      if (x > 0) left.push(x);
+      if (x > 0 && w > 0) right.push(x + w);
+    });
+    let bodyFontSize = 10;
+    let best = 0;
+    hist.forEach((n, h) => {
+      if (n > best) { best = n; bodyFontSize = h; }
+    });
+    bodyFontSize = Math.max(7, Math.min(14, bodyFontSize));
+    const pct = (arr, p) => {
+      if (!arr.length) return 0;
+      const a = [...arr].sort((x, y) => x - y);
+      return a[Math.min(a.length - 1, Math.floor(a.length * p))];
+    };
+    return {
+      bodyFontSize,
+      leftMargin: pct(left, 0.05) || pageW * 0.15,
+      rightMargin: pct(right, 0.95) || pageW * 0.85,
+      pageH,
+      pageW
+    };
+  }
+
   function buildAcademicLayout(pageNum, textContent, textDivs, viewport, fontNames) {
+    // 第 6 个参数是矢量结构（横线/竖线/矩形），由 renderPage 传入；
+    // 离屏探针只切这个函数体，保持原签名，从 arguments / stubs 取，避免切片锚点失效。
+    const graphics = (typeof stubs !== 'undefined' && stubs.graphics) || (arguments.length > 5 ? arguments[5] : null);
     // 视觉状态条属于"这一帧的这一页"：换页或重渲染时先清掉旧的，
     // 否则翻页后还留着上一页的改动摘要（看起来像本页的结论）。
     // 视觉请求还在飞时保留进度提示；结果回来命中缓存/新结果时会重新显示。
@@ -2619,21 +2789,24 @@
 
     const pagePdfH = (viewport && viewport.viewBox) ? viewport.viewBox[3] : ((viewport && viewport.height) ? viewport.height / (viewport.scale || 1) : 792);
     const pagePdfW = (viewport && viewport.viewBox) ? viewport.viewBox[2] : ((viewport && viewport.width) ? viewport.width / (viewport.scale || 1) : 612);
+    const pageStats = typeof estimatePageStats === 'function'
+      ? estimatePageStats(rawSpans, pagePdfH, pagePdfW)
+      : { bodyFontSize: 10, leftMargin: pagePdfW * 0.15, rightMargin: pagePdfW * 0.85, pageH: pagePdfH, pageW: pagePdfW };
+    const bodyFontSize = pageStats.bodyFontSize;
 
     // 1. 深度动态过滤页眉与页脚（彻底消除页码、DOI、出版版权及页底栏线串入正文）
-    const spans = rawSpans.filter(span => {
+    let spans = rawSpans.filter(span => {
       if (span._isDelimiterExt) return false;
       const sy = span._pdfY !== undefined ? span._pdfY : 0;
       const sh = span._pdfH !== undefined ? span._pdfH : 9;
       const t = (span.textContent || '').trim();
 
-      // 页底绝对过滤阈值：标准学术文献底边距通常在 36~52 pt
-      if (sy < 52) return false;
-      // 页眉绝对过滤阈值：通常在页面顶端 45 pt 内
-      if (sy > pagePdfH - 45) return false;
+      // 页底/页眉过滤：按正文字号的比例，而不是写死 52/45pt（9pt 正文和 11pt 正文边距不同）
+      if (sy < bodyFontSize * 5.2) return false;
+      if (sy > pagePdfH - bodyFontSize * 4.5) return false;
 
       // 智能识别页脚常见模式（页码数字、DOI、期刊/会议版权信息、下载授权信息）
-      if (sy < 65) {
+      if (sy < bodyFontSize * 6.5) {
         if (/^\d+(\s+of\s+\d+)?$/i.test(t)) return false;
         if (/^[-—–]\s*\d+\s*[-—–]$/.test(t)) return false;
         if (/^(https?:\/\/|doi:|10\.\d{4,}\/)/i.test(t)) return false;
@@ -2643,7 +2816,7 @@
       }
 
       // 顶部特定栏名或标题过滤
-      if (sy > pagePdfH - 60) {
+      if (sy > pagePdfH - bodyFontSize * 6) {
         if (t === 'NEUROSCIENCE' || /^\d+\s*\|\s*www\.pnas/i.test(t) || /www\.pnas\.org/i.test(t)) return false;
         if (/^\d+$/.test(t) && sh < 12) return false;
       }
@@ -2667,6 +2840,40 @@
     //   单栏页面只有一簇。通栏行（标题、大图注）的行首在左边界，只会加强左簇，不会干扰判定。
     // 分栏线取"左栏行右边缘的中位数"与"右栏行左边距"的中点——这是真正的沟槽位置，
     // 因此非对称双栏、A4/Letter/其它页宽都能自适应。
+    /*
+     * 表格区域（矢量规则版）：
+     * 一篇论文的表格可能只有几条通栏横线（booktabs），但**≥4 条宽横线**聚在同一块区域时，
+     * 基本就是表格。表格里的数字/行文字如果进入正文，一方面会被当散文翻译，
+     * 另一方面通栏表格会把双栏正文的 x 投影搅成"单栏"，造成左右栏交错。
+     *
+     * 做法：把表格区域内的 span 从正文池里摘掉（左侧 PDF 仍显示表格），
+     * 让后面的双栏检测只看真正的正文。没有规则线的表格仍走原来的文本启发式。
+     */
+    const tableRegions = (() => {
+      const wide = ((graphics && graphics.hLines) || []).filter(r =>
+        r.y > 30 && r.y < pagePdfH - 30 &&
+        (r.x2 - r.x1) >= pagePdfW * 0.5 &&
+        r.x1 < pagePdfW * 0.35 && r.x2 > pagePdfW * 0.65
+      );
+      if (wide.length < 4) return [];
+      const minY = Math.min(...wide.map(r => r.y));
+      const maxY = Math.max(...wide.map(r => r.y));
+      if (maxY - minY < bodyFontSize * 4 || maxY - minY > pagePdfH * 0.8) return [];
+      return [{ x1: Math.min(...wide.map(r => r.x1)), x2: Math.max(...wide.map(r => r.x2)), minY, maxY, rules: wide.length }];
+    })();
+    if (tableRegions.length) {
+      spans.forEach(s => {
+        const cx = (Number(s._pdfX) || 0) + (Number(s._pdfW) || 0) / 2;
+        const cy = Number(s._pdfY) || 0;
+        s._tableRegion = tableRegions.some(r => cx >= r.x1 - 5 && cx <= r.x2 + 5 && cy >= r.minY - 5 && cy <= r.maxY + 5);
+      });
+      const before = spans.length;
+      spans = spans.filter(s => !s._tableRegion);
+      if (spans.length < before) {
+        console.log(`[Viewer] 表格区域：跳过 ${before - spans.length} 个表格内文本片段`);
+      }
+    }
+
     const detectColumnStructure = (spanList, pageW) => {
       const FALLBACK = { twoColumn: false, gutterX: pageW * 0.495 };
       const SEG_GAP = Math.max(4, pageW * 0.01); // 行内片段切分间隙（约 6pt）
@@ -4046,6 +4253,8 @@
      */
     (function markAlgorithmBlocks() {
       const textOf = line => line.spans.map(s => (s.textContent || '').trim()).join(' ').trim();
+      const hRules = (graphics && Array.isArray(graphics.hLines)) ? graphics.hLines : [];
+      const wideRule = r => (r.x2 - r.x1) >= pagePdfW * 0.45;
       const out = [];
       for (let i = 0; i < orderedLines.length; i++) {
         const line = orderedLines[i];
@@ -4053,52 +4262,102 @@
           out.push(line);
           continue;
         }
-        // 表题（含折行）与伪代码整体标成 figure-label：不翻译、不出正文卡
         line.section = 'figure-label';
         line.__algorithm = true;
         out.push(line);
+
+        // 1) 先按缩进/关键字收集伪代码行（阈值随正文字号走，不写死 22pt）
+        const candidates = [];
+        let lastY = line.y;
         let j = i + 1;
         for (; j < orderedLines.length; j++) {
           const next = orderedLines[j];
-          const gap = out[out.length - 1].y - next.y;
-          if (gap <= 0 || gap > 22) break;
+          const gap = lastY - next.y;
+          if (gap <= 0 || gap > bodyFontSize * 2.2) break;
           const t = textOf(next);
-          const indented = next.minX > line.minX + 4;
+          const indented = next.minX > line.minX + bodyFontSize * 0.35;
           const keyword = /^(repeat|until|return|for|if|else|then|end|Input:|Output:|\d+:)/i.test(t);
-          // 表题折行（如 "SGVB estimators…"）跟着表题走；伪代码行按缩进/关键字认
-          const captionContinuation = gap <= 13 && Math.abs(next.minX - line.minX) < 6 && !/[.!?]\s*$/.test(textOf(line));
+          const captionContinuation = gap <= bodyFontSize * 1.5 && Math.abs(next.minX - line.minX) < bodyFontSize * 0.6 && !/[.!?]\s*$/.test(textOf(line));
           if (!indented && !keyword && !captionContinuation) break;
-          next.section = 'figure-label';
-          next.__algorithm = true;
-          out.push(next);
+          candidates.push(next);
+          lastY = next.y;
         }
-        i = j - 1;
+
+        /*
+         * 2) 有矢量框时以框为准：Algorithm 框通常是"上横线 + 底部横线"，
+         * 比缩进/关键字稳得多（跨模板、跨字号都成立）。
+         * 上框线在表题上方 3 个字号内，下框线在最后一行伪代码下方 2 个字号内。
+         */
+        const topRule = hRules
+          .filter(r => wideRule(r) && r.y >= line.y - 1 && r.y - line.y <= bodyFontSize * 3)
+          .sort((a, b) => b.y - a.y)[0];
+        const bottomRule = hRules
+          .filter(r => wideRule(r) && r.y <= lastY + 1 && lastY - r.y <= bodyFontSize * 2)
+          .sort((a, b) => b.y - a.y)[0];
+
+        let endIdx = j - 1;
+        if (topRule && bottomRule) {
+          for (let k = i; k < orderedLines.length; k++) {
+            const l = orderedLines[k];
+            if (l.y > topRule.y + 1.2) continue;
+            if (l.y < bottomRule.y - 1.2) break;
+            l.section = 'figure-label';
+            l.__algorithm = true;
+            if (!out.includes(l)) out.push(l);
+            endIdx = k;
+          }
+        } else {
+          candidates.forEach(l => {
+            l.section = 'figure-label';
+            l.__algorithm = true;
+            out.push(l);
+          });
+          endIdx = i + candidates.length;
+        }
+        i = endIdx;
       }
       orderedLines = out;
     })();
 
     (function markBottomFootnotes() {
       const textOf = line => line.spans.map(s => (s.textContent || '').trim()).join(' ').trim();
+      const hRules = (graphics && Array.isArray(graphics.hLines)) ? graphics.hLines : [];
+      /*
+       * 脚注分隔线：页底、短、靠左，长度远小于通栏正文。
+       * 这是期刊/LaTeX 模板里最稳定的脚注信号，比"y<96"通用得多。
+       */
+      const footRule = hRules
+        .filter(r => {
+          const w = r.x2 - r.x1;
+          const nearLeft = Math.abs(r.x1 - pageStats.leftMargin) <= bodyFontSize * 3;
+          const noGrid = !((graphics && graphics.vLines) || []).some(v =>
+            v.y1 < r.y && v.y2 > r.y && v.x >= r.x1 - 2 && v.x <= r.x2 + 2
+          );
+          return r.y > 30 && r.y < pagePdfH * 0.22 && w >= 20 && w <= pagePdfW * 0.5 && nearLeft && noGrid;
+        })
+        .sort((a, b) => b.y - a.y)[0];
+      const footTop = footRule ? footRule.y + 1.2 : pagePdfH * 0.15;
       const out = [];
       for (let i = 0; i < orderedLines.length; i++) {
         const line = orderedLines[i];
         const first = line.spans[0];
         const marker = first ? String(first.textContent || '').trim() : '';
         const markerH = Number(first && first._pdfH) || 0;
-        const isMarker = /^(?:\d{1,2}|[*∗†‡])$/.test(marker) && (markerH <= 7.5 || /[*∗†‡]/.test(marker));
-        if (line.y > 96 || !isMarker) {
+        const isMarker = /^(?:\d{1,2}|[*∗†‡])$/.test(marker) && (markerH <= bodyFontSize * 0.78 || /[*∗†‡]/.test(marker));
+        const inZone = line.y < footTop;
+        // 有分隔线：线下的文字就是脚注；没有线：才退回"上标数字 + 页底区域"
+        if (!inZone || (!footRule && !isMarker)) {
           out.push(line);
           continue;
         }
-        // 脚注正文：标记行 + 向下紧邻、横向重叠的续行（如公式残片 `i dz i`）
         line.section = 'footnote';
         out.push(line);
         let j = i + 1;
         for (; j < orderedLines.length; j++) {
           const next = orderedLines[j];
           const gap = out[out.length - 1].y - next.y;
-          if (gap <= 0 || gap > 13 || next.y < 35) break;
-          if (next.maxX < line.minX - 15 || next.minX > line.maxX + 15) break;
+          if (gap <= 0 || gap > bodyFontSize * 1.35 || next.y < 30) break;
+          if (next.maxX < line.minX - bodyFontSize * 1.5 || next.minX > line.maxX + bodyFontSize * 1.5) break;
           if (next.section === 'header' || next.section === 'metadata') break;
           next.section = 'footnote';
           out.push(next);
@@ -4117,19 +4376,20 @@
         return letters <= 2 && line.spans.some(s => s && s._mathInfo && s._mathInfo.math);
       };
       const isProse = line => ((textOf(line).match(/[A-Za-z]{2,}/g) || []).length >= 3);
+      const maxDy = bodyFontSize * 1.05;
       const removed = new Set();
       orderedLines.forEach(line => {
         if (!isProse(line)) return;
         if (!(line.section === 'col1' || line.section === 'col2')) return;
-        // 只向上找 1~10pt 的纯数学碎片（∫ / ∏ / ∑ 这类大算子的基线比正文高）
+        // 只向上找"一个大字号以内"的纯数学碎片（∫ / ∏ / ∑ 的基线比正文高）
         const frags = orderedLines.filter(m =>
           m !== line &&
           !removed.has(m) &&
           m.section === line.section &&
-          m.y > line.y && m.y - line.y <= 10 &&
+          m.y > line.y && m.y - line.y <= maxDy &&
           isMathOnly(m) &&
           (m.maxX - m.minX) < pagePdfW * 0.7 &&
-          m.minX <= line.maxX + 30 && line.minX <= m.maxX + 30
+          m.minX <= line.maxX + bodyFontSize * 3 && line.minX <= m.maxX + bodyFontSize * 3
         );
         if (!frags.length) return;
         frags.forEach(m => removed.add(m));
@@ -4145,8 +4405,8 @@
 
     (function markInlineFootnoteRefs() {
       /*
-       * 正文里的上标脚注引用（`Therefore^1,`）不是正文内容：字号 7、基线比本行高 3~4pt。
-       * 不摘掉的话，它会变成译文里的 "因此 1,"，而且会跟着句子一起送去翻译。
+       * 正文里的上标脚注引用（`Therefore^1,`）不是正文内容：字号约正文的 0.7，
+       * 基线比本行高 2~5pt。阈值为正文比例，不写死 7.5pt。
        */
       orderedLines.forEach(line => {
         if (line.section !== 'col1' && line.section !== 'col2') return;
@@ -4156,7 +4416,7 @@
           if (span._mathInfo && span._mathInfo.math) return;
           const h = Number(span._pdfH) || 0;
           const dy = (Number(span._pdfY) || 0) - (Number(line.y) || 0);
-          if (h > 0 && h <= 7.5 && dy >= 2 && dy <= 6) span._footnoteRef = true;
+          if (h > 0 && h <= bodyFontSize * 0.78 && dy >= bodyFontSize * 0.2 && dy <= bodyFontSize * 0.6) span._footnoteRef = true;
         });
       });
     })();
