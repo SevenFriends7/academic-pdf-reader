@@ -1502,6 +1502,26 @@ console.log('\n===== T14 跨栏续接（真实数据） =====');
   ];
   run(p6, false, 293, split, splitWordFn);
   checkTrue('中间隔着正文 → 不跨段合并', p6.length === 3, `剩 ${p6.length} 段`);
+
+  /*
+   * 正例（真实 Point2RBox-v2 第 1 页）：左栏尾行 `… often super-` 与右栏首行
+   * `vised by rotated bounding boxes …` 之间**隔着 327 字的页底脚注**和一行图内上标数字
+   * （被识别成 formula）。脚注是页面注释、公式本来就插在句子中间，都不算"正文在中间"，
+   * 跳过它们才能把这个被折开的词拼回去（旧实现在这里 -1，`super-` 永远接不上 `vised`）。
+   */
+  const pFoot = [
+    mkPara(0, 'body', 'Manual annotations are essential. Early research is often super-', 59, 296),
+    mkPara(1, 'footnote', 'Equal contribution. Corresponding author. This work was partly supported by NSFC.', 58, 296),
+    mkPara(2, 'formula', '4 3 4 4 4 † 4', 335, 523),
+    mkPara(3, 'body', 'vised by rotated bounding boxes (RBoxes), where annotations align with the output.', 317, 555)
+  ];
+  run(pFoot, false, 306, split, splitWordFn);
+  checkTrue(
+    '可以跳过页底脚注与行间公式去找续句（super- + vised）',
+    pFoot.length === 3 && /often supervised by rotated bounding boxes/.test(pFoot[0].cleanText),
+    `${pFoot.length} 段；${JSON.stringify((pFoot[0] || {}).cleanText || '').slice(-70)}`
+  );
+  checkTrue('被跳过的脚注与公式仍在（不丢内容）', pFoot.some(p => p.type === 'footnote') && pFoot.some(p => p.type === 'formula'), pFoot.map(p => p.type).join(','));
 })();
 
 // ---------- 14b. 跨页续接：上一页的残句并到本页首条正文（P0） ----------
@@ -1645,6 +1665,90 @@ console.log('\n===== T14b 跨页续接（真实文本形态） =====');
    */
   checkTrue('卡片会在 continuedFromPage 时输出"承接上页"标记', /para\.continuedFromPage\s*\?/.test(code) && /type-continued/.test(code));
   checkTrue('viewer.css 定义了 .para-type-tag.type-continued 样式', /\.para-type-tag\.type-continued/.test(css || ''), CSS_PATH);
+})();
+
+// ---------- 14c. 无规则线表格：列网格 + 纯数字列（P1） ----------
+console.log('\n===== T14c 无规则线表格（真实形态） =====');
+(function borderlessTableTest() {
+  const start = code.indexOf('(function markBorderlessTables() {');
+  const end = code.indexOf('\n    })();', start);
+  if (start < 0 || end < 0) {
+    checkTrue('从产物中抽出 markBorderlessTables', false, '未找到该片段');
+    return;
+  }
+  // eslint-disable-next-line no-new-func
+  const run = new Function(
+    'orderedLines',
+    'bodyFontSize',
+    'pagePdfH',
+    `${code.slice(start, end + 10)}\n return orderedLines;`
+  );
+  const mkLine = (y, cells, section) => {
+    const spans = cells.map(([x, text, w]) => ({
+      textContent: text,
+      _pdfX: x,
+      _pdfW: w || Math.max(10, String(text).length * 7)
+    }));
+    return {
+      y,
+      section: section || 'col1',
+      spans,
+      minX: Math.min(...spans.map(s => s._pdfX)),
+      maxX: Math.max(...spans.map(s => s._pdfX + s._pdfW)),
+      h: 12
+    };
+  };
+  const allFigureLabel = list => list.every(l => l.section === 'figure-label');
+  const allBody = list => list.every(l => l.section === 'col1');
+
+  /*
+   * 真实形态：测试三 p5 的评分表 —— 表头 `分值` 在 x=158、数据 `15/25/10` 在 x=166
+   * （差 8pt，超过 7.2pt 容差），行距 26pt 而 bodyFontSize 只有 8。
+   * 这一组同时考验：数字列识别、行距自适应、表头向上吸收。
+   */
+  const rubric = [
+    mkLine(534.9, [[67, '评价维度'], [158, '分值'], [188, '关注点']]),
+    mkLine(508.9, [[67, '问题理解'], [166, '15'], [188, '能说明点监督的尺度缺失、']]),
+    mkLine(482.7, [[67, '概率建模'], [166, '25'], [188, '潜变量、后验、先验 / 证据、']]),
+    mkLine(456.6, [[67, '算法实现'], [166, '25'], [188, '迭代流程正确、处理标签冲突与']]),
+    mkLine(430.5, [[67, '实验分析'], [166, '25'], [188, '对照公平、消融充分、图表可信、']]),
+    mkLine(404.4, [[67, '表达与复现'], [166, '10'], [188, '代码文档清楚、结果可复现、']])
+  ];
+  run(rubric, 8, 841.9);
+  checkTrue('评分表整张被标成 figure-label（含表头）', allFigureLabel(rubric), rubric.map(l => l.section).join(','));
+  checkTrue('表格行不送翻译（type 由 section 决定）', rubric.every(l => l.__borderlessTable === true));
+
+  // 反例 1：普通正文行只有一个片段（正文两端对齐的词距远小于 1.1em）→ 不许标
+  const prose = [0, 1, 2, 3].map(i =>
+    mkLine(700 - i * 11, [[59, 'the proposed method achieves state-of-the-art performance on three datasets' ]])
+  );
+  run(prose, 8, 841.9);
+  checkTrue('普通正文（单单元格）不被当表格', allBody(prose), prose.map(l => l.section).join(','));
+
+  /*
+   * 反例 2：编号公式 —— 右端对齐的 `(1)(2)(3)` 是公式编号，不是数字列。
+   * 如果把它们当成"纯数字"，公式阵列会被整块标成表格、式子直接从译文里消失。
+   */
+  const eqs = [0, 1, 2].map(i =>
+    mkLine(600 - i * 20, [[90, 'L = f (x) + g (y)'], [500, `(${i + 1})`]])
+  );
+  run(eqs, 8, 841.9);
+  checkTrue('编号公式的 `(n)` 不算数字列 → 不标表格', allBody(eqs), eqs.map(l => l.section).join(','));
+
+  // 反例 3：只有 2 行 → 凑不成列网格
+  const twoRows = [mkLine(600, [[67, 'A'], [166, '1'], [188, 'x']]), mkLine(580, [[67, 'B'], [166, '2'], [188, 'y']])];
+  run(twoRows, 8, 841.9);
+  checkTrue('少于 3 行 → 不标表格', allBody(twoRows), twoRows.map(l => l.section).join(','));
+
+  // 反例 4：数字列被正文行打断 → 只标连续的那一段
+  const broken = [
+    mkLine(700, [[67, 'A'], [166, '1'], [188, 'x']]),
+    mkLine(680, [[67, 'B'], [166, '2'], [188, 'y']]),
+    mkLine(660, [[59, '这一段是正文，只有一个片段，不能算表格行']]),
+    mkLine(640, [[67, 'C'], [166, '3'], [188, 'z']])
+  ];
+  run(broken, 8, 841.9);
+  checkTrue('被正文打断的 2 行各自不达标', allBody(broken), broken.map(l => l.section).join(','));
 })();
 
 // ---------- 15. AI 问答：打开弹窗不得自动发问；发送按钮只能有一个 ----------

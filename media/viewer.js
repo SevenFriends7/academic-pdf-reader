@@ -4483,6 +4483,199 @@
       orderedLines = out;
     })();
 
+    /*
+     * ============ 8.75 无规则线表格：靠"列网格 + 纯数字列"认出来 ============
+     *
+     * 【问题】`测试三 p5` 有一张评分表（评价维度 / 分值 / 关注点），既没有横线也没有竖线，
+     * 更没有 "Table N" 图注 —— markFigureRegions 只从图注往下扫，于是 6 行表格被当成正文，
+     * 还和后面的参考文献并在同一个 1402 字的段落里（基准里的 huge-body 就是这么来的）。
+     *
+     * 【判据】不猜"看起来像表格"，只认两条确定性信号（都不看具体论文）：
+     *   ① **列网格**：同一栏里连续若干行，都在同一个 x 起点上有第二个单元格。
+     *      单元格切分用"行内空隙 ≥1.1em"——正文两端对齐的词距只有 0.2~0.3em，
+     *      永远切不出第二格；表格的列间距是 20pt 级别。
+     *   ② **纯数字列**：那一列的大部分单元格是 `15` / `25` / `3.2` / `87%` 这种纯数字。
+     *      这是"表格"最硬的语言学证据：散文里不会有一列对齐的数字。
+     *      带括号的 `(3)` 是公式编号，不算数字（正则里不允许括号）。
+     *
+     * 命中的行改成 figure-label：不送翻译、不出卡片（左侧 PDF 照旧显示），
+     * 段落聚合在这一段前后自然断开，表格后面的正文也不会再被并进同一段。
+     *
+     * 【为什么不会误伤】
+     *   · 散文行切不出第二个单元格（行内没有 1.1em 的空隙）；
+     *   · 公式行的第二格是 `(3)` 这种带括号的编号 → 不是数字列；
+     *   · 列网格要求**连续 ≥3 行**同一锚点 + 数字占比 ≥60%，零星对齐（参考文献里
+     *     的 `[n]` 与折行 URL）凑不成一列；
+     *   · 算法块、符号表已经各自成段，直接跳过。
+     */
+    (function markBorderlessTables() {
+      const X_TOL = bodyFontSize * 0.9; // 同一列的 x 抖动容差
+      const NUM_RE = /^[-−+]?\d{1,6}(?:[.,]\d+)?\s*%?$/;
+      const isNum = t => NUM_RE.test(String(t || '').trim());
+      const textOfLine = l => l.spans.map(s => String(s.textContent || '')).join(' ').trim();
+
+      /*
+       * 候选行段：同一栏、纵向间隙不超过 MAX_GAP 的连续行。
+       *
+       * 【MAX_GAP 为什么必须是页面自适应】表格行距普遍是正文的 1.5~2.5 倍，
+       * 而 `bodyFontSize` 估的是**字号**不是行距——中文 PDF 里 12pt 的表格行，
+       * 字号统计出来常常只有 8（中文字体的 bbox 高度偏小）。实测这张评分表行距 26pt、
+       * bodyFontSize 8，按 3.2em（25.6pt）切，每一行都会被切成独立行段，永远凑不够 3 行。
+       * 所以取「本页同行区相邻行的间距中位数 × 2」与「3.4em」里更大的那个：
+       * 行距正常的页用后者，行距偏大的页用前者。
+       */
+      const pageGaps = [];
+      for (let i = 1; i < orderedLines.length; i++) {
+        const a = orderedLines[i - 1];
+        const b = orderedLines[i];
+        if (!a || !b || a.section !== b.section) continue;
+        const g = Math.abs((Number(a.y) || 0) - (Number(b.y) || 0));
+        if (g > 1 && g < pagePdfH * 0.3) pageGaps.push(g);
+      }
+      pageGaps.sort((a, b) => a - b);
+      const medianGap = pageGaps.length ? pageGaps[Math.floor(pageGaps.length / 2)] : bodyFontSize * 1.6;
+      const MAX_GAP = Math.max(bodyFontSize * 3.4, medianGap * 2);
+
+      const groups = [];
+      let curGroup = null;
+      orderedLines.forEach(line => {
+        if (!line || !line.spans || line.spans.length === 0) {
+          curGroup = null;
+          return;
+        }
+        const sec = line.section;
+        if (sec !== 'col1' && sec !== 'col2' && sec !== 'cross') {
+          curGroup = null;
+          return;
+        }
+        if (line.__notationTable || line.__algorithm || line.__forceNewPara) {
+          curGroup = null;
+          return;
+        }
+        const prev = curGroup ? curGroup[curGroup.length - 1] : null;
+        if (!prev || Math.abs((Number(prev.y) || 0) - (Number(line.y) || 0)) > MAX_GAP) {
+          curGroup = [line];
+          groups.push(curGroup);
+        } else {
+          curGroup.push(line);
+        }
+      });
+
+      let markedRows = 0;
+      let markedTables = 0;
+      groups.forEach(group => {
+        if (group.length < 3) return;
+        /*
+         * 【列的判定不能用"行内空隙切单元格"】评分表里 `15` 只有 12pt 宽，
+         * 与右边那列描述只隔 10pt —— 按空隙切会把数字和描述并成同一格，数字列就消失了。
+         * 表格的稳定特征是**列的起点 x**：同一个 x 上有 ≥3 行都开始一个新片段。
+         * 所以先按 x 聚类所有片段的起点，再看哪一簇的片段是纯数字。
+         */
+        const cols = [];
+        group.forEach((line, li) => {
+          const starts = [];
+          [...line.spans]
+            .sort((a, b) => (Number(a._pdfX) || 0) - (Number(b._pdfX) || 0))
+            .forEach(s => {
+              const x = Number(s._pdfX) || 0;
+              starts.push(x);
+              let col = cols.find(c => Math.abs(c.x - x) <= X_TOL);
+              if (!col) {
+                col = { x, rows: new Set(), numRows: new Set() };
+                cols.push(col);
+              }
+              col.rows.add(li);
+              if (isNum(s.textContent)) col.numRows.add(li);
+            });
+          line._colStarts = starts;
+        });
+
+        for (const col of cols) {
+          /*
+           * 数字列：≥3 行在同一 x 上有纯数字片段，且这一列里 ≥60% 的行是数字。
+           * 表头那一行是文字（`分值`），所以不能要求 100%。
+           */
+          if (col.numRows.size < 3) continue;
+          if (col.numRows.size / col.rows.size < 0.6) continue;
+
+          // 该锚点上的**连续行段**：每行都得在锚点附近开始一个片段
+          let runStart = -1;
+          let best = null;
+          for (let i = 0; i <= group.length; i++) {
+            const hit = i < group.length && group[i]._colStarts.some(x => Math.abs(x - col.x) <= X_TOL);
+            if (hit) {
+              if (runStart < 0) runStart = i;
+              continue;
+            }
+            if (runStart >= 0) {
+              const len = i - runStart;
+              if (len >= 3 && (!best || len > best.len)) best = { start: runStart, len };
+              runStart = -1;
+            }
+          }
+          if (!best) continue;
+
+          let rows = group.slice(best.start, best.start + best.len);
+          // 网格检验：至少要有 2 个"≥3 行都在同一 x 开始"的列，否则只是一列数字对齐
+          const gridCols = cols.filter(c => {
+            const inRun = rows.filter(l => l._colStarts.some(x => Math.abs(x - c.x) <= X_TOL)).length;
+            return inRun >= 3;
+          });
+          if (gridCols.length < 2) continue;
+          /*
+           * 向上吸收表头：表头那一行的列起点常与数据行差几 pt
+           * （实测 `分值` 在 x=158、数据 `15/25/10` 在 x=166，差 8pt > 容差 7.2），
+           * 于是表头会被漏在外面、单独成一段被送去翻译。只要上一行与本网格共享 ≥2 个**不同列**、
+           * 行距也还算表格行距，就并进来。
+           *
+           * 【必须是"不同列"】正文行里紧挨着的几个片段可能都落在同一列附近
+           * （实测上一段收尾行有 3 个片段在 x≈157~170），按"命中片段数"数就会把它也吸进来，
+           * 结果是**正文最后一行的半句被标成表格**、直接从译文里消失。
+           */
+          const SENTENCE_OR_HEADING = /^(?:\d+(?:\.\d+)*\.?|[一二三四五六七八九十]+[、.])\s*\S/;
+          let start = best.start;
+          while (start > 0) {
+            const prevLine = group[start - 1];
+            if ((Number(group[start].y) || 0) - (Number(prevLine.y) || 0) > MAX_GAP) break;
+            const distinctCols = gridCols.filter(c =>
+              (prevLine._colStarts || []).some(x => Math.abs(x - c.x) <= X_TOL)
+            ).length;
+            if (distinctCols < 2) break;
+            const prevText = textOfLine(prevLine);
+            if (prevText.length > 200) break;
+            // 章节标题（`7.3 能力评价参考`）不是表头：它的 `7.3` 会碰巧对齐第一列
+            if (SENTENCE_OR_HEADING.test(prevText)) break;
+            start--;
+          }
+          if (start < best.start) rows = group.slice(start, best.start + best.len);
+          // 表格行是短行：超过 200 字的行是散文，直接放弃
+          if (rows.some(l => textOfLine(l).length > 200)) continue;
+          // 句子以句末标点收尾 = 散文；表格行一般没有句末标点（允许 1 行例外）
+          const sentenceRows = rows.filter(l => /[.!?。！？]\s*$/.test(textOfLine(l))).length;
+          if (sentenceRows > 1) continue;
+
+          rows.forEach(l => {
+            if (l.section === 'figure-label') return;
+            l.section = 'figure-label';
+            l.__borderlessTable = true;
+            markedRows++;
+          });
+          markedTables++;
+          console.log(
+            `[Viewer] 无规则线表格：${rows.length} 行，数字列 x≈${col.x.toFixed(0)}` +
+              `（${col.numRows.size}/${col.rows.size} 行是数字，网格 ${gridCols.length} 列）`
+          );
+          break; // 一个行段只按最靠前的数字列标一次
+        }
+        group.forEach(l => {
+          delete l._colStarts;
+        });
+      });
+      if (markedTables > 0) {
+        console.log(`[Viewer] 无规则线表格：共 ${markedTables} 张 / ${markedRows} 行（不送翻译）`);
+      }
+    })();
+
     // 9. 段落聚合并构建字符级精确映射表 (charMap)
     const paras = [];
     let curParaLines = [];
@@ -5031,6 +5224,20 @@
       }
 
       /*
+       * 参考文献条目：`[12] Author, B., et al. Title. Venue, 2024.` 一条一段。
+       *
+       * 【为什么必须单独断段】参考文献没有句末标点、也没有首行缩进，段落聚合会把
+       * **整页文献并成一张上千字的卡片**（实测 `测试三 p5` 的 1303 字，基准里的 huge-body），
+       * 翻译回来是一整坨，点句子也没法逐条对应。条目编号 `[n]` 在行首是确定的界符：
+       * 正文里的引用 `[3]` 出现在句中，不会单独占行首。
+       * 折行的 URL / 作者续行不以 `[n]` 开头，所以仍旧留在同一条目里。
+       */
+      if (curParaLines.length > 0 && /^\[\d{1,3}\]\s*\S/.test(text)) {
+        shouldStartNew = true;
+        nextType = 'body';
+      }
+
+      /*
        * 行间公式的"整行"与正文行之间必须断段：公式自己成一段，前后正文各自成段。
        * 两个方向都要断（正文→公式、公式→正文），否则半句会粘在公式上。
        */
@@ -5209,9 +5416,18 @@
       // 中间隔着 Table 3 的数据行和图注；第 1 页 Figure 1 同理（"With deep learning" → "approaches, …"）。
       // 旧实现只比较相邻两段，于是这条跨栏句被图表切断，两半各自送去翻译 → 两张读不懂的残句卡片
       // （正是上面 9.5 注释里说的那种症状）。
-      // 这里允许向后跳过"纯图表段落"去找续句，但**只跳图表**：一遇到正文/标题/脚注就停，
+      // 这里允许向后跳过"纯图表段落、页底脚注、行间公式"去找续句，但**一遇到正文/标题就停**，
       // 绝不把两段本来无关的正文粘起来。
-      const FIGURE_TYPES = { caption: 1, 'figure-label': 1, cross: 1 };
+      //
+      // 【为什么脚注也要能跳过】脚注排在**栏底**，天然夹在"左栏最后一行"和"右栏第一行"之间：
+      // 实测 Point2RBox-v2 第 1 页左栏尾行 `…Early research is often super-` 与右栏首行
+      // `vised by rotated bounding boxes …` 之间就隔着 327 字的 `Equal contribution. …`，
+      // 旧实现遇到脚注直接 -1，这个被折开的词永远拼不回去（它还因此成了 `lower-start`）。
+      //
+      // 【为什么行间公式也要能跳过】同一页那两半之间还夹着一行图内的上标数字 `4 3 4 4 4 † 4`
+      // （被识别成 formula）。公式本来就插在句子中间——"…如下：" 后面跟一条式子、再跟 "其中…"，
+      // 跳过它并不改变"这句话在哪继续"的判断；真正挡住误合并的是下面那几条续句判据。
+      const FIGURE_TYPES = { caption: 1, 'figure-label': 1, cross: 1, footnote: 1, formula: 1 };
       const nextBodyIndex = start => {
         for (let j = start + 1; j < paras.length; j++) {
           if (paras[j].type === 'body') return j;
