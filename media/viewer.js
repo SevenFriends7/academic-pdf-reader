@@ -2778,10 +2778,16 @@
     (textContent.items || []).forEach((it, i) => {
       if (textDivs[i]) {
         textDivs[i]._mathInfo = mathInfoByIdx[i] || null;
+        // CMMIB 的 ε 被 ToUnicode 映射成 U+000F：在进入任何版面/渲染层之前先归一化，
+        // 否则 cleanText 里会留不可见控制符（基准里的 ctrl-glyph）。
+        if (textDivs[i].textContent) textDivs[i].textContent = String(textDivs[i].textContent).replace(/\u000f/g, 'ε');
+        if (textDivs[i]._mathInfo && textDivs[i]._mathInfo.latex) {
+          textDivs[i]._mathInfo.latex = String(textDivs[i]._mathInfo.latex).replace(/\u000f/g, '\\epsilon');
+        }
         const mi = modelItems[i];
         if (mi) {
           if (mi.isDelimiterExt) textDivs[i]._isDelimiterExt = true;
-          if (mi.normStr !== undefined) textDivs[i].textContent = mi.normStr;
+          if (mi.normStr !== undefined) textDivs[i].textContent = String(mi.normStr).replace(/\u000f/g, 'ε');
           if (mi.normY !== undefined) textDivs[i]._pdfY = mi.normY;
         }
       }

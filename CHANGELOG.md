@@ -3,6 +3,11 @@
 本文件记录「文献对照翻译阅读器」的重要变更。
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.8.4] - 2026-10-30
+
+### 修复
+- CMMIB 的 ε 在更早的 `textDiv` 层就归一化为 `ε`（`latex` 同步为 `\epsilon`），不再只靠翻译输入兜底；`cleanText`、段落指纹、高亮映射里也不再残留 U+000F 控制符。同一 56 页基准里 `ctrl-glyph` 从 33 降到 14。
+
 ## [1.8.3] - 2026-10-30
 
 ### 改进
