@@ -85,7 +85,7 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
    * 同时标题类段落开了"强制翻译"直通路。这两件事都会改变已有段落的**处理方式**，
    * 所以必须换版本号让旧译文失效重来（旧缓存里那些"译文=英文原文"的标题就在此列）。
    */
-  private static readonly PROMPT_VERSION = 'p4-vision-index-title-force';
+  private static readonly PROMPT_VERSION = 'p5-vaemath-algorithm-footnote';
 
   /**
    * Zotero 只读客户端（本文件生命周期内共用一个：条目列表与探测结果都在它里面缓存，

@@ -4036,6 +4036,132 @@
     })();
 
     /*
+     * ============ 8.75 算法块 / 页底脚注 / 漂浮的行内公式碎片 ============
+     *
+     * 这三类都是 1312.6114（VAE）第 4–5 页暴露出来的真问题：
+     *   · Algorithm 1 伪代码被当正文送翻译，模型吐回 `\leftarrow` / `\nabla…` 原样显示；
+     *   · 页底脚注 `1 Note that … dz = ∏_i dz_i` 被并进上一段，成了句对里的第 5 句；
+     *   · 行内公式的 `∫` / `∏` 基线比正文高 8pt，被切成独立一行，
+     *     于是正文里公式位置错乱、译文里出现裸 `∫` / `p 0`。
+     */
+    (function markAlgorithmBlocks() {
+      const textOf = line => line.spans.map(s => (s.textContent || '').trim()).join(' ').trim();
+      const out = [];
+      for (let i = 0; i < orderedLines.length; i++) {
+        const line = orderedLines[i];
+        if (!/^Algorithm\s+\d+/i.test(textOf(line))) {
+          out.push(line);
+          continue;
+        }
+        // 表题（含折行）与伪代码整体标成 figure-label：不翻译、不出正文卡
+        line.section = 'figure-label';
+        line.__algorithm = true;
+        out.push(line);
+        let j = i + 1;
+        for (; j < orderedLines.length; j++) {
+          const next = orderedLines[j];
+          const gap = out[out.length - 1].y - next.y;
+          if (gap <= 0 || gap > 22) break;
+          const t = textOf(next);
+          const indented = next.minX > line.minX + 4;
+          const keyword = /^(repeat|until|return|for|if|else|then|end|Input:|Output:|\d+:)/i.test(t);
+          // 表题折行（如 "SGVB estimators…"）跟着表题走；伪代码行按缩进/关键字认
+          const captionContinuation = gap <= 13 && Math.abs(next.minX - line.minX) < 6 && !/[.!?]\s*$/.test(textOf(line));
+          if (!indented && !keyword && !captionContinuation) break;
+          next.section = 'figure-label';
+          next.__algorithm = true;
+          out.push(next);
+        }
+        i = j - 1;
+      }
+      orderedLines = out;
+    })();
+
+    (function markBottomFootnotes() {
+      const textOf = line => line.spans.map(s => (s.textContent || '').trim()).join(' ').trim();
+      const out = [];
+      for (let i = 0; i < orderedLines.length; i++) {
+        const line = orderedLines[i];
+        const first = line.spans[0];
+        const marker = first ? String(first.textContent || '').trim() : '';
+        const markerH = Number(first && first._pdfH) || 0;
+        const isMarker = /^(?:\d{1,2}|[*∗†‡])$/.test(marker) && (markerH <= 7.5 || /[*∗†‡]/.test(marker));
+        if (line.y > 96 || !isMarker) {
+          out.push(line);
+          continue;
+        }
+        // 脚注正文：标记行 + 向下紧邻、横向重叠的续行（如公式残片 `i dz i`）
+        line.section = 'footnote';
+        out.push(line);
+        let j = i + 1;
+        for (; j < orderedLines.length; j++) {
+          const next = orderedLines[j];
+          const gap = out[out.length - 1].y - next.y;
+          if (gap <= 0 || gap > 13 || next.y < 35) break;
+          if (next.maxX < line.minX - 15 || next.minX > line.maxX + 15) break;
+          if (next.section === 'header' || next.section === 'metadata') break;
+          next.section = 'footnote';
+          out.push(next);
+        }
+        i = j - 1;
+      }
+      orderedLines = out;
+    })();
+
+    (function mergeDisplacedMathFragments() {
+      const textOf = line => line.spans.map(s => (s.textContent || '').trim()).join(' ').trim();
+      const isMathOnly = line => {
+        const t = textOf(line);
+        if (!t) return false;
+        const letters = (t.match(/[A-Za-z]/g) || []).length;
+        return letters <= 2 && line.spans.some(s => s && s._mathInfo && s._mathInfo.math);
+      };
+      const isProse = line => ((textOf(line).match(/[A-Za-z]{2,}/g) || []).length >= 3);
+      const removed = new Set();
+      orderedLines.forEach(line => {
+        if (!isProse(line)) return;
+        if (!(line.section === 'col1' || line.section === 'col2')) return;
+        // 只向上找 1~10pt 的纯数学碎片（∫ / ∏ / ∑ 这类大算子的基线比正文高）
+        const frags = orderedLines.filter(m =>
+          m !== line &&
+          !removed.has(m) &&
+          m.section === line.section &&
+          m.y > line.y && m.y - line.y <= 10 &&
+          isMathOnly(m) &&
+          (m.maxX - m.minX) < pagePdfW * 0.7 &&
+          m.minX <= line.maxX + 30 && line.minX <= m.maxX + 30
+        );
+        if (!frags.length) return;
+        frags.forEach(m => removed.add(m));
+        line.spans = line.spans
+          .concat(...frags.map(m => m.spans))
+          .sort((a, b) => (Number(a._pdfX) || 0) - (Number(b._pdfX) || 0));
+        line.minX = Math.min(line.minX, ...frags.map(m => m.minX));
+        line.maxX = Math.max(line.maxX, ...frags.map(m => m.maxX));
+        line.h = Math.max(line.h || 0, ...frags.map(m => m.h || 0));
+      });
+      if (removed.size) orderedLines = orderedLines.filter(l => !removed.has(l));
+    })();
+
+    (function markInlineFootnoteRefs() {
+      /*
+       * 正文里的上标脚注引用（`Therefore^1,`）不是正文内容：字号 7、基线比本行高 3~4pt。
+       * 不摘掉的话，它会变成译文里的 "因此 1,"，而且会跟着句子一起送去翻译。
+       */
+      orderedLines.forEach(line => {
+        if (line.section !== 'col1' && line.section !== 'col2') return;
+        line.spans.forEach(span => {
+          const t = String(span.textContent || '').trim();
+          if (!/^\d{1,2}$/.test(t)) return;
+          if (span._mathInfo && span._mathInfo.math) return;
+          const h = Number(span._pdfH) || 0;
+          const dy = (Number(span._pdfY) || 0) - (Number(line.y) || 0);
+          if (h > 0 && h <= 7.5 && dy >= 2 && dy <= 6) span._footnoteRef = true;
+        });
+      });
+    })();
+
+    /*
      * ============ 8.8 符号表 / 术语表（NOMENCLATURE）整块作为版面裁图 ============
      *
      * 【为什么不再逐行拆】符号表是"左列符号 + 右列多行解释"的隐式表格，符号的上下标
@@ -4136,6 +4262,7 @@
        */
       if (curParaLines.some(l => l && l.__mergedMath)) para.mergedMath = true;
       if (curParaLines.some(l => l && l.__notationTable)) para.notationTable = true;
+      if (curParaLines.some(l => l && l.__algorithm)) para.algorithm = true;
 
       const orderedSpans = [];
       curParaLines.forEach(line => line.spans.forEach(span => orderedSpans.push(span)));
@@ -4191,6 +4318,7 @@
       };
 
       orderedSpans.forEach(span => {
+        if (span._footnoteRef) return;
         const spanText = span.textContent || '';
         if (!spanText) return;
         const item = itemOfSpan(span);
@@ -4545,6 +4673,11 @@
      * 真正的解释文字（`where` / `is` / `the` …）会远超 1 个。
      */
     orderedLines.forEach(ln => {
+      // 脚注里的公式残片不能按"行间公式"断段：否则一条脚注会被劈成 `1 Note… dz = ∏` + `i dz i` 两段
+      if (ln.section === 'footnote') {
+        ln.__blockMath = false;
+        return;
+      }
       let mathW = 0;
       let totalW = 0;
       let bodyText = '';
@@ -7754,9 +7887,10 @@
     const text = (para && para.cleanText) || '';
     const chars = text.replace(/\s+/g, ' ').trim().length;
     const pid = para ? para.id : 0;
+    const kind = para && para.algorithm ? '算法伪代码' : '图表内部标签';
     return `
       <div class="trans-skip-note figlabel-head" data-figlabel-head="${pid}">
-        图表内部标签，未翻译（${chars} 字）
+        ${kind}，未翻译（${chars} 字）
         <button type="button" class="figlabel-toggle" data-figlabel-toggle="${pid}" aria-expanded="false">展开</button>
       </div>
       <div class="sentence-pair-row figlabel-body" data-figlabel-body="${pid}" style="display:none" title="点击在左侧 PDF 中高亮">
@@ -9672,9 +9806,63 @@
    *
    * 不参与任何坐标/高亮：只改**送翻译的文本**，cacheKey 仍按原始 cleanText 算。
    */
+  /*
+   * CMMIB10 等 LaTeX 数学字体的 ToUnicode 会把 ε 映射成控制字符 U+000F。
+   * 不归一化的话：翻译模型会收到一个不可见控制符（实测译成 "p 0"），
+   * 渲染端也无法把 ⟦p (ε)⟧ 匹配回 `p(\u000f)` 的 LaTeX。
+   */
+  function normalizeMathGlyphs(s) {
+    return String(s == null ? '' : s).replace(/\u000f/g, 'ε');
+  }
+  function normalizeMathLatex(s) {
+    return String(s == null ? '' : s).replace(/\u000f/g, '\\epsilon');
+  }
+
+  /*
+   * 翻译模型偶尔会漏掉 ⟦…⟧ 占位符，直接把 `\leftarrow` / `\nabla_{\theta,\phi}`
+   * 写进中文（实测 Algorithm 1 那一整段）。这些裸 LaTeX 命令进入 HTML 后
+   * 既不会渲染、又极其扎眼，所以在渲染前做一次保守的"去命令化"。
+   *
+   * 只处理公式定界符**之外**的文字：⟦…⟧ 与 $…$ 里的内容交给 KaTeX，不能碰。
+   */
+  function sanitizeBareLatex(text) {
+    const MAP = {
+      leftarrow: '←', rightarrow: '→', to: '→', gets: '←', leftrightarrow: '↔',
+      nabla: '∇', partial: '∂', int: '∫', iint: '∬', prod: '∏', sum: '∑',
+      sqrt: '√', infty: '∞', pm: '±', mp: '∓', times: '×', cdot: '·',
+      le: '≤', leq: '≤', ge: '≥', geq: '≥', neq: '≠', approx: '≈', sim: '∼',
+      theta: 'θ', phi: 'φ', varphi: 'φ', epsilon: 'ε', varepsilon: 'ε',
+      mu: 'μ', sigma: 'σ', lambda: 'λ', alpha: 'α', beta: 'β', gamma: 'γ',
+      delta: 'δ', omega: 'ω', pi: 'π', rho: 'ρ', tau: 'τ', psi: 'ψ',
+      log: 'log', exp: 'exp', min: 'min', max: 'max',
+      mathbb: '', mathcal: '', mathrm: '', text: '', left: '', right: '',
+      big: '', Big: '', bigg: '', Bigg: '', displaystyle: ''
+    };
+    const mapRun = s => String(s || '').replace(/\\([A-Za-z]+)(?:\{([^{}]*)\})?/g, (m, cmd, arg) => {
+      if (cmd === 'tilde' && arg) return arg + '\u0303';
+      if (cmd === 'hat' && arg) return arg + '\u0302';
+      if (cmd === 'bar' && arg) return arg + '\u0304';
+      if (cmd === 'vec' && arg) return arg + '\u20d7';
+      if (Object.prototype.hasOwnProperty.call(MAP, cmd)) return MAP[cmd] + (arg || '');
+      // 不认识的命令：保留花括号里的内容（如 \mathrm{KL} → KL），命令名本身丢掉
+      return arg || '';
+    });
+    let out = '';
+    let last = 0;
+    const re = /(\u27e6[\s\S]*?\u27e7|\$[^$]*\$)/g;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      out += mapRun(text.slice(last, m.index)) + m[0];
+      last = re.lastIndex;
+    }
+    return out + mapRun(text.slice(last));
+  }
+
   function buildMergedMathTranslateInput(para) {
     if (!para || para.notationTable) return null;
-    const raw = String(para.cleanText || '').trim();
+    const stripFootnoteMarker = s =>
+      para.type === 'footnote' ? String(s == null ? '' : s).replace(/^\s*\d{1,2}\s+/, '') : String(s == null ? '' : s);
+    const raw = stripFootnoteMarker(normalizeMathGlyphs(para.cleanText)).trim();
     if (!raw) return null;
     /*
      * 将本段已由数学层精确定位的多字符复杂公式片段（含上下标或命令）预先用 `⟦...⟧` 包裹，
@@ -9685,8 +9873,29 @@
      *   4) 按 para.sentencesEn 逐句映射，严格保持句数一致，确保逐句对齐不失效。
      */
     const mathSegs = (Array.isArray(para.segments) ? para.segments : [])
-      .filter(s => s && s.kind === 'math' && String(s.text || '').trim().length >= 4 && /[_^\\]/.test(String(s.latex || '')))
-      .map(s => String(s.text || '').trim())
+      .filter(s => {
+        if (!s || s.kind !== 'math') return false;
+        const t = normalizeMathGlyphs(s.text).trim();
+        const latex = normalizeMathLatex(s.latex).trim();
+        if (!t) return false;
+        /*
+         * 旧规则只包"≥4 字符且含上下标/命令"的式子，于是 ∫ / ∏ / ∑ / p (ε) 这些
+         * 短公式残渣原样喂给模型 —— 模型会把它们当正文改写（实测 `∫ z=g_{phi}(x)`、
+         * `p 0` 全是这么来的）。这里补三类：
+         *   · 大算子/数学符号（∫∏∑∇∂√…）；
+         *   · 含控制字符（CMMIB 的 ε 被映射成 U+000F）；
+         *   · latex 明确是 \int / \prod / \sum … 的。
+         * 单字母变量（L / D / i / j / k / t）仍然不包，避免满屏 ⟦i⟧。
+         */
+        const OP_GLYPH_RE = /[∫∏∑∇∂√∞±×÷≤≥≈≠∼→←↔]/;
+        return (
+          ((t.length >= 4 || /[_^]/.test(latex)) && /[_^\\]/.test(latex)) ||
+          OP_GLYPH_RE.test(t) ||
+          /[\u0000-\u001f]/.test(String(s.text || '')) ||
+          /^\\(int|prod|sum|nabla|partial|sqrt|infty|pm|times|cdot|leq|geq|approx|neq|sim|rightarrow|leftarrow)$/.test(latex)
+        );
+      })
+      .map(s => normalizeMathGlyphs(s.text).trim())
       .sort((a, b) => b.length - a.length);
     if (mathSegs.length === 0) return null;
     const wrapOne = src => {
@@ -9708,7 +9917,7 @@
     };
     const baseSentences =
       Array.isArray(para.sentencesEn) && para.sentencesEn.length > 0
-        ? para.sentencesEn.map(s => s.text)
+        ? para.sentencesEn.map(s => stripFootnoteMarker(normalizeMathGlyphs(s.text)))
         : splitEnglishSentencesSmart(raw).map(s => s.text);
     const sentences = baseSentences.map(wrapOne);
     const text = sentences.join(' ');
@@ -13406,7 +13615,20 @@ let aiPresetQuestion = '';
    *   ③ 本地公式表为空时，退化成"把括号里的残渣原样排版"——绝不丢掉内容。
    */
   function renderZhWithMath(text, para) {
-    const src = String(text == null ? '' : text);
+    /*
+     * 测试脚本会把本函数单独切出来跑，切出来的作用域里没有 normalizeMathGlyphs /
+     * sanitizeBareLatex；这里做一层本地兜底，保证单测与真实运行行为一致。
+     */
+    const normGlyph =
+      typeof normalizeMathGlyphs === 'function'
+        ? normalizeMathGlyphs
+        : s => String(s == null ? '' : s).replace(/\u000f/g, 'ε');
+    const normLatex =
+      typeof normalizeMathLatex === 'function'
+        ? normalizeMathLatex
+        : s => String(s == null ? '' : s).replace(/\u000f/g, '\\epsilon');
+    const sanitize = typeof sanitizeBareLatex === 'function' ? sanitizeBareLatex : s => String(s == null ? '' : s);
+    const src = sanitize(normGlyph(text));
     if (!src) return '';
     const inline = para && Array.isArray(para.visionInline) ? para.visionInline : [];
     /*
@@ -13431,20 +13653,20 @@ let aiPresetQuestion = '';
     const seqPairs = [];
     (para && Array.isArray(para.segments) ? para.segments : []).forEach(seg => {
       if (!seg || seg.kind !== 'math') return;
-      const t = String(seg.text || '').trim();
-      const tex = String(seg.modelLatex || seg.latex || '').trim();
+      const t = normGlyph(seg.text).trim();
+      const tex = normLatex(seg.modelLatex || seg.latex || '').trim();
       if (t && tex) seqPairs.push({ raw: t, latex: tex });
     });
     seqPairs.forEach(x => pairs.push({ key: residueKeyOf(x.raw), raw: x.raw, latex: x.latex }));
     inline.forEach(x => {
-      const f = String(x && x.find ? x.find : '').trim();
-      const l = String(x && x.latex ? x.latex : '').trim();
+      const f = normGlyph(x && x.find ? x.find : '').trim();
+      const l = normLatex(x && x.latex ? x.latex : '').trim();
       // raw 保留**原始大小写**的残渣写法，供"精确匹配"这一档使用（见下面 k/exact 的注释）
       if (f && l && !pairs.some(p => p.raw === f)) pairs.push({ key: residueKeyOf(f), raw: f, latex: l });
     });
     (para && Array.isArray(para.localMath) ? para.localMath : []).forEach(x => {
-      const t = String(x && x.text ? x.text : '').trim();
-      const l = String(x && x.latex ? x.latex : '').trim();
+      const t = normGlyph(x && x.text ? x.text : '').trim();
+      const l = normLatex(x && x.latex ? x.latex : '').trim();
       // 与 segments 里同一条的重复项跳过：segments 那份的 latex 已经是"模型优先"，不该被本地的盖回去
       if (t && l && !pairs.some(p => p.raw === t)) pairs.push({ key: residueKeyOf(t), raw: t, latex: l });
     });
