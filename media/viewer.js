@@ -1,3 +1,9 @@
+/* global stubs:readonly */
+// ↑ `stubs` 不是浏览器全局，也不是本文件的变量：`scratch/probe_para.js`、`scratch/layout_bench.js`
+// 会把 `buildAcademicLayout` 切出来用 `new Function('stubs', …)` 跑，用它注入依赖
+// （graphics 图元、上一页段落归档…）。浏览器里它永远是 undefined，所以调用处一律
+// `typeof stubs !== 'undefined'` 守卫。这一行只是告诉 ESLint 这个探针契约，别报 no-undef
+// （1.8.3 引入该钩子后 CI 的静态检查就一直红在 `stubs is not defined` 上）。
 // 学术文献双栏阅读器客户端主交互逻辑 (高精度数学矢量高光 + 纸质级荧光笔质感 + 句子级双向对齐)
 (function () {
   const vscode = acquireVsCodeApi();
