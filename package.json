@@ -7,7 +7,7 @@
     "color": "#0b578a",
     "theme": "dark"
   },
-  "version": "1.8.7",
+  "version": "1.8.8",
   "publisher": "paper-reader",
   "license": "MIT",
   "repository": {
@@ -243,6 +243,13 @@
           "type": "boolean",
           "default": true,
           "description": "【主题联动】纸张选「暗夜」时把 VS Code 颜色主题切到深色（见 paperThemeDark）；切回白纸/羊皮/竹青、或关闭阅读器时，恢复进入暗夜前的原主题。关闭则完全不动 VS Code 主题。"
+        },
+        "academicReader.translationFontSize": {
+          "type": "number",
+          "default": 13.5,
+          "minimum": 11,
+          "maximum": 24,
+          "description": "【译文卡片字号】右侧对照翻译卡片的正文大小（px，指中文正文；英文与整段译文按比例跟随）。三种改法：鼠标在右栏时按住 Ctrl 滚轮、Ctrl+Alt+= 放大 / Ctrl+Alt+- 缩小 / Ctrl+Alt+0 复位、右栏标题栏的 A−/A+。改完自动写回这里，每篇论文共用同一档。"
         },
         "academicReader.retainPdfContext": {
           "type": "boolean",

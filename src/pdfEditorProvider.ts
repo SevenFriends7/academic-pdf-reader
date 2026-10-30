@@ -346,7 +346,21 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
     // 记住当前 webview：命令面板的「导出笔记」也要能触达它（精读稿由 webview 侧生成，
     // 因为只有它手里有段落切分、句级译文和 AI 答疑上下文）
     this.currentActiveWebview = webviewPanel.webview;
+    /*
+     * 设置面板里直接改字号时也要立刻生效（不必重开论文）：
+     * webview 侧改字号会写回这个设置，宿主这里再把它推回去 —— 属于"设置 ↔ 界面"双向同步。
+     * 只监听这一个键，回调里判一下没变就不发消息（避免自己写自己读的抖动）。
+     */
+    let lastPushedTransFont = NaN;
+    const configSub = vscode.workspace.onDidChangeConfiguration((e) => {
+      if (!e.affectsConfiguration('academicReader.translationFontSize')) return;
+      const px = vscode.workspace.getConfiguration('academicReader').get<number>('translationFontSize', 13.5);
+      if (Math.abs(Number(px) - lastPushedTransFont) < 0.001) return;
+      lastPushedTransFont = Number(px);
+      void webviewPanel.webview.postMessage({ type: 'transFontSizeChanged', px: Number(px) });
+    });
     webviewPanel.onDidDispose(() => {
+      configSub.dispose();
       if (this.currentActiveWebview === webviewPanel.webview) {
         this.currentActiveWebview = undefined;
       }
@@ -407,8 +421,29 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
           break;
         }
 
-        case 'webviewReady': {
-          try {
+        /**
+         * 译文卡片字号：webview 里 Ctrl+滚轮 / Ctrl+Alt+= / A−A+ 调完之后写回设置。
+         *
+         * 【为什么写用户设置而不是每篇论文各存一份】字号是**读者视力/屏幕**层面的偏好，
+         * 读第二篇论文时不该再调一遍。写 Global 目标（不是 workspace），换工作区也保持。
+         * 失败只记日志：改字号不影响阅读，绝不弹错误。
+         */
+        case 'saveTransFontSize': {
+          const px = Number(message.px);
+          if (Number.isFinite(px) && px >= 11 && px <= 24) {
+            try {
+              const cfg = vscode.workspace.getConfiguration('academicReader');
+              if (Math.abs(Number(cfg.get<number>('translationFontSize', 13.5)) - px) > 0.001) {
+                await cfg.update('translationFontSize', Math.round(px * 10) / 10, vscode.ConfigurationTarget.Global);
+              }
+            } catch (err: any) {
+              console.warn('[AcademicReader] 保存译文卡片字号失败:', err?.message);
+            }
+          }
+          break;
+        }
+
+        case 'webviewReady': {          try {
             const fileData = await vscode.workspace.fs.readFile(document.uri);
             webviewPanel.webview.postMessage({
               type: 'initPdfData',
@@ -440,7 +475,12 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
                 .get<boolean>('formulaModel.enabled', false),
               formulaModelName: vscode.workspace
                 .getConfiguration('academicReader')
-                .get<string>('formulaModel.model', 'PP-FormulaNet_plus-S')
+                .get<string>('formulaModel.model', 'PP-FormulaNet_plus-S'),
+              // 译文卡片字号：webview 侧 Ctrl+滚轮 / Ctrl+Alt+= / A−A+ 改完之后写回这个设置，
+              // 重开论文/重启窗口都保持
+              transFontSize: vscode.workspace
+                .getConfiguration('academicReader')
+                .get<number>('translationFontSize', 13.5)
             });
             // Zotero 认领是"锦上添花"，绝不 await 在这个分支里：
             // 本地接口探测最长 4 秒，放在这里会让首屏白屏 4 秒。
@@ -1427,6 +1467,14 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
             <button id="btnViewArticle" class="view-toggle-btn" title="沉浸式全文双语排版视图">全文精读</button>
           </div>
           <div style="display: flex; align-items: center; gap: 4px;">
+            <!-- 译文卡片字号：只缩放右侧卡片正文（段落编号/标签/按钮不跟着变）。
+                 三种入口：鼠标在右栏时 Ctrl+滚轮、Ctrl+Alt+= / - / 0、这里的 A− / A+。
+                 值会写回设置 academicReader.translationFontSize，重开论文仍然生效。 -->
+            <div class="trans-font-ctl" title="译文卡片字号（Ctrl+滚轮 / Ctrl+Alt+= 放大 / Ctrl+Alt+- 缩小 / Ctrl+Alt+0 复位）">
+              <button id="transFontDownBtn" class="icon-btn trans-font-btn" title="缩小译文卡片字号 (Ctrl+Alt+-)">A−</button>
+              <span id="transFontLabel" class="trans-font-label">13.5</span>
+              <button id="transFontUpBtn" class="icon-btn trans-font-btn" title="放大译文卡片字号 (Ctrl+Alt+=)">A+</button>
+            </div>
             <!-- 【没有「视觉重排」按钮】视觉判断是每一页渲染时默认就做的（见 buildAcademicLayout 的调度），
                  不需要手动触发；想重判某一页就换一个视觉模型，或关掉/打开 academicReader.visionSurgery。 -->
             <button id="refreshTransBtn" class="icon-btn" title="重新获取当前页翻译">

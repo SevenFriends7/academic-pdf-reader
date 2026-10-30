@@ -514,6 +514,9 @@
     zoomInBtn: document.getElementById('zoomInBtn'),
     zoomFitBtn: document.getElementById('zoomFitBtn'),
     zoomPercent: document.getElementById('zoomPercent'),
+    transFontDownBtn: document.getElementById('transFontDownBtn'),
+    transFontUpBtn: document.getElementById('transFontUpBtn'),
+    transFontLabel: document.getElementById('transFontLabel'),
     tabTransBtn: document.getElementById('tabTransBtn'),
     tabIndexBtn: document.getElementById('tabIndexBtn'),
     tabNotesBtn: document.getElementById('tabNotesBtn'),
@@ -717,6 +720,16 @@
         break;
       }
 
+      /*
+       * 设置面板里直接改 `academicReader.translationFontSize` → 立刻套用。
+       * 与 webview 自己的 Ctrl+滚轮/A−A+ 是同一条通路（都走 applyTransFontSize），
+       * 只是这里不再写回设置（避免"设置 → 界面 → 设置"来回打）。
+       */
+      case 'transFontSizeChanged': {
+        applyTransFontSize(msg.px);
+        break;
+      }
+
       /**
        * 宿主请求生成「全文双语精读稿」。
        * 「导出笔记」按钮与命令面板命令都走这里，保证只有一条导出实现。
@@ -803,6 +816,8 @@
         if (msg.formulaModelName) formulaModelName = String(msg.formulaModelName);
         // 视觉模型名（换模型 → 每页视觉缓存判废重判，见 isUsableVisionCache）
         if (msg.visionModel !== undefined) configuredVisionModel = String(msg.visionModel || '');
+        // 译文卡片字号（用户设置 academicReader.translationFontSize）：首帧就按它渲染
+        if (msg.transFontSize !== undefined) applyTransFontSize(msg.transFontSize);
         if (msg.paperData) {
           paperData = msg.paperData;
           // AI 答疑记录随论文数据一起回来（旧版没有这个字段）
@@ -13582,6 +13597,89 @@
   dom.zoomOutBtn.addEventListener('click', () => {
     zoomBy(-0.2);
   });
+
+  // ====================== 译文卡片字号（用户可调） ======================
+  /*
+   * 【为什么单独做一套，不复用 PDF 缩放】左侧 Ctrl+滚轮缩放的是**页面图像**，
+   * 而右侧卡片是**文本**：把页面放大并不会让译文更好读（用户的诉求就是"译文看着累"）。
+   * 所以字号是独立的一档用户设置 academicReader.translationFontSize，三个入口：
+   *   · 鼠标在右栏时 Ctrl+滚轮（左栏仍然缩放页面，互不干扰）；
+   *   · 键盘 Ctrl+Alt+= / Ctrl+Alt+- / Ctrl+Alt+0（Ctrl+= / Ctrl+- 仍归页面缩放）；
+   *   · 右栏标题栏的 A− / A+ 按钮。
+   *
+   * 【实现为什么只写一个 CSS 变量】卡片里的字号全部改成
+   * `calc(13.5px * var(--trans-font-scale))`（.sent-zh/.sent-en/.trans-original/
+   * .trans-translated/.trans-unaligned-zh）。改一个变量，中西文一起缩放、行高按 em 跟着走，
+   * 段号/类型标签/按钮保持原尺寸——不会整张卡片一起变形。
+   */
+  const TRANS_FONT_BASE = 13.5;
+  const TRANS_FONT_MIN = 11;
+  const TRANS_FONT_MAX = 24;
+  const TRANS_FONT_STEP = 0.5;
+  let transFontPx = TRANS_FONT_BASE;
+  let transFontSaveTimer = null;
+
+  /** 只保留一位小数，并去掉多余的 `.0`（13.5 / 14 / 14.5） */
+  const formatTransFont = px => String(Math.round(px * 10) / 10);
+
+  function refreshTransFontLabel() {
+    if (dom.transFontLabel) dom.transFontLabel.textContent = formatTransFont(transFontPx);
+    if (dom.transFontUpBtn) dom.transFontUpBtn.disabled = transFontPx >= TRANS_FONT_MAX - 0.001;
+    if (dom.transFontDownBtn) dom.transFontDownBtn.disabled = transFontPx <= TRANS_FONT_MIN + 0.001;
+  }
+
+  function persistTransFontSize() {
+    clearTimeout(transFontSaveTimer);
+    transFontSaveTimer = setTimeout(() => {
+      try {
+        vscode.postMessage({ type: 'saveTransFontSize', px: transFontPx });
+      } catch (e) {
+        /* 宿主不可用就算了，本次会话内仍然生效 */
+      }
+    }, 400);
+  }
+
+  /**
+   * 应用译文卡片字号（px，指中文正文那一档；英文=0.96×、整段译文=1.04×）。
+   * @param {number} px 目标像素
+   * @param {{persist?: boolean, toast?: boolean}} [opts] persist=写回设置；toast=弹一次提示
+   */
+  function applyTransFontSize(px, opts) {
+    const options = opts || {};
+    const num = Number(px);
+    if (!Number.isFinite(num)) return transFontPx;
+    const next = Math.min(TRANS_FONT_MAX, Math.max(TRANS_FONT_MIN, Math.round(num * 10) / 10));
+    const changed = Math.abs(next - transFontPx) > 0.001;
+    transFontPx = next;
+    const root = document.documentElement;
+    if (root && root.style && typeof root.style.setProperty === 'function') {
+      root.style.setProperty('--trans-font-scale', String(Math.round((transFontPx / TRANS_FONT_BASE) * 1000) / 1000));
+    }
+    refreshTransFontLabel();
+    if (options.toast && changed) showReaderToast(`译文卡片字号 ${formatTransFont(transFontPx)}px`, 'info');
+    if (options.persist && changed) persistTransFontSize();
+    return transFontPx;
+  }
+
+  /** Ctrl+滚轮落在右栏（译文卡片/全文精读）上 → 改字号；落在左栏 → 仍然缩放页面 */
+  function isEventInTransPane(e) {
+    const el = e && e.target;
+    if (!el || typeof el.closest !== 'function' || typeof el.contains !== 'function') return false;
+    if (dom.transListContainer && dom.transListContainer.contains(el)) return true;
+    if (dom.articleFlowContainer && dom.articleFlowContainer.contains(el)) return true;
+    // 兜底：整个右栏（标题栏、A−/A+ 按钮上滚轮也算）
+    return !!(dom.rightPane && dom.rightPane.contains(el));
+  }
+
+  if (dom.transFontUpBtn) {
+    dom.transFontUpBtn.addEventListener('click', () => applyTransFontSize(transFontPx + TRANS_FONT_STEP, { persist: true, toast: true }));
+  }
+  if (dom.transFontDownBtn) {
+    dom.transFontDownBtn.addEventListener('click', () => applyTransFontSize(transFontPx - TRANS_FONT_STEP, { persist: true, toast: true }));
+  }
+  // 初始先按默认值刷新一次标签（真实值在 initPdfData 里到达后再覆盖）
+  refreshTransFontLabel();
+
   dom.zoomFitBtn.addEventListener('click', () => {
     // 「适合宽度」= 重新进入自动适应模式，此后跟随左栏宽度
     autoFitEnabled = true;
@@ -13597,6 +13695,20 @@
   let wheelZoomTimer = null;
   const handleCtrlWheelZoom = (e) => {
     if (!e.ctrlKey && !e.metaKey) return;
+    /*
+     * 【鼠标在右侧译文区时，Ctrl+滚轮改的是**字号**】——右侧是文本，缩放页面图像对它没意义。
+     * 两个区域互不干扰：左栏 Ctrl+滚轮照旧缩放 PDF，右栏 Ctrl+滚轮调卡片字号。
+     * 这里必须自己 preventDefault：VS Code 的 webview 默认会把 Ctrl+滚轮当成"整页缩放"。
+     */
+    if (isEventInTransPane(e)) {
+      e.preventDefault();
+      e.stopPropagation();
+      const up = e.deltaY < 0;
+      // 触控板一次捏合会连发很多事件：大 delta（鼠标格档）走整步，小 delta 走半步
+      const stepScale = Math.abs(e.deltaY) >= 40 ? 1 : 0.5;
+      applyTransFontSize(transFontPx + (up ? 1 : -1) * TRANS_FONT_STEP * stepScale, { persist: true });
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
     markManualZoom();
@@ -13659,6 +13771,28 @@
 
   window.addEventListener('keydown', (e) => {
     if (e.ctrlKey || e.metaKey) {
+      /*
+       * 【Ctrl+Alt 归译文卡片字号】Ctrl+= / Ctrl+- / Ctrl+0 已经归页面缩放，
+       * 再抢它们会和用户的肌肉记忆打架，所以字号用同形但多按一个 Alt 的键位：
+       * Ctrl+Alt+= 放大、Ctrl+Alt+- 缩小、Ctrl+Alt+0 复位（回默认 13.5px）。
+       */
+      if (e.altKey) {
+        if (e.key === '=' || e.key === '+') {
+          e.preventDefault();
+          applyTransFontSize(transFontPx + TRANS_FONT_STEP, { persist: true, toast: true });
+          return;
+        }
+        if (e.key === '-' || e.key === '_') {
+          e.preventDefault();
+          applyTransFontSize(transFontPx - TRANS_FONT_STEP, { persist: true, toast: true });
+          return;
+        }
+        if (e.key === '0') {
+          e.preventDefault();
+          applyTransFontSize(TRANS_FONT_BASE, { persist: true, toast: true });
+          return;
+        }
+      }
       if (e.key === '=' || e.key === '+') {
         e.preventDefault();
         zoomBy(0.15);

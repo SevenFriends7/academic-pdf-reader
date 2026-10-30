@@ -1100,6 +1100,11 @@ body.debug-text-layer .textLayer span {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  /* 标题栏右侧多了一组「译文卡片字号」控件：右栏被拖窄时允许折行，
+     否则它会把刷新按钮一起挤出边界（与 .card-actions 的 wrap 是同一个道理） */
+  flex-wrap: wrap;
+  row-gap: 6px;
+  column-gap: 8px;
 }
 
 .header-info {
@@ -1146,6 +1151,45 @@ body.debug-text-layer .textLayer span {
   color: var(--text-primary);
 }
 
+/* 译文卡片字号控制（右栏标题栏）：A− 13.5 A+，旁边一行小字提示快捷键 */
+.trans-font-ctl {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 0 2px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--card-action-bg, transparent);
+  flex: 0 0 auto;
+}
+
+.trans-font-btn {
+  padding: 2px 5px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: 0.2px;
+  color: var(--text-secondary);
+}
+
+.trans-font-btn:hover:not(:disabled) {
+  color: var(--accent-color);
+}
+
+.trans-font-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.trans-font-label {
+  min-width: 26px;
+  text-align: center;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  user-select: none;
+}
+
 .trans-list-container, .notes-list-container {
   flex: 1;
   overflow-y: auto;
@@ -1157,6 +1201,17 @@ body.debug-text-layer .textLayer span {
 }
 
 /* 对照段落卡片 (现代学术卡片设计) */
+/*
+ * 译文卡片字号总闸：右侧译文/原文/整段译文全部按这个比例缩放。
+ * 由 webview 按用户设置写入（academicReader.translationFontSize），三种入口：
+ * 鼠标在右栏时 Ctrl+滚轮、Ctrl+Alt+= / - / 0、右栏标题栏的 A− / A+。
+ * 只缩"正文文本"（.sent-zh/.sent-en/.trans-original/.trans-translated…），
+ * 段落编号、类型标签、按钮保持原尺寸——否则整张卡片会一起变形，反而更难读。
+ */
+:root {
+  --trans-font-scale: 1;
+}
+
 .trans-card {
   background-color: var(--trans-card-bg);
   border: 1px solid var(--trans-card-border);
@@ -1442,7 +1497,7 @@ body.theme-paper-dark .fluid-badge-zh {
 }
 
 .trans-original {
-  font-size: 13px;
+  font-size: calc(13px * var(--trans-font-scale));
   font-weight: 480;
   color: var(--sent-en-color);
   line-height: 1.62;
@@ -1475,7 +1530,7 @@ body.theme-paper-dark .fluid-badge-zh {
 }
 
 .trans-translated {
-  font-size: 14px;
+  font-size: calc(14px * var(--trans-font-scale));
   line-height: 1.75;
   color: var(--sent-zh-color);
   font-weight: 500;
@@ -1620,7 +1675,7 @@ body.theme-paper-dark .fluid-badge-zh {
 }
 
 .sent-zh {
-  font-size: 13.5px;
+  font-size: calc(13.5px * var(--trans-font-scale));
   line-height: 1.68;
   color: var(--sent-zh-color);
   font-weight: 550;
@@ -1634,7 +1689,7 @@ body.theme-paper-dark .fluid-badge-zh {
 }
 
 .sent-en {
-  font-size: 13px;
+  font-size: calc(13px * var(--trans-font-scale));
   line-height: 1.58;
   font-weight: 480;
   color: var(--sent-en-color);
@@ -3911,7 +3966,7 @@ body.theme-paper-dark .article-section-zh {
   margin-bottom: 6px;
 }
 .trans-unaligned-zh {
-  font-size: 14px;
+  font-size: calc(14px * var(--trans-font-scale));
   line-height: 1.85;
   color: var(--text-primary);
   white-space: pre-wrap;

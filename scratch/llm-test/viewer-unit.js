@@ -34,16 +34,47 @@ const expose = `
       invalidateMathIndex();
     },
     aiConversationRef: () => aiConversation,
-    setAiConversation: (v) => { aiConversation = v; }
+    setAiConversation: (v) => { aiConversation = v; },
+    transFont: {
+      apply: (px, opts) => applyTransFontSize(px, opts),
+      getPx: () => transFontPx,
+      base: TRANS_FONT_BASE,
+      min: TRANS_FONT_MIN,
+      max: TRANS_FONT_MAX
+    }
   };
 `;
 code = code.slice(0, idx) + expose + code.slice(idx);
 
 // ---------- 假 DOM ----------
+/**
+ * 假 style 对象：除了当普通属性包用，还要支持 setProperty/getPropertyValue。
+ * viewer 里"用户可调的译文卡片字号"是写 CSS 变量（`--trans-font-scale`）实现的，
+ * 没有这三件套就只能测到"没抛异常"，测不到真正写进去的值。
+ */
+function fakeStyle() {
+  const store = {};
+  const style = {
+    setProperty(name, value) {
+      store[name] = String(value);
+    },
+    getPropertyValue(name) {
+      return store[name] !== undefined ? store[name] : '';
+    },
+    removeProperty(name) {
+      const v = store[name];
+      delete store[name];
+      return v || '';
+    }
+  };
+  // 允许 `el.style.color = '#fff'` 这种普通写法照旧可用
+  return Object.assign(style, { _store: store });
+}
+
 function fakeEl(tag) {
   const el = {
     tagName: (tag || 'div').toUpperCase(),
-    style: {},
+    style: fakeStyle(),
     classList: {
       _s: new Set(),
       add(...c) { c.forEach(x => this._s.add(x)); },
@@ -630,7 +661,8 @@ checkTrue(
   /autoFitEnabled\s*&&\s*unscaledWidth\s*>\s*0/.test(code) && /computeFitScaleFromWidth\(unscaledWidth\)/.test(code)
 );
 checkTrue('zoomBy 会标记为手动缩放', /function zoomBy\(step\)\s*\{\s*markManualZoom\(\)/.test(code));
-checkTrue('Ctrl+滚轮缩放会标记为手动缩放', /const handleCtrlWheelZoom[\s\S]{0,300}?markManualZoom\(\)/.test(code));
+// 处理函数里多了一段"右栏 Ctrl+滚轮改字号"的分支，窗口放宽到 700 字仍足够覆盖到 markManualZoom
+checkTrue('Ctrl+滚轮缩放会标记为手动缩放', /const handleCtrlWheelZoom[\s\S]{0,700}?markManualZoom\(\)/.test(code));
 checkTrue('Ctrl+0 重置会标记为手动缩放', /e\.key === '0'[\s\S]{0,200}?markManualZoom\(\)/.test(code));
 checkTrue(
   '「适合宽度」按钮会重新开启自动适应',
@@ -2895,6 +2927,64 @@ console.log('\n===== T25 公式与符号索引（真实 AOT 回包） =====');
   T.setVisionStructure({});
   checkTrue('换了回包后索引会失效重算', T.buildMathIndex().formulas.length === 0);
   T.setVisionStructure({});
+})();
+
+// ---------- 26. 译文卡片字号：可调 + 有上下限 + 写回设置 ----------
+console.log('\n===== T26 译文卡片字号（Ctrl+滚轮 / 快捷键 / 持久化） =====');
+(function transFontSizeTest() {
+  const api = T.transFont;
+  checkTrue('暴露了字号 API', !!(api && api.apply && api.getPx), JSON.stringify(Object.keys(api || {})));
+  if (!api) return;
+
+  checkTrue('默认字号 13.5px（与卡片原样式一致）', api.getPx() === 13.5 && api.base === 13.5, String(api.getPx()));
+  checkTrue('上下限 11~24px', api.min === 11 && api.max === 24, `${api.min}~${api.max}`);
+
+  api.apply(16);
+  checkTrue('设置为 16px 生效', api.getPx() === 16, String(api.getPx()));
+  checkTrue(
+    'CSS 变量 --trans-font-scale = 16/13.5',
+    Math.abs(Number(documentStub.documentElement.style.getPropertyValue('--trans-font-scale')) - 16 / 13.5) < 0.002,
+    documentStub.documentElement.style.getPropertyValue('--trans-font-scale')
+  );
+  checkTrue('标题栏标签同步显示 16', (documentStub.getElementById('transFontLabel').textContent || '') === '16', String(documentStub.getElementById('transFontLabel').textContent));
+
+  api.apply(99);
+  checkTrue('超过上限时夹到 24', api.getPx() === 24, String(api.getPx()));
+  api.apply(1);
+  checkTrue('低于下限时夹到 11', api.getPx() === 11, String(api.getPx()));
+  const beforeBad = api.getPx();
+  api.apply('not-a-number');
+  checkTrue('非数字输入不改变现状', api.getPx() === beforeBad, String(api.getPx()));
+  api.apply(13.5);
+  checkTrue('复位回默认 13.5', api.getPx() === 13.5, String(api.getPx()));
+
+  // 源码层：三个入口都接上了，且不会和 PDF 缩放打架
+  checkTrue(
+    'Ctrl+滚轮落在右栏时改字号（先判区域再缩放）',
+    /if \(isEventInTransPane\(e\)\) \{[\s\S]{0,320}?applyTransFontSize\(/.test(code) &&
+      code.indexOf('isEventInTransPane(e)') < code.indexOf('markManualZoom();', code.indexOf('const handleCtrlWheelZoom'))
+  );
+  checkTrue('右栏判定覆盖 transListContainer / articleFlowContainer / rightPane', /transListContainer\.contains\(el\)/.test(code) && /articleFlowContainer\.contains\(el\)/.test(code) && /rightPane\.contains\(el\)/.test(code));
+  checkTrue('快捷键用 Ctrl+Alt（不抢页面缩放的 Ctrl+= / Ctrl+-）', /if \(e\.altKey\) \{[\s\S]{0,300}?applyTransFontSize\(transFontPx \+ TRANS_FONT_STEP/.test(code));
+  checkTrue('Ctrl+Alt+0 复位', /e\.key === '0'[\s\S]{0,120}?applyTransFontSize\(TRANS_FONT_BASE/.test(code));
+  checkTrue('字号变化会写回设置', /type: 'saveTransFontSize', px: transFontPx/.test(code));
+  checkTrue('首帧按宿主下发的值渲染', /msg\.transFontSize !== undefined[\s\S]{0,80}applyTransFontSize\(msg\.transFontSize\)/.test(code));
+  checkTrue('宿主导出 initPdfData 里带 transFontSize', /transFontSize: vscode\.workspace/.test(require('fs').readFileSync(require('path').join(__dirname, '..', '..', 'src', 'pdfEditorProvider.ts'), 'utf8')));
+  const pkg = JSON.parse(require('fs').readFileSync(require('path').join(__dirname, '..', '..', 'package.json'), 'utf8'));
+  const conf = pkg.contributes.configuration.properties['academicReader.translationFontSize'];
+  checkTrue('设置项存在且有默认/上下限', !!conf && conf.default === 13.5 && conf.minimum === 11 && conf.maximum === 24, JSON.stringify(conf));
+
+  // 样式层：五个正文类都按变量缩放，编号/标签不跟着变
+  const scaled = ['.sent-zh', '.sent-en', '.trans-original', '.trans-translated', '.trans-unaligned-zh'];
+  checkTrue('五处卡片正文都用 --trans-font-scale', scaled.every(sel => new RegExp('\\' + sel + ' \\{[^}]*var\\(--trans-font-scale\\)').test(css)), scaled.filter(sel => !new RegExp('\\' + sel + ' \\{[^}]*var\\(--trans-font-scale\\)').test(css)).join(','));
+  checkTrue('变量在 :root 有默认值 1', /:root \{[^}]*--trans-font-scale: 1/.test(css));
+  checkTrue(
+    '段号/类型标签不跟着缩放（只有正文文本吃 --trans-font-scale）',
+    /\.para-type-tag \{[^}]*font-size: 11px/.test(css) &&
+      /\.sent-num \{[^}]*\}/.test(css) &&
+      !/\.sent-num \{[^}]*--trans-font-scale/.test(css) &&
+      !/\.para-type-tag \{[^}]*--trans-font-scale/.test(css)
+  );
 })();
 
 console.log(`\n===== 结果: ${pass} 通过 / ${fail} 失败 =====`);
