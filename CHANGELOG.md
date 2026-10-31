@@ -3,6 +3,36 @@
 本文件记录「文献对照翻译阅读器」的重要变更。
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.0.7] - 2026-10-31
+
+### 重点修复与体验增强
+- **四大阅读主题逐句翻译卡片高光联动与防误清闭环**：
+  - 彻底修复鼠标释放（`mouseup`）后选区检测误调用 `clearSentenceHighlights` 导致右侧卡片高光 20ms 内被瞬间清除的深层隐患。
+  - 为全部四大主题（默认明亮、羊皮纸暖黄、豆沙绿护眼、深空暗黑）量身定制高对比度荧光高光规范（`.active-sentence-row`），包含专属背景色、5.5px 粗指示条、高对比度译文与实体发光编号徽标。
+  - 在底层聚焦中枢 `focusParagraphOnPdf` 固化双向同步逻辑，点击 PDF 英文原句、选中英文词句或便签跳转时，右侧对应翻译卡片 100% 绝对保持高光亮起并平滑滚动到视野。
+- **公式排版空格与条件词/算子黏连修复**：
+  - 解决 LaTeX/KaTeX 数学模式下忽略普通空格导致公式与条件语句挤在一起（如 `)ifangle(u, v_k)`）的排版问题。
+  - 智能保留 PDF 字符间的真实横向物理空隙，自动插入 `\quad`（或 `\qquad` / `\;`）间距。
+  - 自动识别公式末尾的条件从句（`if`、`for`、`where`、`when`、`otherwise`、`s.t.`）并转换为正体文本 `\text{if }`；自动识别学术视觉算子（`angle`、`dist`、`sim`、`proj`、`IoU`）并封装为标准数学算子 `\operatorname{angle}`。
+
+### 架构重构
+- **全新 v2.0 纯 TypeScript 2D 空间版面与公式解析引擎（0 Python 依赖，开箱即用）**：
+  - **跨出版商通用字形解码层（`src/core/glyphs/fontDecoder.ts`）**：统一解码 TeX OML（`CMMI`）、OMS（`CMSY`）、OMX（`CMEX`）、OT1（`CMR`）、`MSBM`、`EUSM`、Adobe `Symbol`、Word/WPS 私用区 `U+F000–F0FF` 与 Unicode Mathematical Alphanumerics `U+1D400–U+1D7FF`，彻底清除 `\u000f` 等 `ctrl-glyph` 控制符残渣，并精准区分纯 LaTeX 论文正文 `CMR` 与混合排版数学符号族。
+  - **真 2D 空间数学 AST 重构与精准邻行遮罩裁图（`src/core/math/mathEngine2D.ts`、`src/core/layout/vectorGraphics.ts`）**：
+    - 修复旧版 `extractPageGraphics` 丢弃 `< 10pt` 短线段的缺陷（现下探至 `2.2pt`），完整提取 `\frac{num}{den}` 短分式线、`\sqrt{...}` 根号顶线、上下限大型算子（`\sum_{...}^{...}`）、上下标嵌套、多行 `aligned`/`cases` 与独立公式编号 `(1)`。
+    - 修复旧版 `tableRegions` 将整页 `minY..maxY` 跨度内正文与行间公式误删的严重缺陷（实测恢复 `AOT.pdf`、`cycle.pdf` 数百个被误删文本片段）。
+    - 新增 4 信号行间公式分离器（自动剥离 `"is defined as:"` 引导语与 `"where ..."` 解释子句为可翻译正文）及 `computeFormulaCropBox` 邻行残脚白底遮罩（`maskRects`）。
+  - **索引化行内数学占位符协议（`⟦M1⟧`, `⟦M2⟧`, ...）**：取代易被大模型改写或大小写碰撞的残渣直抄方案，译文回包后 $O(1)$ 无歧义还原为 KaTeX 渲染，导出双语精读稿与剪贴板复制自动转为标准 `$...$` LaTeX。
+  - **原子化 1:1 字符坐标构建器（`TextBufferBuilder`）**：从数据结构层面保证 100% 段落满足 `cleanText.length === charMap.length`，彻底根除折行连字符引发的句子高亮偏移。
+- **全新交互式 PDF 框选截图识别与解耦多模态视觉通道（`src/webview/snipTool.ts`、`src/visionService.ts`）**：
+  - 点击顶部工具栏 **「框选识别」**（快捷键 `Alt+S`）或随时在 PDF 上按住 **`Shift + 左键拖拽`**，即可 2.6× 高清子视口裁切任意公式、复杂表格或架构图，浮动操作条一键完成 **「∑ 转 LaTeX」**（离线 2D 秒出 + 可选 VLM 精校）、**「译 区域翻译」**、**「✦ 带图问 AI」**、**「⎘ 复制图」**。
+  - 新增独立视觉设置 `academicReader.visionApiEndpoint`、`academicReader.visionApiKey`、`academicReader.visionModel` 与向导命令 `academicReader.configureVision`：主翻译继续用低成本纯文本模型（如 DeepSeek-V3），仅在框选识别、公式卡片 **「✨ 视觉精校 LaTeX」** 或带图问 AI 时按需调用多模态视觉模型（通义 Qwen-VL / 硅基流动 / Gemini / GPT-4o / GLM-4V）。
+- **彻底解决翻译误判跳过与英文原样返回（`src/translator.ts`）**：
+  - 废除误杀 `< 60` 字符短句、冒号结尾公式引导句、无虚词标题与被公式打断子句的 `looksNonProse` 启发式拦截器，替换为极窄确定性的 `isPureUntranslatableToken`（仅跳过纯数字/标点/URL/DOI/孤立式号）。
+  - 升级缓存自愈机制 `pruneStaleNonProseCache` 与 `PROMPT_VERSION`（`p6-v2-m1-math-no-nonprose-skip`），打开历史文献自动清除曾被缓存的「英文充当中文译文」脏记录并重新精译。
+  - 修复 `src/llmClient.ts` 流式 SSE `resetIdle()` 定时器未清理导致的误超时中断隐患。
+  - 「公式·符号」索引面板升级为合并本机 2D 空间公式与行内符号，默认 `local` 模式无需云端视觉即自动生成全文公式与符号索引。
+
 ## [1.8.8] - 2026-10-30
 
 ### 新增

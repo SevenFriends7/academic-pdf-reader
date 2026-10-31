@@ -57,3 +57,7 @@ py/__pycache__/
 scratch/dstest/out-storage/
 out_vision.json
 
+
+scratch/.build-v2/
+scratch/_*
+media/*.map

@@ -55,6 +55,7 @@ tsconfig.json
 
 # ---- 源码映射（体积大且会暴露源码）----
 dist/*.map
+media/*.map
 
 # ---- 商店展示截图：市场包走 CDN，本机包由 package-vsix.js 单独复制 ----
 media/screenshots/**

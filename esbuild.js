@@ -30,7 +30,7 @@ function copyPdfJsAssets() {
 async function main() {
   copyPdfJsAssets();
 
-  const ctx = await esbuild.context({
+  const hostCtx = await esbuild.context({
     entryPoints: ['src/extension.ts'],
     bundle: true,
     format: 'cjs',
@@ -39,20 +39,40 @@ async function main() {
     sourcesContent: false,
     platform: 'node',
     outfile: 'dist/extension.js',
-    // 默认 charset=ascii 会把中文串全部转成 \uXXXX：既变胖、也没法再用 grep 核对
-    // "某个功能到底打进去了没有"（本轮就吃过这个亏）。VS Code 按 UTF-8 读扩展代码，安全。
     charset: 'utf8',
     external: ['vscode'],
     logLevel: 'info',
   });
 
+  const webviewEntry = path.join(__dirname, 'src', 'webview', 'v2EngineBundle.ts');
+  const webviewCtx = fs.existsSync(webviewEntry)
+    ? await esbuild.context({
+        entryPoints: ['src/webview/v2EngineBundle.ts'],
+        bundle: true,
+        format: 'iife',
+        target: ['es2020'],
+        minify,
+        sourcemap: true,
+        sourcesContent: false,
+        platform: 'browser',
+        outfile: 'media/v2-engine.js',
+        charset: 'utf8',
+        logLevel: 'info',
+      })
+    : null;
+
   if (watch) {
     console.log('[build] Watching for changes...');
-    await ctx.watch();
+    await hostCtx.watch();
+    if (webviewCtx) await webviewCtx.watch();
   } else {
-    await ctx.rebuild();
-    await ctx.dispose();
-    console.log('[build] Extension build complete.');
+    await hostCtx.rebuild();
+    await hostCtx.dispose();
+    if (webviewCtx) {
+      await webviewCtx.rebuild();
+      await webviewCtx.dispose();
+    }
+    console.log('[build] Extension + Webview v2 engine build complete.');
   }
 }
 

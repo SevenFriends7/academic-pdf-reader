@@ -7,6 +7,12 @@ import { buildAnnotatedPdf } from './pdfExport';
 import { mergeArchivedParagraphs } from './pageArchive';
 import { ZoteroClient, ZoteroLink, ZoteroDetectResult, toViewerAnnotations, ViewerAnnotation } from './zoteroClient';
 import { FormulaModelClient } from './formulaModel';
+import {
+  recognizeSnipRegion,
+  resolveVisionProviderConfig,
+  parseDataUrlToLlmImage,
+  type SnipRecognitionMode
+} from './visionService';
 
 /**
  * 段落内容指纹：FNV-1a + 长度。
@@ -85,7 +91,8 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
    * 同时标题类段落开了"强制翻译"直通路。这两件事都会改变已有段落的**处理方式**，
    * 所以必须换版本号让旧译文失效重来（旧缓存里那些"译文=英文原文"的标题就在此列）。
    */
-  private static readonly PROMPT_VERSION = 'p5-vaemath-algorithm-footnote';
+  private static readonly PROMPT_VERSION = 'p6-v2-m1-math-no-nonprose-skip';
+  private snipRequests = new Map<string, AbortController>();
 
   /**
    * Zotero 只读客户端（本文件生命周期内共用一个：条目列表与探测结果都在它里面缓存，
@@ -398,8 +405,27 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
      */
     try {
       const pruned = this.translator.pruneStaleNonProseCache(paperData as any);
-      if (pruned > 0) {
-        console.log(`[AcademicReader] 清理了 ${pruned} 条"原文当译文"的历史缓存（判据已修正，重新翻译这些段）`);
+      let cleanedArchive = false;
+      if (paperData.pageArchive && typeof paperData.pageArchive === 'object') {
+        for (const [k, paras] of Object.entries(paperData.pageArchive)) {
+          if (Array.isArray(paras)) {
+            const hasCorrupt = paras.some(
+              (p: any) =>
+                p &&
+                p.type === 'formula' &&
+                typeof p.cleanText === 'string' &&
+                p.cleanText.length > 250 &&
+                /\(\d+\)[\s\S]*\(\d+\)/.test(p.cleanText)
+            );
+            if (hasCorrupt) {
+              delete paperData.pageArchive[k];
+              cleanedArchive = true;
+            }
+          }
+        }
+      }
+      if (pruned > 0 || cleanedArchive) {
+        console.log(`[AcademicReader] 自动自愈历史缓存: 移除了 ${pruned} 条失效译文与失效公式段落`);
         await this.storageManager.savePaperData(document.uri, paperData);
       }
     } catch (err: any) {
@@ -456,7 +482,7 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
               // 式(5) 与后面的 "where L is ..." 被并成一段，正文里 20 处行内公式重排成符号汤）。
               segmentationEngine: vscode.workspace
                 .getConfiguration('academicReader')
-                .get<string>('segmentationEngine', 'vision'),
+                .get<string>('segmentationEngine', 'local'),
               visionSurgery: vscode.workspace
                 .getConfiguration('academicReader')
                 .get<boolean>('visionSurgery', true),
@@ -740,11 +766,22 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
           break;
         }
 
-        // 流式 AI 问答：先 start，再若干 delta，最后 done / error
+        // 流式 AI 问答：先 start，再若干 delta，最后 done / error（支持多模态带图提问！）
         case 'requestAiQuestion': {
-          const { requestId, question, selectedText, contextText, page, history, answerStyle, fullText, focusMath } = message;
+          const { requestId, question, selectedText, contextText, page, history, answerStyle, fullText, focusMath, images } = message;
           const aiAnswerStyle =
             answerStyle || vscode.workspace.getConfiguration('academicReader').get<string>('aiAnswerStyle', 'standard');
+          const parsedImages = Array.isArray(images)
+            ? images
+                .map((im: any) =>
+                  typeof im === 'string'
+                    ? parseDataUrlToLlmImage(im)
+                    : im && typeof im.base64 === 'string'
+                    ? { mimeType: im.mimeType || 'image/png', base64: im.base64 }
+                    : null
+                )
+                .filter((im): im is { mimeType: string; base64: string } => Boolean(im && im.base64))
+            : undefined;
           try {
             webviewPanel.webview.postMessage({ type: 'aiQuestionStart', requestId });
             const result = await this.translator.streamAcademicAnswer(
@@ -757,11 +794,9 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
                 noteType: message.noteType,
                 history: Array.isArray(history) ? history : [],
                 answerStyle: aiAnswerStyle,
-                // 规范公式（视觉模型从页面图像转写的 LaTeX）：文本层抽出来的公式是残渣，
-                // 不给模型规范式它就只能猜记号（读者问公式时答案会含糊、符号对不上号）
                 focusMath: typeof focusMath === 'string' ? focusMath : '',
-                // 专家模式：webview 现抽的**整篇文献**（所有页）——宿主自己只有用户翻过的页
-                fullText: typeof fullText === 'string' ? fullText : ''
+                fullText: typeof fullText === 'string' ? fullText : '',
+                images: parsedImages && parsedImages.length > 0 ? parsedImages : undefined
               },
               (chunk) => {
                 webviewPanel.webview.postMessage({ type: 'aiQuestionDelta', requestId, chunk });
@@ -794,6 +829,84 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
           break;
         }
 
+        // 框选区域 / 公式卡片多模态视觉识别（公式转 LaTeX / 区域视觉翻译 / 截图讲解）
+        case 'requestSnipRecognition': {
+          const { requestId, mode, imageDataUrl, localHintLatex, localHintText, page, paraIndex } = message;
+          const ctrl = new AbortController();
+          if (requestId) this.snipRequests.set(String(requestId), ctrl);
+          try {
+            const vcfg = resolveVisionProviderConfig();
+            if (!vcfg.isConfigured) {
+              webviewPanel.webview.postMessage({
+                type: 'snipRecognitionError',
+                requestId,
+                mode,
+                page,
+                paraIndex,
+                needsVisionConfig: true,
+                errorText: vcfg.reason || '未配置支持图片输入的视觉模型。可点击「配置视觉引擎」单独配置 Qwen-VL / Gemini / GPT-4o。'
+              });
+              break;
+            }
+            const recMode: SnipRecognitionMode =
+              mode === 'translate' || mode === 'explain' ? mode : 'latex';
+            const res = await recognizeSnipRegion({
+              mode: recMode,
+              imageDataUrl: String(imageDataUrl || ''),
+              localHintLatex: typeof localHintLatex === 'string' ? localHintLatex : undefined,
+              localHintText: typeof localHintText === 'string' ? localHintText : undefined,
+              signal: ctrl.signal,
+              onDelta: recMode !== 'latex'
+                ? (chunk) => {
+                    webviewPanel.webview.postMessage({
+                      type: 'snipRecognitionDelta',
+                      requestId,
+                      mode: recMode,
+                      chunk
+                    });
+                  }
+                : undefined
+            });
+            webviewPanel.webview.postMessage({
+              type: 'snipRecognitionResult',
+              requestId,
+              mode: recMode,
+              page,
+              paraIndex,
+              text: res.text,
+              latex: res.latex,
+              model: res.model
+            });
+          } catch (err: any) {
+            webviewPanel.webview.postMessage({
+              type: 'snipRecognitionError',
+              requestId,
+              mode,
+              page,
+              paraIndex,
+              needsVisionConfig: !resolveVisionProviderConfig().isConfigured,
+              errorText: this.describeError(err)
+            });
+          } finally {
+            if (requestId) this.snipRequests.delete(String(requestId));
+          }
+          break;
+        }
+
+        case 'cancelSnipRecognition': {
+          const ctrl = this.snipRequests.get(String(message.requestId || ''));
+          if (ctrl) {
+            ctrl.abort();
+            this.snipRequests.delete(String(message.requestId || ''));
+          }
+          break;
+        }
+
+        case 'openVisionSettings': {
+          await vscode.commands.executeCommand('academicReader.configureVision');
+          break;
+        }
+
         case 'requestModelInfo': {
           const cfg = vscode.workspace.getConfiguration('academicReader');
           const service = cfg.get<string>('translationService', 'openai-compatible');
@@ -801,6 +914,7 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
           const configuredModel = (cfg.get<string>('modelName', 'deepseek-chat') || 'deepseek-chat').trim();
           const apiKey = (cfg.get<string>('apiKey', '') || '').trim();
           const hasKey = isOpenAI ? !!apiKey : true;
+          const vcfg = resolveVisionProviderConfig();
           webviewPanel.webview.postMessage({
             type: 'modelInfo',
             service,
@@ -808,9 +922,12 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
             configuredModel,
             configuredAiModel: cfg.get<string>('aiModel', ''),
             answerStyle: cfg.get<string>('aiAnswerStyle', 'standard'),
-            segmentationEngine: cfg.get<string>('segmentationEngine', 'vision'),
+            segmentationEngine: cfg.get<string>('segmentationEngine', 'local'),
             visionSurgery: cfg.get<boolean>('visionSurgery', true),
             visionModel: cfg.get<string>('visionModel', ''),
+            visionConfigured: vcfg.isConfigured,
+            visionModelResolved: vcfg.model,
+            visionReason: vcfg.reason || '',
             engineTag: this.engineTag(),
             available: [configuredModel],
             listError: '',
@@ -1331,6 +1448,9 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
     const cssUri = webview.asWebviewUri(
       vscode.Uri.joinPath(extensionUri, 'media', 'viewer.css')
     );
+    const v2EngineUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(extensionUri, 'media', 'v2-engine.js')
+    );
     const scriptUri = webview.asWebviewUri(
       vscode.Uri.joinPath(extensionUri, 'media', 'viewer.js')
     );
@@ -1395,6 +1515,15 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
         </button>
         <button id="zoomFitBtn" class="btn-tool" title="适合宽度">适合宽度</button>
+      </div>
+
+      <div class="toolbar-divider"></div>
+
+      <div class="toolbar-group">
+        <button id="snipToolBtn" class="btn-tool btn-snip-tool" type="button" title="框选识别：在 PDF 上框选任意公式转 LaTeX、视觉翻译复杂图表、或带截图问 AI（快捷键 Alt+S，或随时按住 Shift + 左键拖拽）">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/></svg>
+          <span>框选识别</span>
+        </button>
       </div>
 
       <div class="toolbar-divider"></div>
@@ -1700,6 +1829,8 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
           <div class="ai-math-badge" id="aiModalMathBadge" style="display: none;"></div>
           <!-- 规范公式本身就排版在弹窗里：读者聚焦的就是这条式子，别再让他看残渣 -->
           <div class="ai-math-preview" id="aiModalMathPreview" style="display: none;"></div>
+          <!-- 框选截图或公式原图附件预览（多模态带图提问） -->
+          <div class="ai-image-preview" id="aiModalImagePreview" style="display: none;"></div>
         </div>
         <div class="ai-prompt-chips">
           <button type="button" class="ai-chip" data-q="这句话的真实技术意图与核心动机是什么？请用通俗中文讲透。">核心动机</button>
@@ -1888,7 +2019,8 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
     window.PDF_WORKER_URL = "${pdfWorkerUri}";
   </script>
   <script nonce="${nonce}" src="${pdfJsUri}"></script>
-  <script nonce="${nonce}" src="${scriptUri}?v=${v}"></script>
+  <script nonce="${nonce}" src="${v2EngineUri}"></script>
+  <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
   }

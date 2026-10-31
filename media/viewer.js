@@ -141,6 +141,18 @@
   let formulaModelEnabled = false;
   /** 本地模型名（只用于标注与状态显示，识别本身在 sidecar 里） */
   let formulaModelName = 'PP-FormulaNet_plus-S';
+  /** v2.0 独立多模态视觉接口是否已就绪（供框选识别与一键视觉精校公式使用） */
+  let visionConfigured = false;
+  /** v2.0 PDF 框选截图识别控制器实例 */
+  let snipToolCtrl = null;
+  /** v2.0 每页 2D 空间版面与数学 AST 解析缓存 */
+  const pageV2SolvedCache = new Map();
+  /** v2.0 公式卡片「视觉精校 LaTeX」在途请求表 */
+  const cardFormulaOcrPending = new Map();
+  /** 安全获取 window.AcademicV2（兼容 JSDOM 离线单测环境） */
+  function getV2() {
+    return typeof window !== 'undefined' && window.AcademicV2 ? window.AcademicV2 : null;
+  }
   /**
    * 当前页**本地代码切出来的原件**（还没做过视觉手术的那一份）。
    *
@@ -153,6 +165,7 @@
   const pendingArchiveSync = new Map();
   let archiveSyncTimer = null;
   let activeHighlightCard = null;
+  let activeSentenceRow = null;
   let selectedHighlightColor = 'yellow';
   let currentSelectionInfo = null;
   let isRendering = false;
@@ -709,7 +722,38 @@
     }
   }
 
+  function initV2SnipTool() {
+    const v2 = getV2();
+    if (!v2 || typeof v2.createSnipTool !== 'function' || snipToolCtrl) return;
+    try {
+      snipToolCtrl = v2.createSnipTool({
+        postMessage: m => vscode.postMessage(m),
+        getPdfDoc: () => pdfDoc,
+        getCurrentPage: () => currentPage,
+        getPageMathCache: p => pageV2SolvedCache.get(p) || undefined,
+        renderKatexHtml: (latex, displayMode) => renderVisionMathHtml(latex, displayMode),
+        renderMarkdownHtml: md => renderMarkdownToHtml(md),
+        openAiWithImage: ({ imageDataUrl, selectedText, focusMath, presetQuestion }) => {
+          openAiAssistantModal({
+            selectedText: selectedText || '',
+            contextText: selectedText || '',
+            page: currentPage,
+            focusMath: focusMath || '',
+            images: imageDataUrl ? [imageDataUrl] : [],
+            noteType: '框选解析',
+            presetQuestion: presetQuestion || ''
+          });
+        },
+        isVisionConfigured: () => visionConfigured
+      });
+    } catch (e) {
+      console.warn('[Viewer] 初始化框选识别控制器失败:', e);
+    }
+  }
+  initV2SnipTool();
+
   vscode.postMessage({ type: 'webviewReady' });
+  vscode.postMessage({ type: 'requestModelInfo' });
 
   window.addEventListener('message', async (event) => {
     const msg = event.data;
@@ -1028,6 +1072,62 @@
         handleModelInfo(msg);
         break;
       }
+
+      case 'snipRecognitionDelta': {
+        if (snipToolCtrl && snipToolCtrl.handleHostMessage(msg)) break;
+        break;
+      }
+
+      case 'snipRecognitionResult': {
+        if (snipToolCtrl && snipToolCtrl.handleHostMessage(msg)) break;
+        const pending = cardFormulaOcrPending.get(msg.requestId);
+        if (pending) {
+          cardFormulaOcrPending.delete(msg.requestId);
+          const cleanTex = String(msg.latex || msg.text || '')
+            .replace(/^\s*\$\$|\$\$\s*$/g, '')
+            .replace(/^\s*\\\[|\\\]\s*$/g, '')
+            .trim();
+          if (cleanTex) {
+            const targetList = pending.page === currentPage ? currentParagraphs : (pageParaArchive.get(pending.page) || []);
+            const para = (targetList || []).find(p => p && Number(p.id) === Number(pending.paraId));
+            if (para) {
+              para.visionLatex = cleanTex;
+              if (pending.page === currentPage) {
+                const card = document.getElementById(`transCard_${pending.page}_${para.id}`);
+                if (card) {
+                  const body = card.querySelector('.card-formula-body');
+                  if (body) body.innerHTML = renderVisionMathHtml(cleanTex, true);
+                  const copyBtn = card.querySelector('.btn-formula-copy');
+                  if (copyBtn) copyBtn.setAttribute('data-latex', cleanTex);
+                  const label = card.querySelector('.card-formula-label');
+                  if (label) label.textContent = `公式（已由视觉模型 ${msg.model || 'VLM'} 精校 LaTeX）`;
+                }
+                archivePageParagraphs(pending.page, currentParagraphs);
+              }
+              invalidateMathIndex();
+              if (dom.indexView && dom.indexView.classList.contains('active')) renderMathIndexPanel();
+              showReaderToast(`已由视觉模型 ${msg.model || 'VLM'} 精校 LaTeX`, 'info');
+            }
+          }
+          if (pending.btn && pending.btn.isConnected) {
+            pending.btn.disabled = false;
+          }
+        }
+        break;
+      }
+
+      case 'snipRecognitionError': {
+        if (snipToolCtrl && snipToolCtrl.handleHostMessage(msg)) break;
+        const pending = cardFormulaOcrPending.get(msg.requestId);
+        if (pending) {
+          cardFormulaOcrPending.delete(msg.requestId);
+          if (pending.btn && pending.btn.isConnected) {
+            pending.btn.disabled = false;
+          }
+          showReaderToast(`识别未完成：${msg.errorText || '请检查网络或配置'}`, 'error');
+        }
+        break;
+      }
     }
   });
 
@@ -1184,11 +1284,24 @@
       // 渲染用户保存的划线批注
       renderPageAnnotations(pageNum, annotLayerDiv);
 
-      // 若当前已选定高亮段落/句子，在重绘/缩放后依据最新尺寸重新渲染高光矩形
+      // 若当前已选定高亮段落/句子，在重绘/缩放后依据最新尺寸重新渲染高光矩形并同步恢复右侧卡片高亮
       if (activeFocusPara) {
         const match = currentParagraphs.find(p => p.id === activeFocusPara.id) || currentParagraphs[0];
         if (match) {
           focusParagraphOnPdf(match, activeFocusSentIdx);
+          const card = document.getElementById(`transCard_${pageNum}_${match.id}`);
+          if (card) {
+            let targetRow = null;
+            if (activeFocusSentIdx !== undefined) {
+              targetRow = card.querySelector(`.sentence-pair-row[data-sent-idx="${activeFocusSentIdx}"]`);
+            }
+            if (!targetRow && match.sentencesEn && match.sentencesEn.length > 0) {
+              targetRow = card.querySelector('.sentence-pair-row[data-sent-idx="0"]') || card.querySelector('.sentence-pair-row');
+            }
+            if (targetRow) {
+              highlightSentenceCard(targetRow);
+            }
+          }
         }
       }
 
@@ -2617,6 +2730,10 @@
     if (!OPS) {
       OPS = { save: 10, restore: 11, transform: 12, moveTo: 13, lineTo: 14, curveTo: 15, closePath: 18, rectangle: 19, constructPath: 91 };
     }
+    const v2 = typeof getV2 === 'function' ? getV2() : (typeof window !== 'undefined' && window.AcademicV2 ? window.AcademicV2 : null);
+    if (v2 && typeof v2.extractRawPageVectors === 'function') {
+      return v2.extractRawPageVectors(opList, OPS, pageW, pageH);
+    }
     const mul = (m, n) => [
       m[0] * n[0] + m[2] * n[1],
       m[1] * n[0] + m[3] * n[1],
@@ -2630,17 +2747,17 @@
     const vLines = [];
     const rects = [];
     const addSeg = (x1, y1, x2, y2) => {
-      if (Math.abs(y1 - y2) <= 1.4 && Math.abs(x1 - x2) >= 10) {
+      if (Math.abs(y1 - y2) <= 1.4 && Math.abs(x1 - x2) >= 2.2) {
         hLines.push({ x1: Math.min(x1, x2), x2: Math.max(x1, x2), y: (y1 + y2) / 2 });
-      } else if (Math.abs(x1 - x2) <= 1.4 && Math.abs(y1 - y2) >= 10) {
+      } else if (Math.abs(x1 - x2) <= 1.4 && Math.abs(y1 - y2) >= 6) {
         vLines.push({ x: (x1 + x2) / 2, y1: Math.min(y1, y2), y2: Math.max(y1, y2) });
       }
     };
     const addRect = (x, y, w, h) => {
       if (!(w > 0) || !(h > 0)) return;
-      // 细长矩形 = 一条线（很多 PDF 用填充矩形画横线/竖线）
-      if (h <= 2.4 && w >= 10) hLines.push({ x1: x, x2: x + w, y: y + h / 2 });
-      else if (w <= 2.4 && h >= 10) vLines.push({ x: x + w / 2, y1: y, y2: y + h });
+      // 细长矩形 = 一条线（包含短分式线 \frac{1}{2} 与根号顶线 \sqrt{x}，宽度可低至 2.2pt）
+      if (h <= 2.4 && w >= 2.2) hLines.push({ x1: x, x2: x + w, y: y + h / 2 });
+      else if (w <= 2.4 && h >= 6) vLines.push({ x: x + w / 2, y1: y, y2: y + h });
       else if (w >= 16 && h >= 16) rects.push({ x, y, w, h });
     };
 
@@ -2769,14 +2886,206 @@
     if (!visionPending.has(pageNum)) showVisionBadge('');
 
     if (!textContent || !textContent.items) {
+      currentParagraphs = [];
       renderTranslationCards(pageNum, []);
-      return;
+      return { paras: [] };
+    }
+
+    const pagePdfH = (viewport && viewport.viewBox) ? viewport.viewBox[3] : ((viewport && viewport.height) ? viewport.height / (viewport.scale || 1) : 792);
+    const pagePdfW = (viewport && viewport.viewBox) ? viewport.viewBox[2] : ((viewport && viewport.width) ? viewport.width / (viewport.scale || 1) : 612);
+
+    function finalizeV2Paragraphs(paras) {
+      if (pageNum > 1) {
+        const prevParas = (() => {
+          try {
+            if (typeof stubs !== 'undefined' && stubs && stubs.pageParaArchive) {
+              return stubs.pageParaArchive.get(pageNum - 1) || null;
+            }
+            if (typeof pageParaArchive !== 'undefined' && pageParaArchive && typeof pageParaArchive.get === 'function') {
+              return pageParaArchive.get(pageNum - 1) || null;
+            }
+          } catch (e) {}
+          return null;
+        })();
+        if (Array.isArray(prevParas) && prevParas.length > 0) {
+          let tailPara = null;
+          for (let i = prevParas.length - 1; i >= 0; i--) {
+            const p = prevParas[i];
+            if (!p) continue;
+            if (p.type === 'heading' || p.type === 'title') break;
+            if (p.type === 'body') {
+              tailPara = p;
+              break;
+            }
+          }
+          const prevText = tailPara ? String(tailPara.cleanText || '').trim() : '';
+          const affiliationHits = prevText
+            ? (prevText.match(/(?:universit|institut|department|dept\.|college|academy|laborator|school of|e-?mail|correspond(?:ing)? author|@)/gi) || []).length
+            : 0;
+          const cleanedPrev = prevText
+            ? prevText.replace(/[\u0000-\u001f]+/g, ' ').trim().replace(/[^\w\s,;:)\]}'"-]+$/u, '').trim()
+            : '';
+          if (
+            cleanedPrev &&
+            affiliationHits < 3 &&
+            !/[.!?。！？]["'”’)\]]*$/.test(cleanedPrev) &&
+            !/[:：;]\s*$/.test(cleanedPrev)
+          ) {
+            const lastBoundary = cleanedPrev.match(/[\s\S]*[.!?。！？]["'”’)\]]*\s+/);
+            let tail = (lastBoundary ? cleanedPrev.slice(lastBoundary[0].length) : cleanedPrev).trim();
+            if (tail && /[A-Za-z]/.test(tail)) {
+              const TAIL_MAX = 240;
+              if (tail.length > TAIL_MAX) {
+                const cut = tail.slice(tail.length - TAIL_MAX);
+                const spaceAt = cut.indexOf(' ');
+                tail = `… ${spaceAt >= 0 ? cut.slice(spaceAt + 1) : cut}`;
+              }
+              const PROSE_WORD_RE = /\b(?:a|an|the|of|and|to|in|is|are|was|were|that|this|these|those|with|for|by|be|as|we|it|on|at|from|which|can|has|have|not|but|or|its|their|our)\b/i;
+              let target = null;
+              let headRaw = '';
+              for (const cand of paras) {
+                if (!cand || cand.type !== 'body') continue;
+                if (cand.algorithm || cand.notationTable) continue;
+                const raw = String(cand.cleanText || '');
+                const text = raw.trim();
+                if (!/^[a-z]/.test(text)) continue;
+                if (/^(where|which|whom|whose|here|thereby|whereas)\b/i.test(text)) continue;
+                if (!PROSE_WORD_RE.test(text.slice(0, 240))) continue;
+                target = cand;
+                headRaw = raw;
+                break;
+              }
+              if (target) {
+                const splitWord = /-$/.test(tail);
+                const prefix = splitWord ? tail.slice(0, -1) : `${tail} `;
+                target.cleanText = prefix + headRaw;
+                if (typeof target.translationText === 'string' && target.translationText) {
+                  target.translationText = prefix + target.translationText;
+                }
+                if (Array.isArray(target.inlineMathTokens) && target.inlineMathTokens.length > 0) {
+                  target.inlineMathTokens = target.inlineMathTokens.map(tok => Object.assign({}, tok, {
+                    startIdx: tok.startIdx + prefix.length,
+                    endIdx: tok.endIdx + prefix.length
+                  }));
+                }
+                const pad = new Array(prefix.length);
+                for (let i = 0; i < prefix.length; i++) pad[i] = { span: null, offset: 0 };
+                target.charMap = pad.concat(target.charMap || []);
+                const v2Join = typeof getV2 === 'function' ? getV2() : (typeof window !== 'undefined' && window.AcademicV2 ? window.AcademicV2 : null);
+                target.sentencesEn = (v2Join && typeof v2Join.splitSentencesBilingual === 'function')
+                  ? v2Join.splitSentencesBilingual(target.cleanText)
+                  : splitEnglishSentencesSmart(target.cleanText);
+                target.continuedFromPage = pageNum - 1;
+                target.continuedText = tail;
+              }
+            }
+          }
+        }
+      }
+
+      let v2BodyCount = 0;
+      paras.forEach(p => {
+        if (p.type === 'body') {
+          v2BodyCount++;
+          p.bodyIndex = v2BodyCount;
+        }
+      });
+
+      currentParagraphs = paras;
+      localParagraphsSnapshot = cloneParagraphs(paras);
+      localParagraphsPage = pageNum;
+      renderTranslationCards(pageNum, currentParagraphs);
+
+      try {
+        const engine = visionEngine;
+        if (engine === 'vision' || (engine === 'auto' && looksLowConfidence(paras))) {
+          setTimeout(() => {
+            if (currentPage === pageNum) void requestVisionSegmentation(pageNum);
+          }, 60);
+        }
+      } catch (e) {
+        console.warn('[Viewer] 视觉分割调度失败:', e);
+      }
+
+      restoreModelMathFromArchive(pageNum, paras);
+      archivePageParagraphs(pageNum, paras);
+      if (typeof invalidateMathIndex === 'function') {
+        invalidateMathIndex();
+      }
+
+      try {
+        vscode.postMessage({
+          type: 'syncPageText',
+          page: pageNum,
+          paragraphs: paras
+            .filter(p => p.cleanText && p.cleanText.trim().length > 20)
+            .map(p => ({ type: p.type, text: p.cleanText }))
+        });
+      } catch (e) {}
+      return { paras };
+    }
+
+    // v2.0 XY-Cut + 2D 空间数学解析主引擎通道（0 Python 依赖，100% 保证 cleanText/charMap 1:1 严格对齐）
+    const v2 = typeof getV2 === 'function' ? getV2() : (typeof window !== 'undefined' && window.AcademicV2 ? window.AcademicV2 : null);
+    if (v2 && typeof v2.solveAcademicPageLayout === 'function') {
+      const solved = v2.solveAcademicPageLayout({
+        pageNum,
+        items: textContent.items || [],
+        spans: Array.from(textDivs || []),
+        pageW: pagePdfW,
+        pageH: pagePdfH,
+        fontNames: fontNames || null,
+        rawGraphics: graphics || null,
+        splitBlockFormula: true
+      });
+      if (typeof pageV2SolvedCache !== 'undefined') {
+        pageV2SolvedCache.set(pageNum, solved);
+      }
+      // 同步已解码的字形文本到 DOM textDivs（彻底消除 \u000f 等控制符残渣），并写入 data-para-id
+      (solved.glyphs || []).forEach(g => {
+        const div = textDivs && textDivs[g.index];
+        if (div) {
+          if (g.isDelimiterExt) div._isDelimiterExt = true;
+          if (typeof g.text === 'string' && div.textContent !== g.text) {
+            div.textContent = g.text;
+          }
+          if (Number.isFinite(g.y)) div._pdfY = g.y;
+        }
+      });
+      const v2Paras = Array.isArray(solved.paras) ? solved.paras : [];
+      v2Paras.forEach(p => {
+        (p.rawSpans || []).forEach(sp => {
+          if (sp && typeof sp.setAttribute === 'function') {
+            sp.setAttribute('data-para-id', `${p.id}`);
+          }
+        });
+      });
+      if (typeof pageAllSpans !== 'undefined') {
+        const activeSpans = [];
+        const seenSpans = new Set();
+        v2Paras.forEach(p => {
+          (p.rawSpans || []).forEach(sp => {
+            if (sp && !seenSpans.has(sp)) {
+              seenSpans.add(sp);
+              activeSpans.push(sp);
+            }
+          });
+        });
+        pageAllSpans.set(pageNum, activeSpans);
+      }
+      if (v2Paras.length === 0) {
+        currentParagraphs = [];
+        renderTranslationCards(pageNum, []);
+        return { paras: [] };
+      }
+      return finalizeV2Paragraphs(v2Paras);
     }
 
     const rawSpans = Array.from(textDivs).filter(d => (d.textContent || '').trim());
     if (rawSpans.length === 0) {
+      currentParagraphs = [];
       renderTranslationCards(pageNum, []);
-      return;
+      return { paras: [] };
     }
 
     /*
@@ -2814,8 +3123,6 @@
       }
     });
 
-    const pagePdfH = (viewport && viewport.viewBox) ? viewport.viewBox[3] : ((viewport && viewport.height) ? viewport.height / (viewport.scale || 1) : 792);
-    const pagePdfW = (viewport && viewport.viewBox) ? viewport.viewBox[2] : ((viewport && viewport.width) ? viewport.width / (viewport.scale || 1) : 612);
     const pageStats = typeof estimatePageStats === 'function'
       ? estimatePageStats(rawSpans, pagePdfH, pagePdfW)
       : { bodyFontSize: 10, leftMargin: pagePdfW * 0.15, rightMargin: pagePdfW * 0.85, pageH: pagePdfH, pageW: pagePdfW };
@@ -2879,14 +3186,43 @@
     const tableRegions = (() => {
       const wide = ((graphics && graphics.hLines) || []).filter(r =>
         r.y > 30 && r.y < pagePdfH - 30 &&
-        (r.x2 - r.x1) >= pagePdfW * 0.5 &&
-        r.x1 < pagePdfW * 0.35 && r.x2 > pagePdfW * 0.65
-      );
-      if (wide.length < 4) return [];
-      const minY = Math.min(...wide.map(r => r.y));
-      const maxY = Math.max(...wide.map(r => r.y));
-      if (maxY - minY < bodyFontSize * 4 || maxY - minY > pagePdfH * 0.8) return [];
-      return [{ x1: Math.min(...wide.map(r => r.x1)), x2: Math.max(...wide.map(r => r.x2)), minY, maxY, rules: wide.length }];
+        (r.x2 - r.x1) >= pagePdfW * 0.36 &&
+        ((r.x1 < pagePdfW * 0.35 && r.x2 > pagePdfW * 0.65) || (r.x2 - r.x1) <= pagePdfW * 0.48)
+      ).sort((a, b) => b.y - a.y);
+      if (wide.length < 3) return [];
+      // 按水平对齐 + 相邻间距 <= 110pt 聚类（绝不用全页 minY..maxY 吞掉夹在两幅图之间的整页正文与公式）
+      const clusters = [];
+      wide.forEach(r => {
+        const hit = clusters.find(c =>
+          Math.abs(c.x1 - r.x1) <= 18 &&
+          Math.abs(c.x2 - r.x2) <= 18 &&
+          (c.minY - r.y) <= 110 &&
+          (c.minY - r.y) >= -4
+        );
+        if (hit) {
+          hit.rules.push(r);
+          hit.minY = Math.min(hit.minY, r.y);
+          hit.maxY = Math.max(hit.maxY, r.y);
+        } else {
+          clusters.push({ x1: r.x1, x2: r.x2, minY: r.y, maxY: r.y, rules: [r] });
+        }
+      });
+      return clusters.filter(c => {
+        if (c.rules.length < 3) return false;
+        const h = c.maxY - c.minY;
+        if (h < bodyFontSize * 3.2 || h > pagePdfH * 0.62) return false;
+        const inside = spans.filter(s => {
+          const cx = (Number(s._pdfX) || 0) + (Number(s._pdfW) || 0) / 2;
+          const cy = Number(s._pdfY) || 0;
+          return cx >= c.x1 - 4 && cx <= c.x2 + 4 && cy >= c.minY - 4 && cy <= c.maxY + 4;
+        });
+        if (inside.length < 6) return false;
+        // 若含公式编号或长散文段落，则绝不是表格
+        const hasEqTag = inside.some(s => /^\(\s*(?:[1-9]\d{0,2}|[A-Z]\.\d+)\s*\)$/.test(String(s.textContent || '').trim()));
+        if (hasEqTag) return false;
+        const longProse = inside.filter(s => String(s.textContent || '').trim().length >= 52).length;
+        return longProse / inside.length < 0.25;
+      });
     })();
     if (tableRegions.length) {
       spans.forEach(s => {
@@ -4848,9 +5184,15 @@
                 // 后面所有字符的高亮整体错位一位（实测 AOT 第 5 页差 1、STM 差 16）。
                 const beforeLast = prevSeg.text.length >= 2 ? prevSeg.text[prevSeg.text.length - 2] : '';
                 prevSeg.text = prevSeg.text.slice(0, -1);
+                if (para.cleanText.endsWith('-') || para.cleanText.endsWith('‐')) {
+                  para.cleanText = para.cleanText.slice(0, -1);
+                }
                 if (para.charMap.length) para.charMap.pop();
                 if (/\s/.test(beforeLast)) {
                   prevSeg.text = prevSeg.text.replace(/\s+$/, '');
+                  if (/\s$/.test(para.cleanText)) {
+                    para.cleanText = para.cleanText.slice(0, -1);
+                  }
                   if (para.charMap.length) para.charMap.pop();
                 }
               }
@@ -5656,6 +5998,15 @@
       const prefix = splitWord ? tail.slice(0, -1) : `${tail} `;
 
       target.cleanText = prefix + headRaw;
+      if (typeof target.translationText === 'string' && target.translationText) {
+        target.translationText = prefix + target.translationText;
+      }
+      if (Array.isArray(target.inlineMathTokens) && target.inlineMathTokens.length > 0) {
+        target.inlineMathTokens = target.inlineMathTokens.map(tok => Object.assign({}, tok, {
+          startIdx: tok.startIdx + prefix.length,
+          endIdx: tok.endIdx + prefix.length
+        }));
+      }
       /*
        * charMap 必须与 cleanText 严格 1:1。前缀这些字**不在本页的文字层里**
        * （它们在上一页的 DOM 上，早已销毁），所以挂 span: null ——
@@ -5666,7 +6017,10 @@
       for (let i = 0; i < prefix.length; i++) pad[i] = { span: null, offset: 0 };
       target.charMap = pad.concat(target.charMap || []);
       // 句子的 startIdx/endIdx 必须按**拼好之后**的文本重算，否则首句高亮会整体偏移
-      target.sentencesEn = splitEnglishSentencesSmart(target.cleanText);
+      const v2Join = typeof getV2 === 'function' ? getV2() : (typeof window !== 'undefined' && window.AcademicV2 ? window.AcademicV2 : null);
+      target.sentencesEn = (v2Join && typeof v2Join.splitSentencesBilingual === 'function')
+        ? v2Join.splitSentencesBilingual(target.cleanText)
+        : splitEnglishSentencesSmart(target.cleanText);
       target.continuedFromPage = pageNum - 1;
       target.continuedText = tail;
     })();
@@ -5708,6 +6062,9 @@
     // 卡片渲染时才会把缓存里的译文回填到段落上，先归档就会存下一堆"没有译文"的快照
     // （导出 PDF 时表现为整篇都是"（本段尚未翻译）"）。
     archivePageParagraphs(pageNum, paras);
+    if (typeof invalidateMathIndex === 'function') {
+      invalidateMathIndex();
+    }
 
     // 把本页正文同步给扩展，供 AI 问答做全文检索（旧版问答只能看到一个段落）
     try {
@@ -5719,6 +6076,7 @@
           .map(p => ({ type: p.type, text: p.cleanText }))
       });
     } catch (e) {}
+    return { paras };
   }
 
   // 严密保护学术缩写的句子拆分器 (杜绝 et al., e.g., Fig. 1 碎片化错误)
@@ -5753,6 +6111,16 @@
         continue;
       }
 
+      // 1. A sentence must contain at least one word character (letter, digit, or CJK)
+      if (!/[a-zA-Z0-9\u4e00-\u9fff]/.test(body)) continue;
+
+      // 2. Ellipsis protection: dots preceded or followed by another dot are part of an ellipsis, not sentence ends
+      const isDot = match[1].startsWith('.');
+      if (isDot) {
+        if (/(?:\.\s*|\.)$/.test(text.slice(0, match.index))) continue;
+        if (/^\s*\./.test(text.slice(endPos))) continue;
+      }
+
       /*
        * 【列表编号不能当句末】——实测 1312.6114（VAE）第 2 页：
        *   `… three related problems in the above scenario: 1. Efficient approximate ML …`
@@ -5768,6 +6136,12 @@
        * 下一句以小写开头时，保留在同一句里。
        */
       if (/^[,;]/.test(match[1]) && /^[a-z]/.test(nextRaw)) continue;
+
+      // 3. A sentence boundary cannot be directly followed by punctuation or lowercase letters
+      if (nextRaw.length > 0) {
+        if (/^[,;:)]/.test(nextRaw)) continue;
+        if (isDot && /^[a-z]/.test(nextRaw)) continue;
+      }
 
       // 检查是否有公式序号被粘在末尾：形如 "... . (3)"
       const trailingEqMatch = body.match(/([.?!]["'”’)\]]?)\s*(\((?:[1-9]\d{0,2}|[A-Z]?\d+(?:\.\d+)*)\))$/);
@@ -6242,20 +6616,20 @@
         const bg = document.createElement('div');
         bg.className = 'focus-highlight-rect para-backdrop';
         bg.style.left = `${rect.left}px`;
-        bg.style.top = `${rect.top - 1}px`;
+        bg.style.top = `${rect.top + 1}px`;
         bg.style.width = `${rect.width}px`;
-        bg.style.height = `${rect.height + 2}px`;
+        bg.style.height = `${Math.max(6, rect.height - 2)}px`;
         overlay.appendChild(bg);
       });
 
-      // 绘制句子的金黄色荧光高亮笔触（100% 绝对物理贴合原文字符）
+      // 绘制句子的金黄色荧光高亮笔触（微调垂直内边距，两行以上绝不重叠）
       sentenceRects.forEach(rect => {
         const mark = document.createElement('div');
         mark.className = 'focus-highlight-rect sentence-active';
         mark.style.left = `${rect.left}px`;
-        mark.style.top = `${rect.top - 1}px`;
+        mark.style.top = `${rect.top + 1}px`;
         mark.style.width = `${rect.width}px`;
-        mark.style.height = `${rect.height + 2}px`;
+        mark.style.height = `${Math.max(6, rect.height - 2)}px`;
         overlay.appendChild(mark);
       });
     } else {
@@ -6265,9 +6639,9 @@
         const mark = document.createElement('div');
         mark.className = 'focus-highlight-rect para-active';
         mark.style.left = `${rect.left}px`;
-        mark.style.top = `${rect.top - 1}px`;
+        mark.style.top = `${rect.top + 1}px`;
         mark.style.width = `${rect.width}px`;
-        mark.style.height = `${rect.height + 2}px`;
+        mark.style.height = `${Math.max(6, rect.height - 2)}px`;
         overlay.appendChild(mark);
       });
     }
@@ -6306,6 +6680,38 @@
 
     // 唤醒段落聚焦灵动快捷条 (让用户点击段落后随时可用工具栏)
     showParaFocusBar(para, targetSentenceIdx, anchorRect, pageWrapper);
+
+    // 联动右侧卡片与逐句高亮：在任何调用路径下（点击、定位、批注、选中），右侧对应的中文翻译卡片 100% 获得高光！
+    const card = document.getElementById(`transCard_${currentPage}_${para.id}`);
+    if (card) {
+      card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      clearSentenceHighlights();
+
+      let targetRow = null;
+      if (targetSentenceIdx !== undefined && targetSentenceIdx >= 0) {
+        targetRow = card.querySelector(`.sentence-pair-row[data-sent-idx="${targetSentenceIdx}"]`);
+      }
+      if (!targetRow && para.sentencesEn && para.sentencesEn.length > 0) {
+        targetRow = card.querySelector('.sentence-pair-row[data-sent-idx="0"]') || card.querySelector('.sentence-pair-row');
+      }
+      if (targetRow) {
+        highlightSentenceCard(targetRow);
+        targetRow.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      } else {
+        highlightCard(card);
+      }
+
+      if (targetSentenceIdx !== undefined && targetSentenceIdx >= 0) {
+        const zhSpans = card.querySelectorAll('.zh-sentence');
+        if (zhSpans.length > 0 && zhSpans[targetSentenceIdx]) {
+          zhSpans[targetSentenceIdx].classList.add('sentence-matched');
+        }
+        const enSpans = card.querySelectorAll('.en-sentence');
+        if (enSpans.length > 0 && enSpans[targetSentenceIdx]) {
+          enSpans[targetSentenceIdx].classList.add('sentence-matched');
+        }
+      }
+    }
   }
 
   /**
@@ -6589,15 +6995,31 @@
       // 3. 右侧卡片联动聚焦并平滑滚动到视野
       const card = document.getElementById(`transCard_${currentPage}_${para.id}`);
       if (card) {
-        highlightCard(card);
         card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        clearSentenceHighlights();
 
-        card.querySelectorAll('.sentence-pair-row').forEach(r => r.classList.remove('active-sentence-row'));
+        let targetRow = null;
         if (clickedSentIdx !== undefined) {
-          const targetRow = card.querySelector(`.sentence-pair-row[data-sent-idx="${clickedSentIdx}"]`);
-          if (targetRow) {
-            targetRow.classList.add('active-sentence-row');
-            targetRow.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+          targetRow = card.querySelector(`.sentence-pair-row[data-sent-idx="${clickedSentIdx}"]`);
+        }
+        if (!targetRow && para.sentencesEn && para.sentencesEn.length > 0) {
+          targetRow = card.querySelector('.sentence-pair-row[data-sent-idx="0"]') || card.querySelector('.sentence-pair-row');
+        }
+        if (targetRow) {
+          highlightSentenceCard(targetRow);
+          targetRow.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        } else {
+          highlightCard(card);
+        }
+
+        if (clickedSentIdx !== undefined) {
+          const zhSpans = card.querySelectorAll('.zh-sentence');
+          if (zhSpans.length > 0 && zhSpans[clickedSentIdx]) {
+            zhSpans[clickedSentIdx].classList.add('sentence-matched');
+          }
+          const enSpans = card.querySelectorAll('.en-sentence');
+          if (enSpans.length > 0 && enSpans[clickedSentIdx]) {
+            enSpans[clickedSentIdx].classList.add('sentence-matched');
           }
         }
       }
@@ -6740,10 +7162,15 @@
    * 且符号/数字密度够高、没有句末标点 → 它不可能是正常散文，直接按公式碎片处理。
    */
   function isFormulaResiduePara(para) {
+    if (!para) return false;
+    // 标题、章节、摘要、关键词、图注绝对不能被当成公式碎片跳过翻译
+    if (para.type === 'title' || para.type === 'heading' || para.type === 'abstract' || para.type === 'keywords' || para.type === 'caption') {
+      return false;
+    }
     const text = String((para && para.cleanText) || '').replace(/\s+/g, ' ').trim();
     if (!text) return false;
     if (/[\u4e00-\u9fff]/.test(text)) return false;
-    if (/[.!?。！？]["'”’)\]]?\s*$/.test(text)) return false;
+    if (/[.!?。！？:：]["'”’)\]]?\s*$/.test(text)) return false;
     /*
      * 必须**区分大小写**：变量名 `iT` / `Vt` 在小写化后会命中 `it`，
      * 于是一整条公式被误判成"有英文虚词的散文"（实测式(5) 的矩阵行就是这样漏网的）。
@@ -6753,13 +7180,14 @@
       /\b(?:the|a|an|is|are|was|were|of|to|in|for|and|or|that|this|these|those|with|as|by|on|at|from|it|its|which|where|when|while|than|then|thus|hence|however|also|if|but|so|such|each|both|all|not|no|more|most|other|into|over|after|before|during|between|without|via|we|our|us|can|could|will|would|should|may|might|must)\b/g
     ) || [];
     if (funcWords.length > 0) return false;
+    // 含 >= 3 个 4 字母以上英文词汇时，属于无虚词短语/小标题（如 "Iterative Pseudo-Label Optimization"），绝不能跳过
+    const realWords = text.match(/\b[A-Za-z][a-z]{3,}\b/g) || [];
+    if (realWords.length >= 3) return false;
     const symbols = text.match(/[=+\-−*/^_{}[\]()<>≤≥≈≠∈∑∫∂∇×·|\\∥⊥∘∗∼ˆ˜]/g) || [];
     const digits = text.match(/\d/g) || [];
     const nonSpace = text.replace(/\s+/g, '').length;
     const density = (symbols.length + digits.length) / Math.max(1, nonSpace);
-    // 0.10 是实测底线：矩阵行 `Vk P ˆ tiT ...` 几乎没有标点符号（密度 0.12），
-    // 但它是公式；真正的散文碎片（`residual of detection …`）有虚词，会先被上面拦掉。
-    return density >= 0.10;
+    return density >= 0.12;
   }
 
   // ====================== 导出「全文双语精读稿」的数据准备 ======================
@@ -6832,6 +7260,7 @@
            */
           visionLatex: String(p.visionLatex || '').trim(),
           visionInline: Array.isArray(p.visionInline) ? p.visionInline.slice(0, 64) : [],
+          inlineMathTokens: Array.isArray(p.inlineMathTokens) ? p.inlineMathTokens.slice(0, 96) : [],
           /*
            * 本地模型（sidecar）识别出来的 LaTeX。
            *
@@ -8446,8 +8875,24 @@
         const visionInline = Array.isArray(para.visionInline) ? para.visionInline : [];
         const modelInline = Array.isArray(para.modelInline) ? para.modelInline : [];
         const localMath = Array.isArray(para.localMath) ? para.localMath : [];
+        const inlineTokens = Array.isArray(para.inlineMathTokens) ? para.inlineMathTokens : [];
+        const v2Doc = getV2();
+        const restoreZhMd = s => {
+          const raw = String(s == null ? '' : s);
+          if (v2Doc && inlineTokens.length > 0 && typeof v2Doc.restorePlaceholdersToMarkdownLatex === 'function') {
+            return v2Doc.restorePlaceholdersToMarkdownLatex(raw, inlineTokens);
+          }
+          return raw;
+        };
         const inlineMd = t => {
           const s0 = String(t == null ? '' : t);
+          if (inlineTokens.length > 0) {
+            const withTokens = applyInlineMathToMarkdown(
+              s0,
+              inlineTokens.map(tok => ({ find: tok.rawText, latex: tok.latex }))
+            );
+            if (withTokens !== s0) return withTokens;
+          }
           if (modelInline.length) {
             const withModel = applyInlineMathToMarkdown(s0, modelInline.map(x => ({ find: x.text, latex: x.latex })));
             if (withModel !== s0) return withModel;
@@ -8463,11 +8908,11 @@
           md += `**公式（${src}，可直接渲染）**\n\n$$\n${canonLatex}\n$$\n\n`;
           md += `<sub>公式不翻译；下面是字符层抽取结果（可能有误，仅备查）：${escapeHtml(sourceText)}</sub>\n\n`;
         } else if (para.type === 'title' || para.type === 'heading') {
-          if (translation) md += `${mdQuote(translation)}\n\n`;
+          if (translation) md += `${mdQuote(restoreZhMd(translation))}\n\n`;
         } else {
           md += `**原文**\n\n${mdQuoteLines(enLines.map(inlineMd))}\n\n`;
           if (translation) {
-            const zhLines = sentences && sentences.length === enLines.length ? sentences : [translation];
+            const zhLines = (sentences && sentences.length === enLines.length ? sentences : [translation]).map(restoreZhMd);
             md += `**译文**\n\n${mdQuoteLines(zhLines)}\n\n`;
           } else {
             // 公式/符号段落本来就没有可翻译的文字，别说成"尚未翻译"（会被当成失败）
@@ -9327,26 +9772,34 @@
     }
     if (myToken !== formulaCropToken || currentPage !== pageNum) return;
 
-    /** 按矩形从整页 canvas 裁一张 dataURL（带缓存；裁图与模型共用同一份结果） */
+    /** 按矩形从整页 canvas 裁一张 dataURL（支持 v2 邻行文字遮罩 maskRects，彻底消除公式截入上下行残脚） */
+    const v2Crop = getV2();
     const cropDataUrl = rect => {
       const key = cropCacheKey(pageNum, rect);
       let dataUrl = formulaCropCache.get(key);
       if (dataUrl) return dataUrl;
-      const sx = Math.max(0, Math.floor(rect.x0 * scale));
-      const sy = Math.max(0, Math.floor(rect.y0 * scale));
-      const sw = Math.min(full.width - sx, Math.ceil((rect.x1 - rect.x0) * scale));
-      const sh = Math.min(full.height - sy, Math.ceil((rect.y1 - rect.y0) * scale));
-      if (sw < 6 || sh < 6) return null;
-      const crop = document.createElement('canvas');
-      crop.width = sw;
-      crop.height = sh;
-      const cctx = crop.getContext('2d');
-      cctx.drawImage(full, sx, sy, sw, sh, 0, 0, sw, sh);
-      try {
-        dataUrl = crop.toDataURL('image/png');
-      } catch (e) {
-        return null;
+      if (v2Crop && typeof v2Crop.cropFormulaCanvasWithMasks === 'function') {
+        dataUrl = v2Crop.cropFormulaCanvasWithMasks(full, scale, rect);
+      } else {
+        const sx = Math.max(0, Math.floor(rect.x0 * scale));
+        const sy = Math.max(0, Math.floor(rect.y0 * scale));
+        const sw = Math.min(full.width - sx, Math.ceil((rect.x1 - rect.x0) * scale));
+        const sh = Math.min(full.height - sy, Math.ceil((rect.y1 - rect.y0) * scale));
+        if (sw < 6 || sh < 6) return null;
+        const crop = document.createElement('canvas');
+        crop.width = sw;
+        crop.height = sh;
+        const cctx = crop.getContext('2d');
+        cctx.fillStyle = '#ffffff';
+        cctx.fillRect(0, 0, sw, sh);
+        cctx.drawImage(full, sx, sy, sw, sh, 0, 0, sw, sh);
+        try {
+          dataUrl = crop.toDataURL('image/png');
+        } catch (e) {
+          return null;
+        }
       }
+      if (!dataUrl) return null;
       formulaCropCache.set(key, dataUrl);
       if (formulaCropCache.size > 80) {
         const oldest = formulaCropCache.keys().next().value;
@@ -9363,43 +9816,32 @@
       const pid = body.getAttribute('data-crop-para');
       const para = (paragraphs || []).find(p => String(p && p.id) === String(pid));
       if (!para) continue;
-      /*
-       * 两种裁图目标必须分开：
-       *   · `.card-formula-body` 是**一条公式**——优先用数学 run 的几何框，
-       *     它不会因为公式被文本层拆成几段而只裁到半条式子；
-       *   · `.para-crop` 是**整段正文**（数学密集段的原文栏）——必须用段落全部 span
-       *     的并集，绝不能套数学 run 的框。否则整段只裁到 `td_0 and td_1` 这一小块，
-       *     卡片里会出现一大片空白 + 一行孤零零的符号（用户截图里的"好丑"）。
-       */
       const isParaCrop = !!(body.classList && body.classList.contains('para-crop'));
       const rect = isParaCrop
         ? formulaCropPdfRect(
             spanBoxesOf(para, canvasRect, pxPerCss, currentScale),
             currentScale, 3, 6, base.width, base.height,
           )
-        : /*
-           * 8.7 合并出来的整块公式（矩阵、式(5)）：段落 span 的并集就是这一块的完整范围，
-           * 比"数学 run 几何"更可靠 —— run 只覆盖数学字形的簇，矩阵两侧的大括号、
-           * 上下的 underbrace 与 `m × n elements` 标签不在数学字体里，会被裁掉。
-           * 用户截图里圈出的状态矩阵，裁图缺的正是这些边框/标注。
-           */
-          (para.formulaByMergedRows
+        : (para.formulaCropRect && Number.isFinite(para.formulaCropRect.x0))
+          ? para.formulaCropRect
+          : (para.formulaByMergedRows
             ? formulaCropPdfRect(
                 spanBoxesOf(para, canvasRect, pxPerCss, currentScale),
                 currentScale, 3, 10, base.width, base.height,
               )
             : null) ||
-          formulaCropRectFromMathRuns(para, mathRuns, base.width, base.height, {
-            block: true,
-            allSpans: pageAllSpans.get(pageNum) || [],
-          }) ||
-          formulaCropPdfRect(
-            spanBoxesOf(para, canvasRect, pxPerCss, currentScale),
-            currentScale, 3, 8, base.width, base.height,
-          );
+            formulaCropRectFromMathRuns(para, mathRuns, base.width, base.height, {
+              block: true,
+              allSpans: pageAllSpans.get(pageNum) || [],
+            }) ||
+            formulaCropPdfRect(
+              spanBoxesOf(para, canvasRect, pxPerCss, currentScale),
+              currentScale, 3, 8, base.width, base.height,
+            );
       if (!rect) continue;
       const dataUrl = cropDataUrl(rect);
       if (!dataUrl) continue;
+      para._lastCropDataUrl = dataUrl;
 
       if (wantCrop) {
         body.innerHTML = `<img class="formula-crop-img" src="${dataUrl}" alt="公式原图（按 PDF 版式裁切）" title="按 PDF 版式原样裁切，未做 LaTeX 重建">`;
@@ -9604,18 +10046,38 @@
   function canRenderBlockFormulaAsKatex(para, latex) {
     if (!para || !latex || !canRenderMath(latex)) return false;
     if (para.formulaByMergedRows || para.formulaByLayout || para.formulaByShape) return false;
-    const raw = String(para.cleanText || '');
-    if (/[︷︸⎧⎨⎩⎫⎬⎭∑∏∫√]/.test(raw)) return false;
     const segs = Array.isArray(para.segments) ? para.segments : [];
-    const mathSegs = segs.filter(s => s && s.kind === 'math' && String(s.text || '').trim());
     const bodySegs = segs.filter(
       s => s && s.kind === 'body' && String(s.text || '').trim() && !/^\(\s*\d+(?:\.\d+)*\s*\)$/.test(String(s.text || '').trim())
     );
-    return mathSegs.length === 1 && bodySegs.length === 0;
+    return bodySegs.length === 0;
+  }
+
+  function normalizeFormulaSpacing(tex) {
+    let s = String(tex == null ? '' : tex);
+    if (!s) return '';
+    // 1. 修复条件关键词：if, for, where, when, otherwise, s.t. 等未用 \text 包裹的情况
+    s = s.replace(
+      /([,.;:)!\]]|[A-Za-z0-9])\s*(?<!\\text\{\s*)(?<!\\operatorname\{\s*)(?<![A-Za-z])\b(if|for|where|when|otherwise|s\.t\.)\b(?![A-Za-z])/g,
+      '$1 \\quad \\text{$2 }'
+    );
+    s = s.replace(
+      /^(?<!\\text\{\s*)(?<!\\operatorname\{\s*)\b(if|for|where|when|otherwise|s\.t\.)\b(?![A-Za-z])/g,
+      '\\text{$1 }'
+    );
+    // 2. 常见算子/函数名紧跟括号时补全 \operatorname：angle, dist, distance 等
+    s = s.replace(
+      /(?<!\\(?:operatorname|mathrm|text)\{\s*)(?<![A-Za-z])\b(angle|dist|distance|sim|proj|IoU|GIoU|DIoU|CIoU)\b(?=\s*\()/g,
+      '\\operatorname{$1}'
+    );
+    // 3. 避免连续多个 \quad 堆叠
+    s = s.replace(/(?:\\quad\s*){2,}/g, '\\qquad ');
+    return s;
   }
 
   function renderCardFormulaHtml(para, inline) {
-    const latex = String(para.visionLatex || '').trim();
+    const rawLatex = String(para.visionLatex || '').trim();
+    const latex = normalizeFormulaSpacing(rawLatex);
     /*
      * 【没有 latex 也要出卡片】只要允许版面裁图，公式本来就不需要"重建"。
      * 实测 Xu 2020 第 4 页式(5)：localMath 抽出来的 latex 是
@@ -9635,11 +10097,10 @@
     const bodyHtml = latex
       ? renderVisionMathHtml(latex, true)
       : '<div class="crop-pending">正在按版面裁取公式原图…</div>';
-    const toolsHtml = latex
+    const toolsHtml = (latex || canCrop)
       ? `
         <div class="card-formula-tools">
-          <!-- 一键问 AI：把这条规范 LaTeX 一起带上（见 collectFocusMath），让模型逐符号讲透 -->
-          <button class="btn-formula-ask" data-para-id="${para.id}" type="button" title="按“逐符号 + 小例子”讲透这条公式（会把规范 LaTeX 一起交给模型）">讲透这条公式</button>
+          <button class="btn-formula-ask" data-para-id="${para.id}" type="button" title="按“逐符号 + 小例子”讲透这条公式（支持自动附带公式裁图与规范 LaTeX）">讲透这条公式</button>
           <button class="btn-formula-copy" data-latex="${escapeHtml(latex)}" type="button" title="复制这条公式的 LaTeX 源码">复制 LaTeX</button>
         </div>`
       : '';
@@ -9707,7 +10168,7 @@
       return `
         <div class="trans-unaligned-box">
           <div class="trans-unaligned-head">整段译文（逐句对齐未成功，已停止猜测式拆分）</div>
-          <div class="trans-unaligned-zh">${escapeHtml(cachedTrans)}</div>
+          <div class="trans-unaligned-zh">${renderZhWithMath(cachedTrans, para)}</div>
           <button class="btn-retry-trans" data-para-id="${para.id}">重新尝试逐句对齐</button>
         </div>
         ${noteHtml}
@@ -9904,9 +10365,7 @@
           </div>
         </div>
 
-        <!-- 混排段落（正文里夹公式）：额外给一条公式条，公式排版好看，正文照旧逐句精读。
-             独立成块的公式（type=formula）走下面模式 A 的公式卡。 -->
-        ${para.type !== 'formula' && hasLatex(para) ? renderCardFormulaHtml(para, true) : ''}
+        <!-- 混排段落正文里的行内公式由 KaTeX 精准渲染，卡片中公式符号栏已按需去除 -->
 
         <!-- 模式 A: 逐句双语精读对照模式 (默认推荐，精准对齐) -->
         <div class="trans-sentence-pairs" id="sentencePairs_${pageNum}_${para.id}">
@@ -10003,7 +10462,12 @@
         if (btnRowAi) {
           e.stopPropagation();
           const sentIdx = parseInt(btnRowAi.getAttribute('data-sent-idx'), 10);
-          highlightCard(card);
+          const row = btnRowAi.closest('.sentence-pair-row');
+          if (row) {
+            highlightSentenceCard(row);
+          } else {
+            highlightCard(card);
+          }
           try {
             focusParagraphOnPdf(para, sentIdx);
           } catch (err) {
@@ -10025,7 +10489,12 @@
         if (btnNote) {
           e.stopPropagation();
           const sentIdx = parseInt(btnNote.getAttribute('data-sent-idx'), 10);
-          highlightCard(card);
+          const row = btnNote.closest('.sentence-pair-row');
+          if (row) {
+            highlightSentenceCard(row);
+          } else {
+            highlightCard(card);
+          }
           focusParagraphOnPdf(para, sentIdx);
           const pageWrapper = document.getElementById(`pageWrapper_${currentPage}`);
           const rects = getSentenceHighlightRects(para, sentIdx, pageWrapper);
@@ -10048,12 +10517,10 @@
         }
 
         e.stopPropagation();
-        highlightCard(card);
         const sentIdx = parseInt(row.getAttribute('data-sent-idx'), 10);
 
-        // 激活当前行视觉样式
-        card.querySelectorAll('.sentence-pair-row').forEach(r => r.classList.remove('active-sentence-row'));
-        row.classList.add('active-sentence-row');
+        // 激活当前行视觉样式（高光选中句子对应的卡片，每次只能亮一个，绝不高亮整个段落）
+        highlightSentenceCard(row);
 
         // 在 PDF 原件上精准绘制该句高光
         focusParagraphOnPdf(para, sentIdx);
@@ -10063,12 +10530,16 @@
       fluidBlockView.addEventListener('click', (e) => {
         const enSpan = e.target.closest('.en-sentence');
         const zhSpan = e.target.closest('.zh-sentence');
-        highlightCard(card);
         const targetSpan = enSpan || zhSpan;
         if (targetSpan) {
           e.stopPropagation();
           const sentIdx = parseInt(targetSpan.getAttribute('data-sent-idx'), 10);
-          card.querySelectorAll('.en-sentence, .zh-sentence').forEach(s => s.classList.remove('sentence-matched'));
+          clearSentenceHighlights();
+          if (activeHighlightCard) {
+            activeHighlightCard.classList.remove('highlight-active');
+            activeHighlightCard.classList.remove('trans-flash-highlight');
+            activeHighlightCard = null;
+          }
           targetSpan.classList.add('sentence-matched');
           const twin = enSpan
             ? card.querySelector(`.zh-sentence[data-sent-idx="${sentIdx}"]`)
@@ -10077,6 +10548,8 @@
 
           focusParagraphOnPdf(para, sentIdx);
         } else {
+          highlightCard(card);
+          clearSentenceHighlights();
           focusParagraphOnPdf(para);
         }
       });
@@ -10084,6 +10557,7 @@
       // 卡片通用定位按钮
       card.querySelector('.btn-locate').addEventListener('click', (e) => {
         e.stopPropagation();
+        clearSentenceHighlights();
         highlightCard(card);
         focusParagraphOnPdf(para);
       });
@@ -10123,7 +10597,11 @@
       const copyZhFn = (btn) => {
         const curTrans = findCachedTranslation(pageNum, para);
         if (curTrans && !curTrans.startsWith('[翻译出错') && !curTrans.startsWith('[暂无网络')) {
-          navigator.clipboard.writeText(curTrans);
+          const v2Copy = getV2();
+          const cleanCopy = (v2Copy && Array.isArray(para.inlineMathTokens) && para.inlineMathTokens.length > 0)
+            ? v2Copy.restorePlaceholdersToMarkdownLatex(curTrans, para.inlineMathTokens)
+            : curTrans;
+          navigator.clipboard.writeText(cleanCopy);
           const origText = btn.innerHTML;
           btn.innerHTML = '✅ 已复制';
           btn.classList.add('btn-copied-success');
@@ -10239,11 +10717,14 @@
         if (askBtn) {
           e.stopPropagation();
           const target = currentParagraphs.find(pp => pp && pp.id === para.id) || para;
+          const imgEl = card.querySelector('img.formula-crop-img');
+          const imgUrl = target._lastCropDataUrl || (imgEl && imgEl.src ? imgEl.src : '');
           openAiAssistantModal({
             selectedText: `${target.visionLatex || target.cleanText || ''}`,
             contextText: target.cleanText || '',
             page: pageNum,
             focusPara: target,
+            images: imgUrl && visionConfigured ? [imgUrl] : [],
             noteType: '公式',
             presetQuestion:
               '请把这条公式讲透：先用 $$...$$ 写出规范形式，再逐符号列表说明（符号、读法、含义、形状或取值范围、在论文哪里定义），' +
@@ -10251,15 +10732,43 @@
           });
           return;
         }
+        const vlmOcrBtn = e.target.closest('.btn-formula-vlm-ocr');
+        if (vlmOcrBtn) {
+          e.stopPropagation();
+          const target = currentParagraphs.find(pp => pp && pp.id === para.id) || para;
+          const imgEl = card.querySelector('img.formula-crop-img');
+          const imgUrl = target._lastCropDataUrl || (imgEl && imgEl.src ? imgEl.src : '');
+          if (!imgUrl) {
+            showReaderToast('公式原图尚未裁切就绪，请稍候再试或使用顶部「框选识别」', 'warn');
+            return;
+          }
+          const reqId = `fcard_ocr_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+          vlmOcrBtn.disabled = true;
+          vlmOcrBtn.textContent = '识别中...';
+          cardFormulaOcrPending.set(reqId, { page: pageNum, paraId: target.id, btn: vlmOcrBtn });
+          vscode.postMessage({
+            type: 'requestSnipRecognition',
+            requestId: reqId,
+            mode: 'latex',
+            imageDataUrl: imgUrl,
+            localHintLatex: target.visionLatex || '',
+            page: pageNum,
+            paraIndex: target.id
+          });
+          return;
+        }
         const copyLatexBtn = e.target.closest('.btn-formula-copy');
         if (copyLatexBtn) {
           e.stopPropagation();
-          const tex = copyLatexBtn.getAttribute('data-latex') || '';
+          const target = currentParagraphs.find(pp => pp && pp.id === para.id) || para;
+          const tex = copyLatexBtn.getAttribute('data-latex') || target.visionLatex || '';
           if (tex) {
             navigator.clipboard
               .writeText(tex)
               .then(() => showReaderToast('已复制 LaTeX 源码'))
               .catch(() => showReaderToast('复制失败，请手动选中公式'));
+          } else {
+            showReaderToast('此公式尚未提取可复制的 LaTeX', 'info');
           }
           return;
         }
@@ -10378,7 +10887,11 @@
       section.querySelector('.btn-copy-flow-zh').addEventListener('click', () => {
         const curTrans = findCachedTranslation(pageNum, para);
         if (curTrans) {
-          navigator.clipboard.writeText(curTrans);
+          const v2Copy = getV2();
+          const cleanCopy = (v2Copy && Array.isArray(para.inlineMathTokens) && para.inlineMathTokens.length > 0)
+            ? v2Copy.restorePlaceholdersToMarkdownLatex(curTrans, para.inlineMathTokens)
+            : curTrans;
+          navigator.clipboard.writeText(cleanCopy);
           vscode.postMessage({ type: 'showInfo', message: '已复制中文译文到剪贴板' });
         }
       });
@@ -10403,7 +10916,8 @@
         (s, idx) =>
           `<span class="en-sentence" data-sent-idx="${idx}" title="点击在原件中单独高亮此句">${renderParaEnHtml(
             s.text,
-            para
+            para,
+            s.startIdx
           )}</span>`
       )
       .join(' ');
@@ -10663,7 +11177,34 @@
      */
     let sendText = para.cleanText;
     let sendSentences = sentences;
-    if (para.mergedMath) {
+    if (Array.isArray(para.inlineMathTokens) && para.inlineMathTokens.length > 0) {
+      const toks = para.inlineMathTokens.slice().sort((a, b) => a.startIdx - b.startIdx);
+      const replaceSliceWithTokens = (sliceText, sliceStart) => {
+        const sliceEnd = sliceStart + sliceText.length;
+        const hits = toks.filter(t => t.startIdx >= sliceStart && t.endIdx <= sliceEnd && t.endIdx > t.startIdx);
+        if (hits.length === 0) return sliceText;
+        let out = '';
+        let rel = 0;
+        for (const t of hits) {
+          const rs = t.startIdx - sliceStart;
+          const re = t.endIdx - sliceStart;
+          if (rs < rel) continue;
+          out += sliceText.slice(rel, rs) + t.placeholder;
+          rel = re;
+        }
+        out += sliceText.slice(rel);
+        return out;
+      };
+      sendText = para.translationText || replaceSliceWithTokens(para.cleanText, 0);
+      if (Array.isArray(para.sentencesEn) && para.sentencesEn.length > 0) {
+        sendSentences = para.sentencesEn.map(s =>
+          replaceSliceWithTokens(
+            s.text,
+            Number.isFinite(s.startIdx) ? s.startIdx : para.cleanText.indexOf(s.text)
+          )
+        );
+      }
+    } else if (para.mergedMath) {
       const cleaned = buildMergedMathTranslateInput(para);
       if (cleaned) {
         sendText = cleaned.text;
@@ -10952,7 +11493,8 @@
 
     if (!selectedText || selection.rangeCount === 0) {
       hideSelectionToolbar();
-      clearSentenceHighlights();
+      // 注意：不能在此处调用 clearSentenceHighlights()！
+      // 用户在 PDF 上单击段落或句子时 selection 为空或折叠，若在此清除会在 20ms 后直接抹去刚高亮的句对卡片！
       return;
     }
 
@@ -10975,7 +11517,6 @@
 
     if (!inPdf && !inRight) {
       hideSelectionToolbar();
-      clearSentenceHighlights();
       return;
     }
 
@@ -11038,6 +11579,17 @@
     try {
       if (inPdf) {
         alignRightSentenceHighlight(range, cleanQuery);
+      } else if (inRight) {
+        const startEl = range.startContainer.nodeType === Node.ELEMENT_NODE ? range.startContainer : range.startContainer.parentElement;
+        const card = startEl ? startEl.closest('.trans-card') : null;
+        if (card) {
+          const row = startEl.closest('.sentence-pair-row');
+          if (row) {
+            highlightSentenceCard(row);
+          } else {
+            highlightCard(card);
+          }
+        }
       }
     } catch (err) {
       console.warn('Selection auxiliary action notice:', err);
@@ -11076,13 +11628,14 @@
 
     if (!matchedPara) return;
 
-    // 高亮右侧卡片
+    // 高亮右侧卡片与句子
     const card = document.getElementById(`transCard_${currentPage}_${matchedPara.id}`);
     if (card) {
-      highlightCard(card);
       card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      clearSentenceHighlights();
 
-      // 句子级精准匹配：右侧对应中文亮起醒目荧光黄
+      let targetRow = null;
+      // 句子级精准匹配：逐句精读 + 连贯段落双视图同步高亮
       if (matchedPara.sentencesEn && matchedPara.sentencesEn.length > 0) {
         let bestSentenceIdx = 0;
         let maxOverlap = 0;
@@ -11096,6 +11649,18 @@
           }
         });
 
+        // 逐句精读视图 (默认模式): 高亮选中句子对应的卡片并滚动定位
+        targetRow = card.querySelector(`.sentence-pair-row[data-sent-idx="${bestSentenceIdx}"]`);
+        if (targetRow) {
+          highlightSentenceCard(targetRow);
+          targetRow.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+        // 保持 PDF 页面高光与右侧卡片双向完全同步
+        try {
+          focusParagraphOnPdf(matchedPara, bestSentenceIdx);
+        } catch (e) {}
+
+        // 连贯段落视图: 高亮对应中文和英文
         const zhSpans = card.querySelectorAll('.zh-sentence');
         if (zhSpans.length > 0) {
           const targetZhIdx = Math.min(
@@ -11106,6 +11671,14 @@
             zhSpans[targetZhIdx].classList.add('sentence-matched');
           }
         }
+        const enSpans = card.querySelectorAll('.en-sentence');
+        if (enSpans.length > 0 && enSpans[bestSentenceIdx]) {
+          enSpans[bestSentenceIdx].classList.add('sentence-matched');
+        }
+      }
+
+      if (!targetRow) {
+        highlightCard(card);
       }
     }
   }
@@ -11127,13 +11700,40 @@
     document.querySelectorAll('.sentence-matched').forEach((el) => {
       el.classList.remove('sentence-matched');
     });
+    document.querySelectorAll('.sentence-pair-row.active-sentence-row').forEach((el) => {
+      el.classList.remove('active-sentence-row');
+      el.classList.remove('sent-card-flash');
+    });
+    activeSentenceRow = null;
+  }
+
+  function highlightSentenceCard(row) {
+    if (!row) return;
+    clearSentenceHighlights();
+    // 聚焦在句子卡片上，段落卡片不再保留高光边框和闪烁
+    if (activeHighlightCard) {
+      activeHighlightCard.classList.remove('highlight-active');
+      activeHighlightCard.classList.remove('trans-flash-highlight');
+      activeHighlightCard = null;
+    }
+    row.classList.add('active-sentence-row');
+    row.classList.remove('sent-card-flash');
+    void row.offsetWidth;
+    row.classList.add('sent-card-flash');
+    activeSentenceRow = row;
   }
 
   function highlightCard(card) {
+    if (!card) return;
+    clearSentenceHighlights();
     if (activeHighlightCard && activeHighlightCard !== card) {
       activeHighlightCard.classList.remove('highlight-active');
+      activeHighlightCard.classList.remove('trans-flash-highlight');
     }
     card.classList.add('highlight-active');
+    card.classList.remove('trans-flash-highlight');
+    void card.offsetWidth;
+    card.classList.add('trans-flash-highlight');
     activeHighlightCard = card;
   }
 
@@ -11369,8 +11969,17 @@
 
             const card = document.getElementById(`transCard_${currentPage}_${para.id}`);
             if (card) {
-              highlightCard(card);
               card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+              let targetRow = null;
+              if (clickedSentIdx !== undefined) {
+                targetRow = card.querySelector(`.sentence-pair-row[data-sent-idx="${clickedSentIdx}"]`);
+              }
+              if (targetRow) {
+                highlightSentenceCard(targetRow);
+                targetRow.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+              } else {
+                highlightCard(card);
+              }
             }
           }
         }
@@ -12302,14 +12911,17 @@
       // 联动聚焦右侧卡片与该句子
       const card = document.getElementById(`transCard_${currentPage}_${activeFocusPara.id}`);
       if (card) {
-        highlightCard(card);
         card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        clearSentenceHighlights();
+        let row = null;
         if (activeFocusSentIdx !== undefined) {
-          const row = card.querySelector(`.sentence-pair-row[data-sent-idx="${activeFocusSentIdx}"]`);
-          if (row) {
-            row.classList.add('active-sentence-row');
-            row.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-          }
+          row = card.querySelector(`.sentence-pair-row[data-sent-idx="${activeFocusSentIdx}"]`);
+        }
+        if (row) {
+          highlightSentenceCard(row);
+          row.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        } else {
+          highlightCard(card);
         }
       }
       triggerParagraphTranslate(currentPage, activeFocusPara, true);
@@ -12335,6 +12947,8 @@
     dom.btnCloseFocusBar.addEventListener('click', (e) => {
       e.stopPropagation();
       hideParaFocusBar();
+      clearAllHighlights();
+      clearSentenceHighlights();
     });
   }
 
@@ -12716,6 +13330,79 @@
     return added;
   }
 
+  function jumpToTranslationCardForAnnotation(annot) {
+    if (!annot) return;
+    switchTab('trans');
+    if (currentRightView === 'article') {
+      const btnCards = document.getElementById('btnViewCards');
+      if (btnCards) btnCards.click();
+    }
+
+    const targetPara = findParaForAnnotation(annot);
+    if (!targetPara) return;
+
+    const card = document.getElementById(`transCard_${annot.page}_${targetPara.id}`);
+    if (card) {
+      card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      clearSentenceHighlights();
+
+      let matchedSentIdx = -1;
+      let maxOverlap = 0;
+      if (targetPara.sentencesEn && targetPara.sentencesEn.length > 0) {
+        // 1. 词重叠度打分匹配（有效抵御 PDF 换行连字符断字、标点与空白差异）
+        targetPara.sentencesEn.forEach((enSent, idx) => {
+          const sentText = typeof enSent === 'string' ? enSent : (enSent ? enSent.text : '');
+          const score = getOverlapScore(annot.text || '', sentText);
+          if (score > maxOverlap) {
+            maxOverlap = score;
+            matchedSentIdx = idx;
+          }
+        });
+        // 2. 子串兜底匹配
+        if (matchedSentIdx === -1) {
+          matchedSentIdx = targetPara.sentencesEn.findIndex(s => {
+            const st = (s && s.text) || '';
+            const at = annot.text || '';
+            return st === at || (st && at && (st.includes(at) || at.includes(st)));
+          });
+        }
+        // 3. 兜底：如果存在句子结构但未精准匹配到（如短词注释），默认定位到首句
+        if (matchedSentIdx === -1) {
+          matchedSentIdx = 0;
+        }
+      }
+
+      let targetRow = null;
+      if (matchedSentIdx >= 0) {
+        targetRow = card.querySelector(`.sentence-pair-row[data-sent-idx="${matchedSentIdx}"]`);
+      }
+      if (!targetRow) {
+        targetRow = card.querySelector('.sentence-pair-row');
+      }
+
+      if (targetRow) {
+        highlightSentenceCard(targetRow);
+        targetRow.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      } else {
+        highlightCard(card);
+      }
+
+      if (matchedSentIdx >= 0) {
+        const zhSpans = card.querySelectorAll('.zh-sentence');
+        if (zhSpans.length > 0 && zhSpans[matchedSentIdx]) {
+          zhSpans[matchedSentIdx].classList.add('sentence-matched');
+        }
+        const enSpans = card.querySelectorAll('.en-sentence');
+        if (enSpans.length > 0 && enSpans[matchedSentIdx]) {
+          enSpans[matchedSentIdx].classList.add('sentence-matched');
+        }
+      }
+
+      // 同时在 PDF 原件上精准聚焦该句高光
+      focusParagraphOnPdf(targetPara, matchedSentIdx >= 0 ? matchedSentIdx : undefined);
+    }
+  }
+
   function renderPageAnnotations(pageNum, annotLayerDiv) {
     annotLayerDiv.innerHTML = '';
     const pageAnnots = paperData.annotations.filter((a) => a.page === pageNum);
@@ -12761,15 +13448,18 @@
         const mark = document.createElement('div');
         mark.className = `highlight-mark ${annot.color}`;
         mark.dataset.annotId = annot.id;
+        const baseH = Math.round(r.height * currentScale);
+        const padY = Math.max(1, Math.round(baseH * 0.08));
         mark.style.left = `${Math.round(r.left * currentScale)}px`;
-        mark.style.top = `${Math.round(r.top * currentScale)}px`;
+        mark.style.top = `${Math.round(r.top * currentScale) + padY}px`;
         mark.style.width = `${Math.round(r.width * currentScale)}px`;
-        mark.style.height = `${Math.round(r.height * currentScale)}px`;
+        mark.style.height = `${Math.max(6, baseH - padY * 2)}px`;
         // 连原生 title 提示也不挂：鼠标滑过高亮句子时不应该有任何东西冒出来。
-        // 需要看批注内容/编辑时，点击高亮即可打开批注卡片。
+        // 需要看批注内容/编辑时，点击高亮即可打开批注卡片并联动跳转至对照翻译卡片。
         mark.addEventListener('click', (e) => {
           e.stopPropagation();
           openAnnotationPopover({ existingAnnot: annot, anchorRect: mark.getBoundingClientRect() });
+          jumpToTranslationCardForAnnotation(annot);
         });
 
         annotLayerDiv.appendChild(mark);
@@ -12787,10 +13477,11 @@
         pin.style.left = `${Math.round((lastRect.left + lastRect.width) * currentScale) - 6}px`;
         pin.style.top = `${Math.round(lastRect.top * currentScale) - 8}px`;
 
-        // 同样不再悬停弹出预览（只保留点击打开批注卡片）
+        // 点击打开批注卡片并联动跳转至对应翻译卡片
         pin.addEventListener('click', (e) => {
           e.stopPropagation();
           openAnnotationPopover({ existingAnnot: annot, anchorRect: pin.getBoundingClientRect() });
+          jumpToTranslationCardForAnnotation(annot);
         });
 
         annotLayerDiv.appendChild(pin);
@@ -13048,6 +13739,7 @@
             m.classList.add('annot-jump-flash');
             setTimeout(() => m.classList.remove('annot-jump-flash'), 2200);
           });
+          jumpToTranslationCardForAnnotation(annot);
           return;
         }
 
@@ -13057,8 +13749,22 @@
         if (matchedPara) {
           let matchedSentIdx = undefined;
           if (matchedPara.sentencesEn) {
-            const sIdx = matchedPara.sentencesEn.findIndex(s => s.text === annot.text || (s.text && annot.text && (s.text.includes(annot.text) || annot.text.includes(s.text))));
-            if (sIdx !== -1) matchedSentIdx = sIdx;
+            let maxScore = 0;
+            matchedPara.sentencesEn.forEach((enSent, idx) => {
+              const sText = typeof enSent === 'string' ? enSent : (enSent ? enSent.text : '');
+              const score = getOverlapScore(annot.text || '', sText);
+              if (score > maxScore) {
+                maxScore = score;
+                matchedSentIdx = idx;
+              }
+            });
+            if (matchedSentIdx === undefined) {
+              const sIdx = matchedPara.sentencesEn.findIndex(s => s.text === annot.text || (s.text && annot.text && (s.text.includes(annot.text) || annot.text.includes(s.text))));
+              if (sIdx !== -1) matchedSentIdx = sIdx;
+            }
+            if (matchedSentIdx === undefined && matchedPara.sentencesEn.length > 0) {
+              matchedSentIdx = 0;
+            }
           }
 
           focusParagraphOnPdf(matchedPara, matchedSentIdx);
@@ -13077,8 +13783,21 @@
           // 联动聚焦右侧对照卡片
           const card = document.getElementById(`transCard_${annot.page}_${matchedPara.id}`);
           if (card) {
-            highlightCard(card);
             card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            clearSentenceHighlights();
+            let targetRow = null;
+            if (matchedSentIdx !== undefined) {
+              targetRow = card.querySelector(`.sentence-pair-row[data-sent-idx="${matchedSentIdx}"]`);
+            }
+            if (!targetRow && matchedPara.sentencesEn && matchedPara.sentencesEn.length > 0) {
+              targetRow = card.querySelector('.sentence-pair-row[data-sent-idx="0"]') || card.querySelector('.sentence-pair-row');
+            }
+            if (targetRow) {
+              highlightSentenceCard(targetRow);
+              targetRow.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            } else {
+              highlightCard(card);
+            }
           }
         } else {
           // 兜底直接滚到对应页面
@@ -13246,6 +13965,42 @@
         });
       });
     });
+    // v2.0 合并本机 2D 空间公式与行内符号索引（无需开启整页云端视觉，默认 local 模式开箱即填充「公式·符号」页签）
+    const v2Idx = getV2();
+    if (v2Idx && typeof v2Idx.collectUnifiedFormulas === 'function') {
+      const unified = v2Idx.collectUnifiedFormulas(
+        pageParaArchive,
+        currentPage,
+        currentParagraphs,
+        paperData && paperData.visionStructure
+      );
+      unified.forEach(entry => {
+        const t = String(entry.latex || '').trim();
+        if (!t || seenTex.has(t)) return;
+        seenTex.add(t);
+        const page = Number(entry.page) || currentPage;
+        const list = page === currentPage ? currentParagraphs : (pageParaArchive.get(page) || []);
+        const para = (list || []).find(p => p && Number(p.id) === Number(entry.paraIndex));
+        const id = `f${formulas.length}`;
+        const syms = extractMathSymbols(t);
+        formulas.push({
+          id,
+          tex: t,
+          kind: entry.kind,
+          page,
+          paraId: para ? para.id : Number(entry.paraIndex || 0),
+          residue: para ? String(para.cleanText || '').slice(0, 160) : '',
+          note: entry.kind === 'block' ? '2D 空间重构行间公式' : '2D 行内数学符号',
+          symbols: syms
+        });
+        syms.forEach(sym => {
+          if (!symbols.has(sym)) symbols.set(sym, { name: sym, count: 0, firstPage: page, firstTex: t, formulas: [] });
+          const rec = symbols.get(sym);
+          rec.count++;
+          if (rec.formulas.length < 40) rec.formulas.push({ page, tex: t, paraId: para ? para.id : Number(entry.paraIndex || 0) });
+        });
+      });
+    }
     const symbolList = [...symbols.values()].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
     mathIndexCache = { formulas, symbols: symbolList };
     return mathIndexCache;
@@ -13930,7 +14685,25 @@ let aiPresetQuestion = '';
   }
 
   function renderMathSpan(tex, displayMode) {
-    let src = decodeMathEntities(tex).trim();
+    function normalizeFormulaSpacing(s) {
+      let str = String(s == null ? '' : s);
+      if (!str) return '';
+      str = str.replace(
+        /([,.;:)!\]]|[A-Za-z0-9])\s*(?<!\\text\{\s*)(?<!\\operatorname\{\s*)(?<![A-Za-z])\b(if|for|where|when|otherwise|s\.t\.)\b(?![A-Za-z])/g,
+        '$1 \\quad \\text{$2 }'
+      );
+      str = str.replace(
+        /^(?<!\\text\{\s*)(?<!\\operatorname\{\s*)\b(if|for|where|when|otherwise|s\.t\.)\b(?![A-Za-z])/g,
+        '\\text{$1 }'
+      );
+      str = str.replace(
+        /(?<!\\(?:operatorname|mathrm|text)\{\s*)(?<![A-Za-z])\b(angle|dist|distance|sim|proj|IoU|GIoU|DIoU|CIoU)\b(?=\s*\()/g,
+        '\\operatorname{$1}'
+      );
+      str = str.replace(/(?:\\quad\s*){2,}/g, '\\qquad ');
+      return str;
+    }
+    let src = normalizeFormulaSpacing(decodeMathEntities(tex).trim());
     if (!src) return '';
     /*
      * 【行内公式里的 \tag】KaTeX 规定 `\tag` 只能用于 display 公式，否则直接报
@@ -14243,8 +15016,23 @@ let aiPresetQuestion = '';
   }
 
   function renderParaEnHtml(text, para) {
+    const sentStartIdx = arguments.length > 2 ? arguments[2] : undefined;
     const src = String(text == null ? '' : text);
     if (!src) return '';
+    const v2En = typeof getV2 === 'function' ? getV2() : (typeof window !== 'undefined' && window.AcademicV2 ? window.AcademicV2 : null);
+    if (v2En && para && Array.isArray(para.inlineMathTokens) && para.inlineMathTokens.length > 0 && typeof v2En.renderSentenceEnWithMathTokens === 'function') {
+      const fullClean = String(para.cleanText || '');
+      const matchedSent = !Number.isFinite(sentStartIdx) && Array.isArray(para.sentencesEn)
+        ? para.sentencesEn.find(s => s && s.text === src && Number.isFinite(s.startIdx))
+        : null;
+      const resolvedStart = Number.isFinite(sentStartIdx)
+        ? sentStartIdx
+        : (matchedSent ? matchedSent.startIdx : (src === fullClean ? 0 : fullClean.indexOf(src)));
+      if (resolvedStart >= 0) {
+        const v2Html = v2En.renderSentenceEnWithMathTokens(src, resolvedStart, para, tex => renderVisionMathHtml(tex, false));
+        if (v2Html) return v2Html;
+      }
+    }
     const baseInline = para && Array.isArray(para.visionInline) ? para.visionInline : [];
     const segMath = [];
     (para && Array.isArray(para.segments) ? para.segments : []).forEach(s => {
@@ -14398,7 +15186,18 @@ let aiPresetQuestion = '';
    *   ② 匹配不到再按**出现顺序**兜底取第 i 条（模型偶尔会抄错一两个字）；
    *   ③ 本地公式表为空时，退化成"把括号里的残渣原样排版"——绝不丢掉内容。
    */
-  function renderZhWithMath(text, para) {
+  function renderZhWithMath(text, para, _skipV2) {
+    const v2Zh = !_skipV2
+      ? (typeof getV2 === 'function' ? getV2() : (typeof window !== 'undefined' && window.AcademicV2 ? window.AcademicV2 : null))
+      : null;
+    if (v2Zh && para && Array.isArray(para.inlineMathTokens) && para.inlineMathTokens.length > 0 && typeof v2Zh.renderZhWithMathTokens === 'function') {
+      return v2Zh.renderZhWithMathTokens(
+        String(text == null ? '' : text),
+        para,
+        tex => renderVisionMathHtml(tex, false),
+        plain => renderZhWithMath(plain, para, true)
+      );
+    }
     /*
      * 测试脚本会把本函数单独切出来跑，切出来的作用域里没有 normalizeMathGlyphs /
      * sanitizeBareLatex；这里做一层本地兜底，保证单测与真实运行行为一致。
@@ -15117,6 +15916,11 @@ let aiPresetQuestion = '';
     push(para.visionLatex);
     const sel = String(selectedText || '').trim();
     const wholePara = !sel || sel === String(para.cleanText || '').trim();
+    (para.inlineMathTokens || []).forEach(tok => {
+      if (!tok || !tok.latex) return;
+      const raw = String(tok.rawText || '').trim();
+      if (wholePara || !raw || sel.includes(raw) || sel.includes(tok.placeholder)) push(tok.latex);
+    });
     (para.visionInline || []).forEach(item => {
       if (!item || !item.latex) return;
       const find = String(item.find || '').trim();
@@ -15124,6 +15928,31 @@ let aiPresetQuestion = '';
       if (wholePara || !find || sel.includes(find)) push(item.latex);
     });
     return out.slice(0, 8).join('\n');
+  }
+
+  function renderAiModalImagePreview() {
+    const box = document.getElementById('aiModalImagePreview');
+    if (!box) return;
+    const imgs = Array.isArray(currentAiContext.images) ? currentAiContext.images : [];
+    if (imgs.length === 0) {
+      box.innerHTML = '';
+      box.style.display = 'none';
+      return;
+    }
+    box.style.display = 'flex';
+    box.innerHTML =
+      `<div class="ai-img-preview-thumb-wrap">` +
+      imgs.map(src => `<img class="ai-img-preview-thumb" src="${src}" alt="框选截图预览">`).join('') +
+      `<span class="ai-img-preview-tip">已附带高清截图（将自动调用多模态视觉模型结合论文上下文解答）</span>` +
+      `</div>` +
+      `<button type="button" class="ai-img-preview-remove" id="btnRemoveAiImage">移除附图</button>`;
+    const rmBtn = box.querySelector('#btnRemoveAiImage');
+    if (rmBtn) {
+      rmBtn.onclick = () => {
+        currentAiContext.images = [];
+        renderAiModalImagePreview();
+      };
+    }
   }
 
   function openAiAssistantModal(options = {}) {
@@ -15139,18 +15968,21 @@ let aiPresetQuestion = '';
     if (!focusPara && activeFocusPara && activeFocusPara.page === (options.page || currentPage)) {
       focusPara = currentParagraphs.find(p => p && p.id === activeFocusPara.id) || activeFocusPara;
     }
-    const focusMath = collectFocusMath(focusPara, options.selectedText);
+    const focusMath = options.focusMath || collectFocusMath(focusPara, options.selectedText);
+    const incomingImages = Array.isArray(options.images) ? options.images.filter(Boolean) : [];
 
-    const prevKey = `${currentAiContext.page}|${currentAiContext.selectedText}`;
+    const prevKey = `${currentAiContext.page}|${currentAiContext.selectedText}|${(currentAiContext.images || []).length}`;
     currentAiContext = {
       selectedText: options.selectedText || '',
       contextText: options.contextText || options.selectedText || '',
       page: options.page || currentPage,
       noteType: options.noteType || '疑难待查',
-      focusMath
+      focusMath,
+      images: incomingImages
     };
-    const newKey = `${currentAiContext.page}|${currentAiContext.selectedText}`;
+    const newKey = `${currentAiContext.page}|${currentAiContext.selectedText}|${incomingImages.length}`;
     const contextChanged = prevKey !== newKey;
+    renderAiModalImagePreview();
 
     // 聚焦对象换了 → 开新话题；同一个对象 → 保留对话，方便连续追问
     if (!options.keepConversation && contextChanged) {
@@ -15419,8 +16251,9 @@ let aiPresetQuestion = '';
       noteType: opts.noteType || '疑难待查',
       answerStyle: aiStyle || '',
       fullText,
-      // 规范公式（视觉模型转写的 LaTeX）：模型据此讲符号，而不是照残渣猜（见 collectFocusMath）
+      // 规范公式（2D 空间引擎或视觉模型转写的 LaTeX）：模型据此讲符号，而不是照残渣猜（见 collectFocusMath）
       focusMath: opts.focusMath || currentAiContext.focusMath || '',
+      images: Array.isArray(opts.images) ? opts.images : (Array.isArray(currentAiContext.images) ? currentAiContext.images : []),
       history: opts.history || []
     });
   }
@@ -15575,6 +16408,7 @@ let aiPresetQuestion = '';
     if (msg.visionSurgery !== undefined) visionSurgeryAllowed = msg.visionSurgery !== false;
     if (msg.formulaAsImage !== undefined) formulaAsImageAllowed = msg.formulaAsImage !== false;
     if (msg.visionModel !== undefined) configuredVisionModel = String(msg.visionModel || '');
+    if (msg.visionConfigured !== undefined) visionConfigured = !!msg.visionConfigured;
     syncAiStyleButtons();
     // 引擎标识变化 → 此后段落用新引擎重新翻译（旧引擎的缓存键不再命中）
     if (msg.engineTag && msg.engineTag !== currentEngineTag) {

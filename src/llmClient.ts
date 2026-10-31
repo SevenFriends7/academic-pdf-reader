@@ -288,8 +288,13 @@ export async function callOpenAICompatStream(opts: OpenAICompatOptions): Promise
     let finishReason: string | undefined;
     const timers: NodeJS.Timeout[] = [];
     let req: http.ClientRequest | undefined;
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
 
     const cleanup = () => {
+      if (idleTimer !== undefined) {
+        clearTimeout(idleTimer);
+        idleTimer = undefined;
+      }
       timers.forEach(t => clearTimeout(t));
       timers.length = 0;
       if (opts.signal) opts.signal.removeEventListener('abort', onAbort);
@@ -313,17 +318,18 @@ export async function callOpenAICompatStream(opts: OpenAICompatOptions): Promise
     };
 
     const resetIdle = () => {
-      timers.push(
-        setTimeout(() => {
-          fail(
-            new LlmError({
-              kind: 'timeout',
-              model,
-              apiMessage: `已等待 ${Math.round(idleTimeoutMs / 1000)} 秒未收到新数据`
-            })
-          );
-        }, idleTimeoutMs)
-      );
+      if (idleTimer !== undefined) {
+        clearTimeout(idleTimer);
+      }
+      idleTimer = setTimeout(() => {
+        fail(
+          new LlmError({
+            kind: 'timeout',
+            model,
+            apiMessage: `已等待 ${Math.round(idleTimeoutMs / 1000)} 秒未收到新数据`
+          })
+        );
+      }, idleTimeoutMs);
     };
 
     function onAbort() {

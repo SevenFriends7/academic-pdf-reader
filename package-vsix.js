@@ -18,7 +18,7 @@ function buildVsix() {
     console.log('[vsix] SKIP_BUILD=1，跳过编译，使用现有 dist');
   } else {
   try {
-    execSync('node esbuild.js --minify', { stdio: 'inherit' });
+    execSync(`"${process.execPath}" esbuild.js --minify`, { stdio: 'inherit' });
   } catch (e) {
     console.warn('[vsix] esbuild 原生二进制不可用，改用 wasm 版编译…');
     /*
@@ -71,6 +71,7 @@ function buildVsix() {
 
   // 复制 media
   fs.cpSync(mediaDir, path.join(extDir, 'media'), { recursive: true });
+  fs.rmSync(path.join(extDir, 'media', 'v2-engine.js.map'), { force: true });
 
   /*
    * 复制 py（本地公式识别旁路进程）。
@@ -151,23 +152,34 @@ function buildVsix() {
   ];
 
   // 1) 先通过 CLI 正式安装（这一步才会更新 extensions.json 注册表）
-  const cliCommands = [
-    `"D:\\Antigravity IDE\\bin\\antigravity-ide.cmd" --install-extension "${vsixOutput}" --force`
+  const cliCandidates = [
+    'D:\\Microsoft VS Code\\bin\\code.cmd',
+    'code.cmd',
+    'code',
+    'D:\\Antigravity IDE\\bin\\antigravity-ide.cmd',
+    'antigravity-ide.cmd'
   ];
-  const codeCli = process.env.VSCODE_CLI || 'code';
-  try {
-    // VS Code 若存在 CLI 也一并装上，避免旧版残留在其注册表里
-    if (process.env.INSTALL_VSCODE === '1') {
-      cliCommands.push(`"${codeCli}" --install-extension "${vsixOutput}" --force`);
+  const installedClis = new Set();
+  cliCandidates.forEach(cli => {
+    let resolved = null;
+    if (fs.existsSync(cli)) {
+      resolved = cli;
+    } else {
+      try {
+        const which = execSync(`where.exe ${cli} 2>nul`, { encoding: 'utf8' }).trim().split(/\r?\n/)[0];
+        if (which && fs.existsSync(which)) resolved = which;
+      } catch {}
     }
-  } catch (e) {}
-
-  cliCommands.forEach(cmd => {
-    try {
-      execSync(cmd, { stdio: 'inherit' });
-      console.log(`[vsix] Successfully installed via CLI: ${cmd}`);
-    } catch (e) {
-      console.warn(`[vsix] CLI install notice:`, e.message);
+    if (resolved && !installedClis.has(resolved)) {
+      installedClis.add(resolved);
+      const cmd = `"${resolved}" --install-extension "${vsixOutput}" --force`;
+      try {
+        console.log(`[vsix] Installing via CLI: ${cmd}`);
+        execSync(cmd, { stdio: 'inherit' });
+        console.log(`[vsix] Successfully installed via CLI: ${resolved}`);
+      } catch (e) {
+        console.warn(`[vsix] CLI install notice (${resolved}):`, e.message);
+      }
     }
   });
 
@@ -181,6 +193,7 @@ function buildVsix() {
       fs.cpSync(distDir, path.join(targetDir, 'dist'), { recursive: true });
   fs.rmSync(path.join(targetDir, 'dist', 'extension.js.map'), { force: true });
       fs.cpSync(mediaDir, path.join(targetDir, 'media'), { recursive: true });
+      fs.rmSync(path.join(targetDir, 'media', 'v2-engine.js.map'), { force: true });
       if (fs.existsSync(pyDir)) {
         fs.cpSync(pyDir, path.join(targetDir, 'py'), { recursive: true });
       }

@@ -1,19 +1,5 @@
 /**
  * 打包脚本的 **wasm 回退**版本。
- *
- * ## 为什么需要它
- *
- * `esbuild` 的原生二进制在某些 Windows 环境里起不来（实测：`fatal error: winmm.dll not found
- * / runtime: panic before malloc heap initialized`）。这不是代码问题，是那个 .exe 在
- * 特定 PATH / 系统 DLL 组合下加载失败；同一台机器上 `node`、`tsc` 都好好的。
- * 没有回退时，开发者只能"改了代码但打不出包"，而且报错信息完全指不到问题所在。
- *
- * `esbuild-wasm` 是同一个编译器编译成 WebAssembly，不依赖任何系统 DLL，只慢一点
- * （2.4 秒 vs 0.2 秒，对本地开发完全够用）。
- *
- * 用法：
- *   node esbuild-wasm.js            # 不压缩，同 npm run compile
- *   node esbuild-wasm.js --minify   # 压缩，同 npm run vsix 之前那一步
  */
 const path = require('path');
 const fs = require('fs');
@@ -43,7 +29,6 @@ async function main() {
     process.exit(1);
   }
   copyPdfJsAssets();
-  // Node 环境下不要传 wasmURL（那是浏览器专用），默认会加载包内的 esbuild.wasm
   await esbuild.initialize({});
 
   const result = await esbuild.build({
@@ -63,7 +48,28 @@ async function main() {
     console.error('[build] 失败：', result.errors);
     process.exit(1);
   }
-  console.log('[build] Extension build complete (wasm).');
+
+  const webviewEntry = path.join(__dirname, 'src', 'webview', 'v2EngineBundle.ts');
+  if (fs.existsSync(webviewEntry)) {
+    const wvResult = await esbuild.build({
+      entryPoints: [webviewEntry],
+      bundle: true,
+      format: 'iife',
+      target: ['es2020'],
+      minify,
+      sourcemap: true,
+      sourcesContent: false,
+      platform: 'browser',
+      outfile: path.join(__dirname, 'media', 'v2-engine.js'),
+      charset: 'utf8',
+      logLevel: 'info'
+    });
+    if (wvResult.errors.length) {
+      console.error('[build] Webview 失败：', wvResult.errors);
+      process.exit(1);
+    }
+  }
+  console.log('[build] Extension + Webview v2 engine build complete (wasm).');
 }
 
 main().catch(e => {

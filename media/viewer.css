@@ -115,7 +115,7 @@ body.theme-paper-sepia {
   --sent-row-bg: #faf6ee;
   --sent-row-border: #e8dfd2;
   --sent-row-hover-bg: #f2e9dc;
-  --sent-row-active-bg: #fef3c7;
+  --sent-row-active-bg: #fef08a;
   --sent-row-active-border: #d97706;
 
   --sent-zh-color: #1f170e;
@@ -608,12 +608,13 @@ body.theme-paper-dark .btn-secondary:hover {
   z-index: 2;
 }
 
-/* 句子聚焦：100% 绝对物理贴合字符、高亮明黄、发光外描边 */
+/* 句子聚焦：100% 绝对物理贴合字符、高亮明黄、发光微内描边防多行重叠 */
 .focus-highlight-rect.sentence-active,
 .focus-highlight-rect.sentence-focus {
   background-color: rgba(255, 190, 0, 0.65) !important;
-  box-shadow: 0 0 10px rgba(255, 170, 0, 0.75) !important;
-  outline: 1.5px solid rgba(255, 150, 0, 0.9) !important;
+  box-shadow: 0 0 5px rgba(255, 170, 0, 0.5) !important;
+  outline: 1px solid rgba(255, 150, 0, 0.85) !important;
+  outline-offset: -0.5px;
   z-index: 3 !important;
   animation: pulseGlow 1.8s infinite alternate ease-in-out;
 }
@@ -1228,12 +1229,12 @@ body.debug-text-layer .textLayer span {
   box-shadow: 0 8px 24px rgba(0, 152, 255, 0.12);
 }
 
-/* 核心：右侧极度醒目的发光高亮卡片 */
+/* 段落卡片聚焦（仅在定位无句子的纯段落/表格时作为底框辅助指示，绝不盖过句子卡片焦点） */
 .trans-card.highlight-active {
-  border-color: #0098ff !important;
-  box-shadow: 0 0 0 2.5px rgba(0, 152, 255, 0.45), 0 10px 30px rgba(0, 152, 255, 0.18) !important;
-  background-color: var(--trans-card-bg) !important;
-  transform: translateY(-2px);
+  border-color: rgba(0, 152, 255, 0.4) !important;
+  box-shadow: 0 4px 16px rgba(0, 152, 255, 0.1) !important;
+  background: var(--trans-card-bg) !important;
+  transform: none;
 }
 
 .trans-card-header {
@@ -1639,9 +1640,125 @@ body.theme-paper-dark .fluid-badge-zh {
 
 .sentence-pair-row.active-sentence-row {
   background: var(--sent-row-active-bg) !important;
-  border-color: var(--sent-row-active-border) !important;
-  border-left-color: var(--sent-row-active-border) !important;
-  box-shadow: 0 4px 18px rgba(0, 152, 255, 0.18) !important;
+  border: 1.5px solid var(--sent-row-active-border, #0284c7) !important;
+  border-left: 5.5px solid var(--sent-row-active-border, #0284c7) !important;
+  box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.4), 0 6px 20px rgba(0, 152, 255, 0.22) !important;
+  transform: translateX(4px);
+  z-index: 5;
+}
+
+/* 1. 默认明亮主题 (Default Light) —— 醒目莹蓝高光 */
+body.theme-paper-default .sentence-pair-row.active-sentence-row {
+  background: #e0f2fe !important;
+  border: 1.5px solid #0284c7 !important;
+  border-left: 5.5px solid #0284c7 !important;
+  box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.4), 0 6px 20px rgba(0, 152, 255, 0.22) !important;
+}
+
+body.theme-paper-default .sentence-pair-row.active-sentence-row .sent-num {
+  background: #0284c7 !important;
+  color: #ffffff !important;
+  box-shadow: 0 0 8px rgba(2, 132, 199, 0.5) !important;
+}
+
+body.theme-paper-default .sentence-pair-row.active-sentence-row .sent-zh {
+  color: #0369a1 !important;
+  font-weight: 650 !important;
+}
+
+body.theme-paper-default .sentence-pair-row.active-sentence-row .sent-en {
+  color: #0c4a6e !important;
+  font-weight: 550 !important;
+}
+
+/* 2. 羊皮纸暖黄主题 (Sepia) —— 温暖高对比荧光亮黄高光 */
+body.theme-paper-sepia .sentence-pair-row.active-sentence-row {
+  background: #fef08a !important;
+  border: 1.5px solid #d97706 !important;
+  border-left: 5.5px solid #d97706 !important;
+  box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.45), 0 6px 20px rgba(217, 119, 6, 0.25) !important;
+}
+
+body.theme-paper-sepia .sentence-pair-row.active-sentence-row .sent-num {
+  background: #d97706 !important;
+  color: #ffffff !important;
+  box-shadow: 0 0 8px rgba(217, 119, 6, 0.6) !important;
+}
+
+body.theme-paper-sepia .sentence-pair-row.active-sentence-row .sent-zh {
+  color: #78350f !important;
+  font-weight: 650 !important;
+}
+
+body.theme-paper-sepia .sentence-pair-row.active-sentence-row .sent-en {
+  color: #92400e !important;
+  font-weight: 550 !important;
+}
+
+/* 3. 豆沙绿护眼主题 (Green) —— 清新醒目嫩绿荧光高光 */
+body.theme-paper-green .sentence-pair-row.active-sentence-row {
+  background: #bbf7d0 !important;
+  border: 1.5px solid #16a34a !important;
+  border-left: 5.5px solid #16a34a !important;
+  box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.45), 0 6px 20px rgba(22, 163, 74, 0.25) !important;
+}
+
+body.theme-paper-green .sentence-pair-row.active-sentence-row .sent-num {
+  background: #16a34a !important;
+  color: #ffffff !important;
+  box-shadow: 0 0 8px rgba(22, 163, 74, 0.6) !important;
+}
+
+body.theme-paper-green .sentence-pair-row.active-sentence-row .sent-zh {
+  color: #14532d !important;
+  font-weight: 650 !important;
+}
+
+body.theme-paper-green .sentence-pair-row.active-sentence-row .sent-en {
+  color: #166534 !important;
+  font-weight: 550 !important;
+}
+
+/* 4. 暗黑极客主题 (Dark) —— 炫目深空发光海蓝高光 */
+body.theme-paper-dark .sentence-pair-row.active-sentence-row {
+  background: #1e3a5f !important;
+  border: 1.5px solid #38bdf8 !important;
+  border-left: 5.5px solid #38bdf8 !important;
+  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.5), 0 6px 24px rgba(0, 152, 255, 0.4) !important;
+}
+
+body.theme-paper-dark .sentence-pair-row.active-sentence-row .sent-num {
+  background: #38bdf8 !important;
+  color: #0b1120 !important;
+  font-weight: 700 !important;
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.8) !important;
+}
+
+body.theme-paper-dark .sentence-pair-row.active-sentence-row .sent-zh {
+  color: #f0f9ff !important;
+  font-weight: 650 !important;
+}
+
+body.theme-paper-dark .sentence-pair-row.active-sentence-row .sent-en {
+  color: #bae6fd !important;
+  font-weight: 550 !important;
+}
+
+@keyframes sentCardFlashAnim {
+  0% {
+    box-shadow: 0 0 0 5px rgba(0, 152, 255, 0.7), 0 8px 24px rgba(0, 152, 255, 0.4);
+    filter: brightness(1.05);
+  }
+  50% {
+    box-shadow: 0 0 0 3px rgba(0, 152, 255, 0.5), 0 6px 18px rgba(0, 152, 255, 0.25);
+  }
+  100% {
+    box-shadow: 0 0 0 2.5px rgba(2, 132, 199, 0.4), 0 6px 20px rgba(0, 152, 255, 0.22);
+  }
+}
+
+.sentence-pair-row.sent-card-flash {
+  animation: sentCardFlashAnim 1.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .sent-num {
@@ -3817,8 +3934,9 @@ body.theme-paper-dark .article-section-zh {
   border: 1px solid rgba(99, 102, 241, 0.22);
   border-radius: 8px;
 }
-/* 混排段落里的公式条：正文才是主角，所以弱化它 */
+/* 混排段落里的公式条：卡片中公式符号栏按需求隐藏，行内公式保留在正文中由 KaTeX 精准排版 */
 .card-formula-inline {
+  display: none !important;
   margin: 0 0 10px;
   background: rgba(99, 102, 241, 0.04);
 }
@@ -3835,9 +3953,17 @@ body.theme-paper-dark .article-section-zh {
   overflow-y: hidden;
   padding: 6px 0;
   color: var(--text-primary, #e2e8f0);
+  font-size: calc(14px * var(--trans-font-scale));
 }
 .card-formula-body .katex {
-  font-size: 1.15em;
+  font-size: 1.25em;
+}
+.card-formula-body .katex-display {
+  font-size: 1.25em;
+  margin: 0.5em 0;
+}
+.card-formula-body .formula-crop-img {
+  zoom: var(--trans-font-scale);
 }
 /*
  * 公式裁图（viewer.js hydrateFormulaCrops）：按 PDF 版式原样截下来的那一块。
@@ -3914,7 +4040,7 @@ body.theme-paper-dark .article-section-zh {
 .card-formula-raw {
   margin-top: 6px;
   font-family: 'Consolas', monospace;
-  font-size: 11px;
+  font-size: calc(11px * var(--trans-font-scale));
   color: var(--text-muted, #94a3b8);
   word-break: break-all;
   opacity: 0.75;
@@ -4231,4 +4357,304 @@ body.theme-paper-dark .article-section-zh {
   flex-shrink: 0;
   flex-wrap: nowrap;
   white-space: nowrap;
+}
+
+/* ====================== v2.0 交互式 PDF 框选截图识别 & 多模态视觉样式 ====================== */
+.btn-snip-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary, #e6edf3);
+  background: var(--bg-secondary, rgba(99, 102, 241, 0.12));
+  border: 1px solid rgba(99, 102, 241, 0.35);
+  cursor: pointer;
+  transition: all 0.16s ease;
+  white-space: nowrap;
+}
+.btn-snip-tool:hover {
+  background: rgba(99, 102, 241, 0.22);
+  border-color: rgba(99, 102, 241, 0.65);
+}
+.btn-snip-tool.active {
+  background: linear-gradient(135deg, #4f46e5, #6366f1);
+  color: #ffffff;
+  border-color: #818cf8;
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.28);
+}
+
+body.snip-mode-active .pdf-page-wrapper,
+body.snip-mode-active .pdf-page-wrapper * {
+  cursor: crosshair !important;
+  user-select: none !important;
+}
+
+.snip-mode-banner {
+  position: sticky;
+  top: 8px;
+  z-index: 90;
+  margin: 6px auto 0;
+  max-width: calc(100% - 28px);
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(30, 27, 75, 0.92);
+  color: #e0e7ff;
+  border: 1px solid rgba(129, 140, 248, 0.55);
+  font-size: 12px;
+  line-height: 1.45;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(8px);
+}
+
+.snip-rubber-band {
+  position: absolute;
+  z-index: 65;
+  border: 2px solid #4f46e5;
+  background: rgba(99, 102, 241, 0.14);
+  box-shadow: 0 0 0 9999px rgba(15, 23, 42, 0.18), 0 4px 16px rgba(79, 70, 229, 0.25);
+  border-radius: 4px;
+  pointer-events: none;
+}
+
+.snip-action-popover {
+  position: absolute;
+  z-index: 80;
+  min-width: 320px;
+  max-width: min(460px, calc(100% - 16px));
+  background: var(--bg-elevated, #1e222d);
+  color: var(--text-primary, #e6edf3);
+  border: 1px solid rgba(99, 102, 241, 0.45);
+  border-radius: 10px;
+  padding: 8px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.42);
+  backdrop-filter: blur(10px);
+}
+body.theme-paper-default .snip-action-popover,
+body.theme-paper-sepia .snip-action-popover,
+body.theme-paper-green .snip-action-popover {
+  background: #ffffff;
+  color: #1f2937;
+  border-color: rgba(79, 70, 229, 0.35);
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.18);
+}
+
+.snip-toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.snip-act-btn {
+  padding: 5px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color, rgba(148, 163, 184, 0.3));
+  background: rgba(99, 102, 241, 0.08);
+  color: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.snip-act-btn:hover {
+  background: rgba(99, 102, 241, 0.2);
+  border-color: rgba(99, 102, 241, 0.6);
+}
+.snip-act-btn.snip-act-primary {
+  background: #4f46e5;
+  color: #ffffff;
+  border-color: #4f46e5;
+}
+.snip-act-btn.snip-act-primary:hover {
+  background: #4338ca;
+}
+.snip-act-btn.snip-act-ai {
+  color: #818cf8;
+  border-color: rgba(129, 140, 248, 0.45);
+}
+body.theme-paper-default .snip-act-btn.snip-act-ai,
+body.theme-paper-sepia .snip-act-btn.snip-act-ai,
+body.theme-paper-green .snip-act-btn.snip-act-ai {
+  color: #4338ca;
+}
+
+.snip-act-close {
+  margin-left: auto;
+  width: 24px;
+  height: 24px;
+  border-radius: 5px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary, #94a3b8);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.snip-act-close:hover {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+
+.snip-result-drawer {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-color, rgba(148, 163, 184, 0.22));
+  font-size: 12.5px;
+}
+
+.snip-drawer-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.snip-badge {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(99, 102, 241, 0.15);
+  color: #818cf8;
+  font-weight: 500;
+}
+body.theme-paper-default .snip-badge,
+body.theme-paper-sepia .snip-badge,
+body.theme-paper-green .snip-badge {
+  color: #4338ca;
+}
+
+.snip-katex-preview {
+  padding: 10px 12px;
+  border-radius: 7px;
+  background: rgba(15, 23, 42, 0.35);
+  overflow-x: auto;
+  margin-bottom: 7px;
+  text-align: center;
+}
+body.theme-paper-default .snip-katex-preview,
+body.theme-paper-sepia .snip-katex-preview,
+body.theme-paper-green .snip-katex-preview {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+}
+
+.snip-latex-box {
+  width: 100%;
+  box-sizing: border-box;
+  border-radius: 6px;
+  border: 1px solid var(--border-color, rgba(148, 163, 184, 0.3));
+  background: rgba(15, 23, 42, 0.3);
+  color: inherit;
+  padding: 6px 8px;
+  font-family: Consolas, Menlo, Monaco, monospace;
+  font-size: 11.5px;
+  resize: vertical;
+  margin-bottom: 6px;
+}
+body.theme-paper-default .snip-latex-box,
+body.theme-paper-sepia .snip-latex-box,
+body.theme-paper-green .snip-latex-box {
+  background: #f1f5f9;
+}
+
+.snip-copy-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.snip-copy-btn,
+.snip-inline-cfg-btn {
+  padding: 3px 8px;
+  border-radius: 5px;
+  border: 1px solid rgba(99, 102, 241, 0.38);
+  background: rgba(99, 102, 241, 0.1);
+  color: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.snip-copy-btn:hover,
+.snip-inline-cfg-btn:hover {
+  background: rgba(99, 102, 241, 0.22);
+  border-color: rgba(99, 102, 241, 0.65);
+}
+
+.snip-loading,
+.snip-notice,
+.snip-sub-hint {
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(99, 102, 241, 0.08);
+  line-height: 1.5;
+  font-size: 12px;
+}
+
+.snip-md-body {
+  max-height: 220px;
+  overflow-y: auto;
+  line-height: 1.6;
+  padding: 4px 2px;
+}
+
+/* AI 弹窗附图预览槽 */
+.ai-image-preview {
+  display: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 8px 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(99, 102, 241, 0.09);
+  border: 1px dashed rgba(99, 102, 241, 0.4);
+}
+.ai-img-preview-thumb-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.ai-img-preview-thumb {
+  max-height: 54px;
+  max-width: 160px;
+  object-fit: contain;
+  border-radius: 4px;
+  background: #ffffff;
+  padding: 2px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+}
+.ai-img-preview-tip {
+  font-size: 11.5px;
+  color: var(--text-secondary, #94a3b8);
+  line-height: 1.4;
+}
+.ai-img-preview-remove {
+  flex-shrink: 0;
+  padding: 3px 8px;
+  border-radius: 5px;
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.1);
+  color: #f87171;
+  font-size: 11px;
+  cursor: pointer;
+}
+.ai-img-preview-remove:hover {
+  background: rgba(239, 68, 68, 0.22);
+}
+
+/* 纸张护眼底色与暗夜模式下，白底公式裁图自适应融合 */
+body.theme-paper-sepia .formula-crop-img,
+body.theme-paper-green .formula-crop-img {
+  mix-blend-mode: multiply;
+}
+body.theme-paper-dark .formula-crop-img {
+  filter: invert(0.9) hue-rotate(180deg) contrast(1.06);
+  border-radius: 6px;
 }

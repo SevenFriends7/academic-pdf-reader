@@ -269,11 +269,29 @@ export class NotesStorageManager {
 
   public async loadPaperData(pdfUri: vscode.Uri): Promise<PaperMetadata> {
     const filePath = this.getStorageFilePath(pdfUri);
+    const bakPath = filePath.replace(/\.json$/, '.bak.json');
     const currentKey = path.basename(filePath).replace(/^paper_/, '').replace(/\.json$/, '');
     try {
       if (fs.existsSync(filePath)) {
         this.rememberIdentity(pdfUri, currentKey);
-        return this.parseStoredData(pdfUri, filePath);
+        const stored = this.parseStoredData(pdfUri, filePath);
+        // 安全防丢：若主存档中批注意外为空，但备份中存在有效批注，自动补回
+        if ((!stored.annotations || stored.annotations.length === 0) && fs.existsSync(bakPath)) {
+          try {
+            const bakData = JSON.parse(fs.readFileSync(bakPath, 'utf-8'));
+            if (Array.isArray(bakData.annotations) && bakData.annotations.length > 0) {
+              stored.annotations = bakData.annotations;
+              console.log(`[NotesStorage] 自动从备份中恢复 ${stored.annotations.length} 条批注笔记`);
+            }
+          } catch (e) {}
+        }
+        return stored;
+      }
+
+      // 主存档丢失时直接回退备份
+      if (fs.existsSync(bakPath)) {
+        this.rememberIdentity(pdfUri, currentKey);
+        return this.parseStoredData(pdfUri, bakPath);
       }
 
       /*
@@ -368,6 +386,11 @@ export class NotesStorageManager {
       const size = this.fileSizeOf(pdfUri);
       if (size) (data as any).pdfSize = size;
       fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
+      // 批注安全实时备份：只要包含批注数据，自动同步一份到 .bak.json，防止意外损坏或清理丢失
+      if (Array.isArray(data.annotations) && data.annotations.length > 0) {
+        const bakPath = filePath.replace(/\.json$/, '.bak.json');
+        fs.writeFileSync(bakPath, JSON.stringify(data, null, 2), 'utf-8');
+      }
       this.rememberIdentity(pdfUri, path.basename(filePath).replace(/^paper_/, '').replace(/\.json$/, ''));
     } catch (e) {
       console.error('[NotesStorage] Failed to save private storage:', e);

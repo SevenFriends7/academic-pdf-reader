@@ -11,8 +11,10 @@ import {
   DEFAULT_ASSISTANT_MODEL,
   filterUsableModel,
   KNOWN_GOOD_MODELS,
+  type LlmImage,
   type LlmTurn
 } from './llmClient';
+import { resolveVisionProviderConfig } from './visionService';
 
 export interface StructuredParagraph {
   type: 'title' | 'abstract' | 'keywords' | 'significance' | 'body' | string;
@@ -177,10 +179,8 @@ export interface AcademicAnswer {
  * 一个字都不要改；渲染时由客户端把括号内的残渣配上本地抽出的规范 LaTeX。
  */
 const FORMULA_LATEX_RULE =
-  '遇到数学公式时：**照抄原文里的那串字符**（哪怕它像 "X l t"、"∈ R HW × C" 这样的残渣），' +
-  '用 ⟦ 和 ⟧ 把它括起来，例如 ⟦X l t ∈ R HW × C⟧；' +
-  '括号里的字符必须与原文逐字一致，**绝对不要自己转写成 LaTeX、不要改写、不要加 $ 号**——' +
-  '渲染时会自动换成正确的公式排版；数学符号、变量名、缩写、文献引用编号仍原样保留';
+  '原文中形如 ⟦M1⟧、⟦M2⟧（或 ⟦…⟧）的标记是数学公式占位符，必须在译文对应的语义位置**原封不动保留**（包括两侧的 ⟦ 和 ⟧ 括号与内部编号，绝不可漏掉、改写、拆分、替换成 $ 号，也不要自己转写 LaTeX）；' +
+  '其余未加占位符的变量符号、模型缩写、文献引用编号（如 [12]）也保持原样';
 
 /**
  * AI 回答里的数学写法要求。
@@ -341,17 +341,16 @@ export class PaperTranslator {
     const lang = targetLang || cfg.get<string>('targetLanguage', 'zh-CN');
     const service = cfg.get<string>('translationService', 'openai-compatible');
 
-    // 非叙述性内容（人名名单、机构、图表标签、公式片段）不送去翻译：
-    // 模型会把它们原样返回，随后被"照搬原文"校验拦下、在界面上弹出红色报错。
-    // 直接原样保留并说明原因，既省一次 API 调用，也不产生假错误。
-    // 例外：类型已被确认为标题/摘要/章节标题的段落（forceTranslate）—— 它们必须翻。
-    if (!opts?.forceTranslate && this.looksNonProse(trimmed)) {
+    // 仅当整段完全没有可翻译的自然语言词汇（如纯 URL/DOI、纯编号/子图符号 "(a) (b)"、纯公式占位符）时才原样保留；
+    // 任何含真实英文词汇的短句、冒号引导句（"Specifically, the loss is:" / "where:"）、被公式切开的半句、
+    // 含大写模型名/数据集名的短句，一律送去翻译，彻底杜绝"误判直接返回英文原文"！
+    if (!opts?.forceTranslate && this.isPureUntranslatableToken(trimmed)) {
       return {
         translation: trimmed,
         sentences: sentences.length === 1 ? [trimmed] : [],
         aligned: true,
         mode: sentences.length === 1 ? 'sentence-json' : 'unaligned',
-        note: '该段像是人名/机构/图表标签等非叙述内容，已原样保留（未调用翻译接口）'
+        note: '纯链接/编号/符号，原样保留'
       };
     }
 
@@ -384,66 +383,35 @@ export class PaperTranslator {
   }
 
   /**
-   * 判断一段内容是否"不是叙述性正文"——人名名单、机构、图表标签、公式片段。
-   * 这类内容翻不翻都一样，送去翻译只会换来一句"照抄原文"和一次红色报错。
+   * 严格判定：是否**完全不含可翻译的自然语言单词**（仅纯 URL/DOI、纯数字标点、纯 `⟦M1⟧` 占位符或 `(a) (b)`）。
+   * 绝不再按 `< 60 字符`、`无句号`、`大写词占比 > 0.5` 拦截正常学术短句！
    */
-  private looksNonProse(text: string): boolean {
+  public isPureUntranslatableToken(text: string): boolean {
     const t = (text || '').trim();
-    if (!t) return false;
-    // 以句末标点收尾 → 当作正文，照常翻译
-    if (/[.!?。！？]["'”’)\]]?\s*$/.test(t)) return false;
-    // 章节标题（"2. Related Work" / "III. Method"）照常翻译
-    if (/^(\d+(\.\d+)*\.?|[IVXLC]+\.)\s+\S/.test(t)) return false;
-    // 通篇没有任何句末标点、却有相当长度 → 过去一律当成"图表内部标签簇"
-    // （坐标轴标签、图例、子图编号被拼成一段）。
-    //
-    // 【踩过的坑】正文被**从中间切开**的片段也长这样：以 `:` / `,` 结尾、内部一个句号都没有。
-    // 视觉手术把"正文 + 公式 + 正文"拆成三段之后，这种片段会大量出现，于是它们全被
-    // "原样保留、不调用翻译接口"——用户看到的就是"这一段的译文是英文原文"。
-    // 所以再加一条判据：有逗号/分号，且有 the/we/can/of 这类虚词 → 人家在叙述，不是标签。
-    if (t.length > 60 && !/[.!?。！？]/.test(t)) return !this.looksLikeClauseRun(t);
-    if (t.length > 200) return false;
-
-    const words = (t.match(/[A-Za-z][A-Za-z'\-]*/g) || []).length;
-    if (words < 3) return true; // "Figure 2"、"(a) (b)" 这类
-    const proper = (t.match(/\b[A-Z][a-z]+\b/g) || []).length;
-    if (proper / Math.max(1, words) > 0.5) return true; // 大写词占多数 → 名单/机构
-    return t.length < 60; // 短且无句末标点 → 标签
+    if (!t) return true;
+    // 纯 URL 或纯 DOI
+    if (/^(?:https?:\/\/\S+|www\.\S+|doi:\s*10\.\d{4,}\/\S+|10\.\d{4,}\/\S+)$/i.test(t)) {
+      return true;
+    }
+    // 剥除公式占位符 ⟦M1⟧ / ⟦...⟧、URL、引用编号 [1, 2]、子图编号 (a) (b) 后检查是否还有自然语言单词
+    const stripped = t
+      .replace(/⟦[^⟧]*⟧/g, ' ')
+      .replace(/https?:\/\/\S+/gi, ' ')
+      .replace(/\[\s*\d+(?:\s*[,–\-]\s*\d+)*\s*\]/g, ' ')
+      .replace(/\(\s*[a-z0-9]{1,3}\s*\)/gi, ' ');
+    if (this.countCjk(stripped) > 0) return false;
+    const realWords = (stripped.match(/[A-Za-z]{2,}/g) || []).filter(
+      w => !/^(?:px|pt|cm|mm|ms|hz|khz|mhz|ghz|gb|mb|kb|fps)$/i.test(w)
+    );
+    return realWords.length === 0;
   }
 
   /**
-   * 像"在叙述"而不是"一堆标签"吗？
+   * 自愈清理历史遗留的"假译文"缓存（旧版 `looksNonProse` 误判把英文原文写进 `paperData.translations` 的条目）。
    *
-   * 图表标签簇是 `Extra data OL J S (%) J U (%) F S (%) FPS` / `Segmentation Network Loss`：
-   * 既没有逗号分号，也没有 the/we/can/of 这类虚词。而"正文被切开"的片段是
-   * `With the cyclic reference set, we can obtain the prediction for the initial reference mask in the
-   * same manner as sequential processing:` —— 逗号 + 一串虚词，明显在叙述。
-   * 两条同时满足才算叙述，宁严不宽：把标签误送去翻译只是多一次请求，
-   * 把正文误判成标签则会让用户看到"整段没翻译"。
-   */
-  private looksLikeClauseRun(t: string): boolean {
-    const commas = (t.match(/[,;:，；：]/g) || []).length;
-    if (commas < 1) return false;
-    const funcWords = (
-      t.match(
-        /\b(?:the|a|an|of|to|in|for|and|or|that|this|these|those|we|our|us|is|are|was|were|be|been|being|can|could|will|would|should|may|might|must|with|as|by|on|at|from|it|its|which|where|when|while|than|then|thus|hence|however|also|if|but|so|such|each|both|all|not|no|more|most|other|into|over|after|before|during|between|without|via)\b/gi
-      ) || []
-    ).length;
-    const words = (t.match(/[A-Za-z][A-Za-z'\-]*/g) || []).length;
-    return funcWords >= 3 && funcWords / Math.max(1, words) >= 0.15;
-  }
-
-  /**
-   * 清掉历史遗留的"假译文"缓存（详见 pdfEditorProvider 里的调用注释）。
-   *
-   * 两条判据取并集，都要求"内容确实像在叙述"（真正的标题/机构/图注/公式残渣没有从句结构，
-   * 不会被误伤）：
-   *   ① alignment 的 note 写着"未调用翻译接口"——这是当年那条 looksNonProse 短路路径留下的；
-   *   ② 值里**一个汉字都没有**、却明显是英文散文 —— 目标是中文时，这种值必然是假的
-   *      （模型不可能把英文"译"成英文还通过校验，只可能是"原文被当成了译文"）。
-   * 只有目标语言是中文时才做，避免把"翻成英文"的正常结果删掉。
-   *
-   * @returns 清理掉的条目数
+   * 覆盖：
+   *   ① alignment.note 含 "未调用翻译接口" 的所有历史短路条目（无论长短，包括 <60 字的引导句）；
+   *   ② 目标语言是中文（`zh*`），但缓存译文里 **0 个汉字** 且含有 >=2 个真实英文单词（排除纯 URL/DOI）。
    */
   public pruneStaleNonProseCache(data: {
     translations?: Record<string, string>;
@@ -460,24 +428,24 @@ export class PaperTranslator {
     if (!lang.startsWith('zh')) return 0;
 
     const align = data.alignment || {};
-    // 键取"有译文的"与"有 alignment 记录的"并集：
-    // 有些假译文是更早的版本写下的，压根没有 alignment 记录（实测第 4 页就有两条），
-    // 只看 alignment 会漏掉它们。
     const allKeys = new Set<string>([
       ...Object.keys(data.translations || {}),
       ...Object.keys(align)
     ]);
     const stale = Array.from(allKeys).filter(k => {
       const note = String((align[k] && align[k].note) || '');
+      if (note.includes('未调用翻译接口')) return true;
+
       const whole = (data.translations && data.translations[k]) || '';
       const perSentence = ((data.sentenceTranslations && data.sentenceTranslations[k]) || []).join(' ');
-      // 这些条目的"译文"就是原文本身，所以直接拿它当原文来判断是不是在叙述
-      const text = whole || perSentence;
-      if (String(text).length <= 60) return false; // 短的多半是"标签原样保留"，合法
-      if (!this.looksLikeClauseRun(text)) return false;
-      const markedByOldShortcut = note.indexOf('未调用翻译接口') >= 0;
-      const noCjkAtAll = this.countCjk(text) === 0;
-      return markedByOldShortcut || noCjkAtAll;
+      const text = (whole || perSentence).trim();
+      if (!text) return false;
+      if (this.isPureUntranslatableToken(text)) return false;
+
+      const stripped = this.stripLatexForCounting(text);
+      if (this.countCjk(stripped) > 0) return false;
+      const enWords = (stripped.match(/[A-Za-z]{2,}/g) || []).length;
+      return enWords >= 2;
     });
     stale.forEach(k => {
       if (data.translations) delete data.translations[k];
@@ -1102,8 +1070,9 @@ ${sentences[i]}`
     const sourceHasCjk = this.countCjk(source) > 0;
     if (sourceHasCjk) return null;
 
-    // 太短的内容（公式、编号、纯缩写）不做语言判断，避免误报
-    const latinLetters = ((source || '').match(/[A-Za-z]/g) || []).length;
+    // 太短的内容（公式、编号、纯缩写）不做语言判断，避免误报（先剥掉 ⟦M1⟧ / LaTeX 再计真实拉丁字母）
+    const sPlain = this.stripLatexForCounting(source);
+    const latinLetters = ((sPlain || '').match(/[A-Za-z]/g) || []).length;
     if (latinLetters < 8) return null;
 
     /**
@@ -1147,11 +1116,12 @@ ${sentences[i]}`
   }
 
   /**
-   * 剥掉 LaTeX 片段，只留"真正的文字"（用于语言判断与相似度比较）。
-   * 覆盖 `$...$`、`$$...$$`、`\(...\)`、`\[...\]`，以及漏网的 `\command`。
+   * 剥掉 LaTeX 片段与 `⟦M1⟧`/`⟦…⟧` 公式占位符，只留"真正的文字"（用于语言判断与相似度比较）。
    */
   private stripLatexForCounting(s: string): string {
     return String(s || '')
+      .replace(/⟦[^⟧\n]*⟧/g, ' ')
+      .replace(/(?:【|〖|⟪|\[)\s*M\d{1,3}\s*(?:】|〗|⟫|\])/gi, ' ')
       .replace(/\$\$[\s\S]*?\$\$/g, ' ')
       .replace(/\\\[[\s\S]*?\\\]/g, ' ')
       .replace(/\\\([\s\S]*?\\\)/g, ' ')
@@ -1782,19 +1752,31 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
       fullText?: string;
       /** 聚焦公式的规范 LaTeX（视觉模型从页面图像转写）；非空即视为"公式类提问" */
       focusMath?: string;
+      /** 随本次提问附带的框选截图或公式裁图（启用多模态带图问 AI） */
+      images?: LlmImage[];
     },
     onDelta: (chunk: string) => void
   ): Promise<AcademicAnswer> {
     const cfg = this.cfg();
+    const hasImages = Array.isArray(options.images) && options.images.length > 0;
+    const visionCfg = hasImages ? resolveVisionProviderConfig() : null;
+
+    if (hasImages && visionCfg && !visionCfg.isConfigured) {
+      throw new LlmError({
+        kind: visionCfg.apiKey ? 'invalid-request' : 'no-key',
+        apiMessage: visionCfg.reason || '带图问 AI 需要配置支持图片输入的视觉模型（如 Qwen-VL / Gemini / GPT-4o）。'
+      });
+    }
+
     const service = cfg.get<string>('translationService', 'openai-compatible');
-    if (service === 'built-in') {
+    if (!hasImages && service === 'built-in') {
       throw new LlmError({
         kind: 'invalid-request',
         apiMessage: 'AI 问答需要配置大模型接口，请在设置中配置自定义大模型（如 DeepSeek / Kimi / 通义等）。'
       });
     }
 
-    const apiKey = (cfg.get<string>('apiKey', '') || '').trim();
+    const apiKey = hasImages && visionCfg ? visionCfg.apiKey : (cfg.get<string>('apiKey', '') || '').trim();
     if (!apiKey) throw new LlmError({ kind: 'no-key', apiMessage: '未配置大模型 API Key（academicReader.apiKey）' });
 
     const ctrl = new AbortController();
@@ -1862,13 +1844,18 @@ B. **通用概念 / 术语 / 背景知识**，或读者的发散思考、联想�
     turns.push({ role: 'user', text: prompt });
 
     try {
-      // ---- OpenAI 兼容（DeepSeek / 通义 / Kimi / 本地 vLLM…）----
-        const endpoint = (cfg.get<string>('apiEndpoint', 'https://api.deepseek.com/v1') || '').replace(/\/+$/, '');
-        // 回退语义：优先 aiModel，未配置则沿用翻译模型
+      // ---- OpenAI 兼容（若附带截图/公式裁图，则自动路由到独立视觉模型！）----
+        const endpoint = (
+          hasImages && visionCfg
+            ? visionCfg.endpoint
+            : cfg.get<string>('apiEndpoint', 'https://api.deepseek.com/v1') || ''
+        ).replace(/\/+$/, '');
         const model =
-          (cfg.get<string>('aiModel', '') || '').trim() ||
-          (cfg.get<string>('modelName', 'deepseek-chat') || '').trim() ||
-          'deepseek-chat';
+          hasImages && visionCfg
+            ? visionCfg.model
+            : (cfg.get<string>('aiModel', '') || '').trim() ||
+              (cfg.get<string>('modelName', 'deepseek-chat') || '').trim() ||
+              'deepseek-chat';
         const startedAt = Date.now();
         const res = await callOpenAICompatStream({
           endpoint,
@@ -1876,6 +1863,7 @@ B. **通用概念 / 术语 / 背景知识**，或读者的发散思考、联想�
           model,
           systemInstruction,
           turns,
+          images: hasImages ? options.images : undefined,
           temperature: cfg.get<number>('aiTemperature', 0.4),
           maxOutputTokens: this.assistantMaxTokens(answerStyle),
           signal: ctrl.signal,
@@ -1986,45 +1974,28 @@ B. **通用概念 / 术语 / 背景知识**，或读者的发散思考、联想�
      * 免得把这个坑甩给用户（他还得自己进设置改数字）。
      */
     const callWithBudget = async (maxOut: number) => {
-      if (useOpenAI) {
-        const endpoint = (cfg.get<string>('apiEndpoint', 'https://api.deepseek.com/v1') || '').replace(/\/+$/, '');
-        const apiKey = (cfg.get<string>('apiKey', '') || '').trim();
-        if (!apiKey) throw new LlmError({ kind: 'no-key', apiMessage: '未配置自定义大模型 API Key' });
-        const model = this.visionModel(cfg, endpoint);
-        const res = await callOpenAICompatStream({
-          endpoint,
-          apiKey,
-          model,
-          systemInstruction,
-          turns: [{ role: 'user', text: prompt }],
-          images,
-          temperature: 0,
-          maxOutputTokens: maxOut,
-          jsonMode: true,
-          idleTimeoutMs: 180000,
-          totalTimeoutMs: 420000
+      const vcfg = resolveVisionProviderConfig();
+      if (!vcfg.isConfigured) {
+        throw new LlmError({
+          kind: vcfg.apiKey ? 'invalid-request' : 'no-key',
+          model: vcfg.model,
+          apiMessage: vcfg.reason || '视觉功能需要配置支持图片输入的视觉模型（如 Qwen-VL / Gemini / GPT-4o）。'
         });
-        return { text: res.text, model, usage: res.usage as VisionSegmentationResult['usage'] };
       }
-      const apiKey = this.getGeminiKey(cfg);
-      if (!apiKey) throw new LlmError({ kind: 'no-key', apiMessage: '未配置 Gemini API Key' });
-      const model = this.visionModel(cfg, '');
-      const res = await generate(
-        apiKey,
-        {
-          model,
-          systemInstruction,
-          turns: [{ role: 'user', text: prompt }],
-          images,
-          temperature: 0,
-          maxOutputTokens: maxOut,
-          jsonMode: true,
-          idleTimeoutMs: 180000,
-          totalTimeoutMs: 420000
-        },
-        this.log
-      );
-      return { text: res.text, model: res.model, usage: res.usage as VisionSegmentationResult['usage'] };
+      const res = await callOpenAICompatStream({
+        endpoint: vcfg.endpoint.replace(/\/+$/, ''),
+        apiKey: vcfg.apiKey,
+        model: vcfg.model,
+        systemInstruction,
+        turns: [{ role: 'user', text: prompt }],
+        images,
+        temperature: 0,
+        maxOutputTokens: maxOut,
+        jsonMode: true,
+        idleTimeoutMs: 180000,
+        totalTimeoutMs: 420000
+      });
+      return { text: res.text, model: vcfg.model, usage: res.usage as VisionSegmentationResult['usage'] };
     };
 
     let res: { text: string; model: string; usage?: VisionSegmentationResult['usage'] };

@@ -7,7 +7,7 @@
     "color": "#0b578a",
     "theme": "dark"
   },
-  "version": "1.8.8",
+  "version": "2.0.7",
   "publisher": "paper-reader",
   "license": "MIT",
   "repository": {
@@ -49,6 +49,7 @@
     "onCustomEditor:academicReader.pdfEditor",
     "onCommand:academicReader.openPdf",
     "onCommand:academicReader.openSettings",
+    "onCommand:academicReader.configureVision",
     "onCommand:academicReader.pickModel",
     "onCommand:academicReader.exportNotesMarkdown",
     "onStartupFinished",
@@ -72,6 +73,11 @@
       {
         "command": "academicReader.openSettings",
         "title": "配置学术翻译引擎与 API Key (DeepSeek / OpenAI / 内置免费)",
+        "category": "文献阅读 (Academic Reader)"
+      },
+      {
+        "command": "academicReader.configureVision",
+        "title": "配置独立视觉识别引擎 (框选公式转 LaTeX / 区域视觉翻译 / 带图问 AI)",
         "category": "文献阅读 (Academic Reader)"
       },
       {
@@ -204,10 +210,20 @@
           "default": true,
           "description": "导出高光批注 PDF 时是否附上「高光译文」：true = 每条高光在左页边距标序号，并在该原文页后紧跟一页给出 原文摘录 / 译文 / 我的批注 / AI 答疑；false = 只导出高光后的原文（体积更小，且不需要中文字体）。每次导出都会先问你一次，并把选择记在这里。"
         },
+        "academicReader.visionApiEndpoint": {
+          "type": "string",
+          "default": "",
+          "description": "【独立视觉端点】视觉多模态模型的 API 端点（如通义千问 https://dashscope.aliyuncs.com/compatible-mode/v1、硅基流动 https://api.siliconflow.cn/v1、OpenAI https://api.openai.com/v1、智谱 https://open.bigmodel.cn/api/paas/v4 等）。留空则沿用翻译的 apiEndpoint。这样你可以用 DeepSeek 做超低成本正文翻译，同时配一个 Qwen-VL / Gemini / GPT-4o 专门用于框选公式识别、区域视觉翻译与带图问 AI。"
+        },
+        "academicReader.visionApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "【独立视觉密钥】独立视觉模型的 API Key。留空则沿用主 apiKey。"
+        },
         "academicReader.visionModel": {
           "type": "string",
           "default": "",
-          "description": "【视觉分割】用于判断版面结构（哪些是正文/图注/公式、阅读顺序、该合该拆）的模型。必须支持图片输入：DeepSeek 用 deepseek-flash，通义用 qwen-vl-max，智谱用 glm-4v，OpenAI 用 gpt-4o 等。留空则沿用 AI 问答模型；若它是纯文本模型（如 deepseek-chat）会明确报错提示你填这里。翻译仍用原来的文本模型，互不影响。"
+          "description": "【视觉多模态模型】用于框选公式转 LaTeX、区域视觉翻译、带图问 AI 以及可选整页视觉分割的模型名称（必须支持图片输入，例如 qwen-vl-max、Qwen/Qwen2.5-VL-72B-Instruct、gpt-4o、gemini-2.5-flash、glm-4v-plus）。留空时若主模型支持视觉则沿用主模型；若主模型是纯文本模型（如 deepseek-chat），框选公式仍可使用内置离线 2D 公式重建，也可随时配置此项解锁高精度多模态视觉识别。"
         },
         "academicReader.segmentationEngine": {
           "type": "string",
@@ -331,6 +347,7 @@
     "publish:minor": "npx --yes @vscode/vsce publish minor --no-dependencies --baseContentUrl https://github.com/SevenFriends7/academic-pdf-reader/blob/main/ --baseImagesUrl https://fastly.jsdelivr.net/gh/SevenFriends7/academic-pdf-reader@main/",
     "publish:major": "npx --yes @vscode/vsce publish major --no-dependencies --baseContentUrl https://github.com/SevenFriends7/academic-pdf-reader/blob/main/ --baseImagesUrl https://fastly.jsdelivr.net/gh/SevenFriends7/academic-pdf-reader@main/",
     "test": "node scratch/llm-test/viewer-unit.js",
+    "test:v2": "node scratch/v2_arch_test.js",
     "test:init": "node scratch/smoke_init.js",
     "test:html": "node scratch/host_html_smoke.js",
     "test:pdf": "node scratch/pdf_export_test.js",

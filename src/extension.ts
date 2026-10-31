@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { PdfDualReaderProvider } from './pdfEditorProvider';
 import { detectPaddlePython } from './formulaModel';
+import { VISION_PROVIDER_PRESETS, resolveVisionProviderConfig } from './visionService';
 
 export function activate(context: vscode.ExtensionContext) {
   console.log('[AcademicReader] Academic Literature Reader extension is active!');
@@ -64,21 +65,38 @@ export function activate(context: vscode.ExtensionContext) {
   });
   context.subscriptions.push(pickModelCmd);
 
+  // 注册命令：独立配置视觉识别引擎（公式转 LaTeX / 区域视觉翻译 / 带图问 AI）
+  const configureVisionCmd = vscode.commands.registerCommand(
+    'academicReader.configureVision',
+    async () => {
+      await configureVisionLLM(vscode.workspace.getConfiguration('academicReader'));
+    }
+  );
+  context.subscriptions.push(configureVisionCmd);
+
   // 注册命令：打开综合设置与大模型翻译配置菜单
   const openSettingsCmd = vscode.commands.registerCommand(
     'academicReader.openSettings',
     async () => {
       const config = vscode.workspace.getConfiguration('academicReader');
       const currentService = config.get<string>('translationService', 'openai-compatible');
+      const vcfg = resolveVisionProviderConfig();
 
       const items = [
         {
-          label: '$(server-process) 配置模型 API（DeepSeek / Kimi / 通义 / OpenAI …）',
+          label: '$(server-process) 配置翻译 / AI 问答模型 API（DeepSeek / Kimi / 通义 / OpenAI …）',
           description:
             currentService === 'openai-compatible'
-              ? '【当前使用中】选一个常用模型，填上 API Key 即可'
+              ? '【当前使用中】选一个常用文本模型，填上 API Key 即可'
               : '选一个常用模型，填上 API Key 即可',
           action: 'custom'
+        },
+        {
+          label: '$(device-camera) 配置独立视觉识别引擎（框选公式转 LaTeX / 区域视觉翻译 / 带图问 AI）',
+          description: vcfg.isConfigured
+            ? `【已就绪：${vcfg.model}】可与 DeepSeek 文本翻译搭配使用`
+            : '推荐配置通义 Qwen-VL / 硅基流动 / Gemini / GPT-4o（与正文翻译互不影响）',
+          action: 'vision'
         },
         {
           label: '$(globe) 切换为内置免费翻译引擎（无需 Key）',
@@ -93,13 +111,15 @@ export function activate(context: vscode.ExtensionContext) {
       ];
 
       const selected = await vscode.window.showQuickPick(items, {
-        placeHolder: '文献阅读器：请选择要配置的学术翻译服务或选项（翻译与 AI 问答共用所选引擎）'
+        placeHolder: '文献阅读器：请选择要配置的服务（支持 DeepSeek 正文翻译 + 独立多模态视觉识别双引擎）'
       });
 
       if (!selected) return;
 
       if (selected.action === 'custom') {
         await configureCustomLLM(config);
+      } else if (selected.action === 'vision') {
+        await configureVisionLLM(config);
       } else if (selected.action === 'builtin') {
         await config.update('translationService', 'built-in', vscode.ConfigurationTarget.Global);
         vscode.window.showInformationMessage('✅ 已切换为内置免费翻译引擎（无需 API Key）。');
@@ -314,6 +334,84 @@ async function configureCustomLLM(config: vscode.WorkspaceConfiguration) {
 
   vscode.window.showInformationMessage(
     `已启用 ${modelName} 作为翻译与 AI 问答引擎（端点 ${endpoint}）。`
+  );
+}
+
+async function configureVisionLLM(config: vscode.WorkspaceConfiguration) {
+  const curEndpoint = (config.get<string>('visionApiEndpoint', '') || '').trim();
+  const curModel = (config.get<string>('visionModel', '') || '').trim();
+
+  const items = [
+    ...VISION_PROVIDER_PRESETS.map(p => ({
+      label: p.label,
+      description: p.description,
+      detail: p.endpoint ? `端点：${p.endpoint}` : undefined,
+      _preset: p,
+      _clear: false
+    })),
+    {
+      label: '$(clear-all) 清空独立视觉配置（沿用主模型；无视觉 Key 时框选公式仍走内置离线 2D 重建）',
+      description: '恢复继承主端点与主模型',
+      detail: undefined,
+      _preset: null,
+      _clear: true
+    }
+  ];
+
+  const picked = await vscode.window.showQuickPick(items, {
+    title: '配置独立视觉识别引擎（框选公式转 LaTeX / 区域视觉翻译 / 带图问 AI）',
+    placeHolder: curModel ? `当前独立视觉模型：${curModel} @ ${curEndpoint || '主端点'}` : '选择一个多模态视觉平台（不影响当前 DeepSeek 等正文翻译配置）',
+    ignoreFocusOut: true,
+    matchOnDescription: true
+  });
+  if (!picked) return;
+
+  if (picked._clear) {
+    await config.update('visionApiEndpoint', '', vscode.ConfigurationTarget.Global);
+    await config.update('visionApiKey', '', vscode.ConfigurationTarget.Global);
+    await config.update('visionModel', '', vscode.ConfigurationTarget.Global);
+    vscode.window.showInformationMessage('已清空独立视觉配置，将沿用主模型或内置离线 2D 公式重建。');
+    return;
+  }
+
+  const preset = picked._preset!;
+  let endpoint = preset.endpoint || curEndpoint;
+  if (!preset.endpoint) {
+    const epIn = await vscode.window.showInputBox({
+      title: '配置视觉 API 端点 (Base URL)',
+      prompt: '兼容 OpenAI 多模态 /chat/completions 的端点（通常以 /v1 结尾）',
+      value: curEndpoint || 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      ignoreFocusOut: true
+    });
+    if (epIn === undefined) return;
+    endpoint = epIn.trim();
+  }
+
+  const modelIn = await vscode.window.showInputBox({
+    title: '配置视觉模型名称',
+    prompt: '支持图片输入的多模态模型名（如 qwen-vl-max、Qwen/Qwen2.5-VL-72B-Instruct、gemini-2.5-flash、gpt-4o）',
+    value: preset.defaultModel || curModel || 'qwen-vl-max',
+    ignoreFocusOut: true
+  });
+  if (modelIn === undefined || !modelIn.trim()) return;
+
+  const curKey = config.get<string>('visionApiKey', '');
+  const keyIn = await vscode.window.showInputBox({
+    title: `配置 ${modelIn.trim()} - 视觉 API Key`,
+    prompt: '粘贴该视觉平台的 API Key（若与主翻译平台相同可留空沿用主 Key）',
+    value: curKey,
+    password: true,
+    ignoreFocusOut: true,
+    placeHolder: 'sk-...（留空则沿用主 apiKey）'
+  });
+  if (keyIn === undefined) return;
+
+  await config.update('visionApiEndpoint', endpoint, vscode.ConfigurationTarget.Global);
+  await config.update('visionModel', modelIn.trim(), vscode.ConfigurationTarget.Global);
+  await config.update('visionApiKey', keyIn.trim(), vscode.ConfigurationTarget.Global);
+
+  vscode.window.showInformationMessage(
+    `✅ 独立视觉引擎已就绪：${modelIn.trim()}（现在可在 PDF 上按住 Shift+拖拽 或点「框选识别」体验公式转 LaTeX、区域视觉翻译与带图问 AI！）`
   );
 }
 
