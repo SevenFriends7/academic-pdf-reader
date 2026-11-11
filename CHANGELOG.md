@@ -3,6 +3,13 @@
 本文件记录「文献对照翻译阅读器」的重要变更。
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.0.10] - 2026-11-11
+
+### 重点修复
+- **修复 CI 质量闸门与测试用例对齐**：
+  - 恢复 `looksNonProse` 判据方法并优化 `pruneStaleNonProseCache`，修复 CI 闸门测试 `npm run test:gate`。
+  - 同步更新测试用例对齐新的单文档统一会话与无死板模板规训架构。
+
 ## [2.0.9] - 2026-11-11
 
 ### 重点优化

@@ -196,7 +196,7 @@ check(
   '译文行走公式渲染（逐句/整段/数学密集共 3 处；译文公式由 renderZhWithMath 换成本地 LaTeX）',
   (viewerSrc.match(/sent-zh">\$\{renderZhWithMath\(/g) || []).length === 3 &&
     /zh-paragraph-plain">\$\{renderZhWithMath\(transText/.test(viewerSrc) &&
-    /function renderZhWithMath\(text, para\)/.test(viewerSrc) &&
+    /function renderZhWithMath\(text,\s*para/.test(viewerSrc) &&
     // 原文侧：允许换行（renderParaEnHtml 有多处带换行的调用写法）
     /sent-en">\$\{renderParaEnHtml\([\s\S]{0,40}?sent\.text/.test(viewerSrc)
 );
@@ -228,7 +228,7 @@ console.log('\n[9] 专家模式：整篇上下文 + 不限篇幅');
   check('拿不到现抽全文时回退到逐页索引（不报错）', typeof fallback === 'string');
 }
 
-console.log('\n[10] 公式聚焦提问：模型必须围绕公式本身作答');
+console.log('\n[10] 公式聚焦提问：携带规范公式，移除死板范式与预设限制');
 {
   // 真实数据：AOT 第 5 页公式 (4)。文本层抽出来是残渣（`Y | D` 其实是 `Y \mid D`），
   // 规范式由视觉模型从页面图像转写而来（webview 通过 focusMath 送过来）。
@@ -240,19 +240,10 @@ console.log('\n[10] 公式聚焦提问：模型必须围绕公式本身作答');
     focusMath: canonical
   });
   check('规范 LaTeX 进了提示词（且明示以它为准）', withMath.includes(canonical) && /规范写法/.test(withMath));
-  check('要求先给出规范形式（$$...$$）', /规范形式/.test(withMath) && /\$\$\.\.\.\$\$/.test(withMath));
-  check(
-    '要求逐符号表（含形状/取值范围/依据这几列）',
-    /逐符号表/.test(withMath) && /形状或取值范围/.test(withMath) && /页码\/公式号/.test(withMath)
-  );
-  check('要求代一个具体的小例子走一遍', /小例子/.test(withMath));
-  check('要求说清这条式子在做什么、以及与相邻公式的关系', /在做什么/.test(withMath) && /相邻公式/.test(withMath));
-  check('提醒文本层残渣不可照抄（^ 变 | 这类）', /残渣/.test(withMath) && /不要照抄/.test(withMath));
-  check('数学写法统一要求 $...$、且禁止用反引号包公式', /不要用反引号包变量或公式/.test(withMath) && /\$W_K\$/.test(withMath));
+  check('死板提示词范式已彻底移除（自由问答）', !/逐符号表/.test(withMath) && !/小例子/.test(withMath));
 
   const plain = t.buildAssistantPrompt({ question: '这篇论文的动机是什么', selectedText: 'some text', page: 2 });
-  check('普通提问不会被套上公式模板（只在聚焦公式时生效）', !/逐符号表/.test(plain));
-  check('但数学写法要求在普通提问里也生效（模型随时可能写公式）', /不要用反引号包变量或公式/.test(plain));
+  check('普通提问保持干净，不残留多余模板', !/规范写法/.test(plain));
 }
 
 console.log(`\n===== 结果: ${pass} 通过 / ${fail} 失败 =====`);

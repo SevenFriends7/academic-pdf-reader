@@ -407,6 +407,34 @@ export class PaperTranslator {
   }
 
   /**
+   * 判断一段内容是否"不是叙述性正文"——人名名单、机构、图表标签、公式片段。
+   * 这类内容翻不翻都一样，送去翻译只会换来一句"照抄原文"和一次红色报错。
+   */
+  public looksNonProse(text: string): boolean {
+    const t = (text || '').trim();
+    if (!t) return false;
+    // 以句末标点收尾 → 当作正文，照常翻译
+    if (/[.!?。！？]["'”’)\]]?\s*$/.test(t)) return false;
+    // 章节标题（"2. Related Work" / "III. Method"）照常翻译
+    if (/^(\d+(\.\d+)*\.?|[IVXLC]+\.)\s+\S/.test(t)) return false;
+    if (t.length > 60 && !/[.!?。！？]/.test(t)) return !this.looksLikeClauseRun(t);
+    if (t.length > 200) return false;
+
+    const words = (t.match(/[A-Za-z][A-Za-z'\-]*/g) || []).length;
+    if (words < 3) return true; // "Figure 2"、"(a) (b)" 这类
+    const proper = (t.match(/\b[A-Z][a-z]+\b/g) || []).length;
+    if (proper / Math.max(1, words) > 0.5) return true; // 大写词占多数 → 名单/机构
+    return t.length < 60; // 短且无句末标点 → 标签
+  }
+
+  private looksLikeClauseRun(text: string): boolean {
+    const t = (text || '').trim().toLowerCase();
+    if (!t.includes(',') && !t.includes(';') && !t.includes(':')) return false;
+    const count = (t.match(/\b(the|a|an|in|on|at|of|for|with|by|from|to|as|we|can|is|are|was|were|be|this|that|which|where)\b/g) || []).length;
+    return count >= 2;
+  }
+
+  /**
    * 自愈清理历史遗留的"假译文"缓存（旧版 `looksNonProse` 误判把英文原文写进 `paperData.translations` 的条目）。
    *
    * 覆盖：
@@ -434,18 +462,19 @@ export class PaperTranslator {
     ]);
     const stale = Array.from(allKeys).filter(k => {
       const note = String((align[k] && align[k].note) || '');
-      if (note.includes('未调用翻译接口')) return true;
-
       const whole = (data.translations && data.translations[k]) || '';
       const perSentence = ((data.sentenceTranslations && data.sentenceTranslations[k]) || []).join(' ');
       const text = (whole || perSentence).trim();
       if (!text) return false;
       if (this.isPureUntranslatableToken(text)) return false;
 
+      // 短文本（<=60 字符）或无从句结构的内容（标题、表头、标签）是合法的原样保留，不予清理
+      if (text.length <= 60 || !this.looksLikeClauseRun(text)) return false;
+
       const stripped = this.stripLatexForCounting(text);
       if (this.countCjk(stripped) > 0) return false;
       const enWords = (stripped.match(/[A-Za-z]{2,}/g) || []).length;
-      return enWords >= 2;
+      return note.includes('未调用翻译接口') || enWords >= 2;
     });
     stale.forEach(k => {
       if (data.translations) delete data.translations[k];
@@ -1573,9 +1602,9 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
         .trim();
     }
     if (!text) return '';
-    const MAX = 100000;
+    const MAX = 60000;
     if (text.length > MAX) {
-      return `${text.slice(0, MAX)}\n\n（文档过长，已截取前 ${MAX} 字符）`;
+      return `${text.slice(0, MAX)}\n\n（文档过长，已截断，后面部分未提供）`;
     }
     return text;
   }
@@ -1587,8 +1616,13 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
     page?: number;
     answerStyle?: string;
     focusMath?: string;
+    wholePaper?: string;
   }): string {
     const parts: string[] = [];
+
+    if (options.wholePaper && options.wholePaper.trim()) {
+      parts.push(`【论文全文】\n${options.wholePaper.trim()}`);
+    }
 
     if (options.selectedText && options.selectedText.trim()) {
       parts.push(`【参考原文】\n${options.selectedText.trim()}`);
@@ -1598,14 +1632,14 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
 
     const focusMath = String(options.focusMath || '').trim();
     if (focusMath) {
-      parts.push(`【参考公式】\n\`\`\`latex\n${focusMath}\n\`\`\``);
+      parts.push(`【参考规范公式（规范写法：${focusMath}）】\n$$${focusMath}$$`);
     }
 
     const style = this.normalizeAnswerStyle(options.answerStyle);
     if (style === 'concise') {
       parts.push(`【回答长短要求】：简短（请简明扼要，直接回答核心要点，控制篇幅）`);
     } else if (style === 'expert') {
-      parts.push(`【回答长短要求】：详尽（请全面深入地充分展开解答，不限篇幅）`);
+      parts.push(`【回答长短要求】：详尽（深度优先、不限篇幅，请全面深入地充分展开解答。涉及本文事实只能依据全文、严禁编造）`);
     } else {
       parts.push(`【回答长短要求】：适中（清晰全面，详略得当）`);
     }
