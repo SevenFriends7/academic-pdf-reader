@@ -284,6 +284,12 @@ function check(label, ok, extra) {
 
 console.log('\n[AI 问答弹窗 —— 所有「问AI」入口最终都打开它]');
 check('宿主 HTML 自带 #aiAssistantModal（viewer.js 不会再重建它）', !!document.getElementById('aiAssistantModal'));
+const modalTitleSpan = document.querySelector('#aiAssistantModal .ai-modal-title span');
+check(
+  'AI 问答弹窗标题为「AI 问答」',
+  modalTitleSpan && modalTitleSpan.textContent.trim() === 'AI 问答',
+  modalTitleSpan ? modalTitleSpan.textContent.trim() : '缺失'
+);
 check(
   '回答风格切换控件存在于弹窗内',
   !!document.querySelector('#aiAssistantModal .ai-style-switch'),
@@ -318,24 +324,15 @@ check(
 console.log('\n[批注便签气泡 —— 另一种 AI 提问入口]');
 check('回答风格切换控件存在于 AI 提问栏旁', !!document.querySelector('.ai-style-switch-annot'));
 
-console.log('\n[预设分析问题 = 一颗快捷提问芯片（不再和「发送」重复）]');
-// 上面那几轮调用都没带预设，所以这里显式带一次预设，验证芯片会出现
+console.log('\n[预设提示词芯片已彻底移除，由用户直接发问与单一会话管理]');
 window.__SMOKE__.openAiAssistantModal({
   selectedText: '预设引文',
   contextText: '上下文',
-  presetQuestion: '请结合论文上下文，深度剖析此处学术意图与核心原理。',
   page: 1
 });
-const presetChip = document.querySelector('#aiAssistantModal .ai-chip-preset');
-check('有预设分析问题时出现芯片', !!presetChip, presetChip ? presetChip.textContent.trim() : '');
-check('芯片排在快捷提问第一位', !!presetChip && presetChip === document.querySelector('#aiAssistantModal .ai-prompt-chips .ai-chip'));
-check(
-  '芯片带着预设问题原文（点击即开始分析，且会先填进输入框）',
-  !!presetChip && /presetQuestion|深度剖析/.test(presetChip.title || presetChip.getAttribute('data-q') || '')
-);
-// 再开一次但不带预设 → 芯片必须消失，避免"上一次的问题"残留
-window.__SMOKE__.openAiAssistantModal({ selectedText: '换一段引文', contextText: '上下文', page: 1 });
-check('没有预设分析问题时不显示芯片', !document.querySelector('#aiAssistantModal .ai-chip-preset'));
+check('预置提示词芯片已被移除（不残留死板提示词）', document.querySelectorAll('#aiAssistantModal .ai-chip').length === 0);
+check('输入框保持干净，供用户自由提问', (document.getElementById('aiModalQuestionInput') || {}).value === '');
+check('弹窗内包含单一对话容器', !!document.getElementById('aiModalTranscript'));
 
 // ------------------------------------------------------------------ 导出「全文双语精读稿」
 console.log('\n[视觉分割：把模型的版面判断应用到本页段落]');
@@ -958,7 +955,7 @@ console.log('\n[公式聚焦 —— 弹窗里必须核对得到"要问的是哪�
   check('公式卡片上有「讲透这条公式」按钮', /btn-formula-ask/.test(S.renderCardFormulaHtml(formulaPara)), '');
   const copyBtn = /data-latex="([^"]*)"/.exec(S.renderCardFormulaHtml(formulaPara));
   check('公式卡片上有「复制 LaTeX」且带着公式源码', !!copyBtn && /mathit\{AttID\}/.test(copyBtn[1]));
-  check('快捷提问里有公式专用芯片「讲透这条公式」', !!document.querySelector('#aiAssistantModal .ai-chip-math'));
+  check('公式卡片点击进入聚焦模式（不残留死板提示词芯片）', document.querySelectorAll('#aiAssistantModal .ai-chip-math').length === 0);
 
   window.__SMOKE__.openAiAssistantModal({
     selectedText: formulaPara.cleanText,
@@ -987,85 +984,10 @@ console.log('\n[公式聚焦 —— 弹窗里必须核对得到"要问的是哪�
   check('普通段落不显示公式徽标与预览', badge2.style.display === 'none' && preview2.style.display === 'none');
 }
 
-console.log('\n[全文公式与符号索引 —— 读懂公式的关键入口]');
+console.log('\n[公式·符号卡片栏目已按要求去除]');
 {
-  check('页签里有「公式·符号」入口', !!document.getElementById('tabIndexBtn'));
-  check('索引面板与搜索框都在真实 HTML 里', !!document.getElementById('indexView') && !!document.getElementById('indexSearchInput'));
-  check('公式/符号两个筛选按钮都在', !!document.getElementById('indexFilterFormula') && !!document.getElementById('indexFilterSymbol'));
-
-  // 真实数据：AOT 第 5 页式 (3)(4)(5) + 行内公式表（就是读者实际读的那一页）
-  S.archivePageParagraphs(5, [
-    { id: 4, type: 'formula', cleanText: 'E = ID (Y, D) = Y P D, (3) N × M tr', translation: '', sentenceTranslations: [] },
-    { id: 6, type: 'formula', cleanText: 'V = AttID (Q, K, V, Y | D) = Att (Q, K, V + ID (Y, D)), (4)', translation: '', sentenceTranslations: [] }
-  ]);
-  S.seedVisionStructure({
-    '5': {
-      version: 2,
-      fixes: '拆出公式(3)(4)',
-      segments: [
-        {
-          index: 4,
-          type: 'formula',
-          latex: 'E = \\mathit{ID}(Y, D) = YPD',
-          inline: [{ find: 'D ∈ R', latex: 'D \\in \\mathbb{R}^{M \\times C}' }]
-        },
-        {
-          index: 6,
-          type: 'split',
-          parts: [
-            { type: 'body' },
-            { type: 'formula', at: 'V = AttID', latex: "V' = \\mathit{AttID}(Q, K, V, Y \\mid D) = \\mathit{Att}(Q, K, V + \\mathrm{ID}(Y, D))" }
-          ]
-        }
-      ]
-    }
-  });
-  const idx = S.buildMathIndex();
-  check('索引收录了视觉回包里的公式', idx.formulas.length === 3, `${idx.formulas.length} 条`);
-  check(
-    '公式带着页码与卡片定位（能跳回去）',
-    idx.formulas.every(f => Number.isFinite(f.page) && Number.isFinite(f.paraId)) &&
-      idx.formulas.some(f => f.page === 5 && f.paraId === 6),
-    JSON.stringify(idx.formulas.map(f => [f.page, f.paraId]))
-  );
-  const symNames = idx.symbols.map(s => s.name);
-  check('符号从 LaTeX 里抽出来了（变量、上下标、算子名）', symNames.includes('Y') && symNames.includes('YPD') && symNames.includes('AttID'), JSON.stringify(symNames.slice(0, 12)));
-  check('结构性命令不算符号（\\mid 之类不该进索引）', !symNames.includes('\\mid') && !symNames.includes('\\mathbb'));
-  const ySym = idx.symbols.find(s => s.name === 'Y');
-  check('符号记了出现次数与首次出现页', !!ySym && ySym.count >= 2 && ySym.firstPage === 5, ySym ? `×${ySym.count} 首现 p${ySym.firstPage}` : '缺');
-  check('索引徽标显示公式条数', (document.getElementById('indexCount') || {}).textContent === '3');
-
-  S.switchTab('index');
-  const rendered = document.getElementById('indexListContainer');
-  check('切到索引页签后渲染出条目', !!rendered && rendered.querySelectorAll('.index-entry').length === 3, rendered ? String(rendered.querySelectorAll('.index-entry').length) : '缺失');
-  check(
-    '每条公式都能「定位 / 讲透这条公式 / 复制 LaTeX」',
-    !!rendered &&
-      rendered.querySelectorAll('.btn-index-locate').length === 3 &&
-      rendered.querySelectorAll('.btn-index-ask').length === 3 &&
-      rendered.querySelectorAll('.btn-index-copy').length === 3
-  );
-  check('公式下面列出它用到的符号', !!rendered && rendered.querySelectorAll('.index-sym-chip').length > 0);
-  // 符号视图：点「符号」筛选后应变成符号表
-  document.getElementById('indexFilterSymbol').click();
-  check(
-    '切到符号视图后列出符号 + 次数 + 首现页',
-    !!rendered && rendered.querySelectorAll('.index-sym-row').length > 0 && /×\d+/.test(rendered.textContent)
-  );
-  document.getElementById('indexFilterFormula').click();
-  // 搜索过滤
-  const searchEl = document.getElementById('indexSearchInput');
-  searchEl.value = 'AttID';
-  searchEl.dispatchEvent(new window.Event('input', { bubbles: true }));
-  check(
-    '搜索能过滤（搜 AttID 只剩含它的那条）',
-    !!rendered && rendered.querySelectorAll('.index-entry').length === 1,
-    rendered ? String(rendered.querySelectorAll('.index-entry').length) : '缺失'
-  );
-  searchEl.value = '';
-  searchEl.dispatchEvent(new window.Event('input', { bubbles: true }));
-  S.switchTab('trans');
-  check('切回对照翻译页签后索引面板隐藏', !document.getElementById('indexView').classList.contains('active'));
+  check('页签里不再有「公式·符号」入口', !document.getElementById('tabIndexBtn'));
+  check('「公式·符号」索引面板已从真实 HTML 移除', !document.getElementById('indexView'));
 }
 
 if (miss > 0) {

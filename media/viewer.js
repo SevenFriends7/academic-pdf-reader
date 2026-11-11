@@ -199,9 +199,9 @@
    * 翻译、主题应用全部中断（用户看到的现象：PDF 空白 + 无译文 + 主题错乱）。
    */
   const AI_STYLES = [
-    { key: 'concise', label: '简洁', tip: '200 字内讲清，最省 token' },
-    { key: 'standard', label: '标准', tip: '先解释术语与前置概念，一般 300~700 字（默认）' },
-    { key: 'expert', label: '专家', tip: '通读论文全文后不限篇幅深度作答（更慢、更费 token）' }
+    { key: 'concise', label: '简短', tip: '简明扼要，直接回答核心要点' },
+    { key: 'standard', label: '适中', tip: '篇幅适中，论述清晰，详略得当（默认）' },
+    { key: 'expert', label: '详尽', tip: '充分展开，深入详细解析，不限篇幅' }
   ];
 
   /**
@@ -271,12 +271,14 @@
       slot.appendChild(createAiStyleSwitch());
     }
 
-    // 3) 老版本（≤0.5.17）的「开始分析」按钮：直接删掉。
-    //    它和「发送」功能重叠——预设问题是**预填进输入框**的，点「发送」发的就是它；
-    //    而且它会无视用户在输入框里的修改（照样发原始预设），是个坑。
-    //    现在预设问题改成快捷提问芯片（见 renderPresetChip）。
+    // 3) 老版本（≤0.5.17）的「开始分析」按钮及预置提示词芯片：直接删掉。
     const legacyAnalyzeBtn = modal.querySelector('#btnAnalyzeAiModal');
     if (legacyAnalyzeBtn) legacyAnalyzeBtn.remove();
+    const promptChips = modal.querySelector('.ai-prompt-chips');
+    if (promptChips) {
+      promptChips.style.display = 'none';
+      promptChips.innerHTML = '';
+    }
   }
 
   function ensureAllToolbarsExist() {
@@ -329,7 +331,7 @@
           批注
           <kbd class="kbd-badge">N</kbd>
         </button>
-        <button id="btnSelectionAi" class="action-btn" style="color: #6366f1;" title="针对选中文本向AI学术导师提问 (快捷键: Q)">
+        <button id="btnSelectionAi" class="action-btn" style="color: #6366f1;" title="针对选中文本向 AI 问答提问 (快捷键: Q)">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2 2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z"/><rect width="18" height="12" x="3" y="6" rx="2"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><path d="M9 15h6"/></svg>
           问AI
           <kbd class="kbd-badge">Q</kbd>
@@ -368,7 +370,7 @@
         <button id="btnFocusNote" class="focus-action-btn" title="为此段落添加批注心得 (快捷键: N)">批注</button>
         <button id="btnFocusTranslate" class="focus-action-btn" title="查看对应中文译文 (快捷键: T)">翻译</button>
         <button id="btnFocusCopy" class="focus-action-btn" title="复制当前段落文本 (快捷键: C)">复制</button>
-        <button id="btnFocusAi" class="focus-action-btn focus-ai-btn" title="就当前段落向AI导师提问 (快捷键: Q)">问AI</button>
+        <button id="btnFocusAi" class="focus-action-btn focus-ai-btn" title="就当前段落向 AI 提问 (快捷键: Q)">问AI</button>
       `;
       document.body.appendChild(focusBar);
     }
@@ -461,7 +463,7 @@
         <div class="ai-modal-card">
           <div class="ai-modal-header">
             <div class="ai-modal-title">
-              <span>AI 学术文献导师</span>
+              <span>AI 问答</span>
               <span class="ai-model-tag" id="aiModalModelTag">未连接</span>
               <span class="ai-modal-version" id="aiModalVersion"></span>
             </div>
@@ -733,15 +735,14 @@
         getPageMathCache: p => pageV2SolvedCache.get(p) || undefined,
         renderKatexHtml: (latex, displayMode) => renderVisionMathHtml(latex, displayMode),
         renderMarkdownHtml: md => renderMarkdownToHtml(md),
-        openAiWithImage: ({ imageDataUrl, selectedText, focusMath, presetQuestion }) => {
+        openAiWithImage: ({ imageDataUrl, selectedText, focusMath }) => {
           openAiAssistantModal({
             selectedText: selectedText || '',
             contextText: selectedText || '',
             page: currentPage,
             focusMath: focusMath || '',
             images: imageDataUrl ? [imageDataUrl] : [],
-            noteType: '框选解析',
-            presetQuestion: presetQuestion || ''
+            noteType: '框选解析'
           });
         },
         isVisionConfigured: () => visionConfigured
@@ -866,6 +867,25 @@
           paperData = msg.paperData;
           // AI 答疑记录随论文数据一起回来（旧版没有这个字段）
           paperData.aiQa = Array.isArray(paperData.aiQa) ? paperData.aiQa : [];
+          // 恢复本文档历史 AI 问答为单一持续对话
+          if (aiConversation.length === 0 && paperData.aiQa.length > 0) {
+            paperData.aiQa.forEach(q => {
+              if (q && q.question && q.answer) {
+                aiConversation.push({
+                  role: 'user',
+                  text: q.question,
+                  selectedText: q.selectedText || '',
+                  page: q.page
+                });
+                aiConversation.push({
+                  role: 'model',
+                  text: q.answer,
+                  meta: [q.model, q.style ? `篇幅: ${q.style}` : ''].filter(Boolean).join(' · '),
+                  streaming: false
+                });
+              }
+            });
+          }
           // 以往翻过的页的段落也一起回来：导出全文精读稿不依赖"这次翻了哪些页"
           if (paperData.pageArchive && typeof paperData.pageArchive === 'object') {
             Object.keys(paperData.pageArchive).forEach(k => {
@@ -894,6 +914,11 @@
           dom.pageCount.textContent = totalPages;
           dom.pageNumberInput.max = totalPages;
           updateReadingProgress();
+
+          // 文档加载后后台静默预抽取全文，确保 AI 问答从一开始就拥有全文上下文
+          setTimeout(() => {
+            collectWholePaperText(true).catch(e => console.warn('[Viewer] 后台预抽取文档全文异常:', e));
+          }, 300);
 
           /*
            * 把**真实页数**与**每页 PDF 高度**报给宿主。
@@ -7530,31 +7555,10 @@
    * 而且旧按钮发送的是 `aiPresetQuestion` 原文，**无视用户在输入框里的修改**，是个坑。
    * 现在：主按钮只有「发送」；想一键发起预设分析，点这颗芯片。
    */
-  function renderPresetChip(modal, presetQuestion) {
+  function renderPresetChip(modal) {
     if (!modal) return;
-    const row = modal.querySelector('.ai-prompt-chips');
-    if (!row) return;
-    let chip = row.querySelector('.ai-chip-preset');
-    const question = (presetQuestion || '').trim();
-    if (!question) {
-      if (chip) chip.remove();
-      return;
-    }
-    if (!chip) {
-      chip = document.createElement('button');
-      chip.type = 'button';
-      chip.className = 'ai-chip ai-chip-preset';
-      row.insertBefore(chip, row.firstChild);
-    }
-    chip.textContent = '深度剖析此句';
-    chip.title = `使用预设分析问题：${question.slice(0, 60)}…`;
-    // 动态插入的芯片不在 bindAiAssistantModalEvents 的批量绑定里，这里自己绑
-    chip.onclick = e => {
-      e.stopPropagation();
-      const input = dom.aiModalQuestionInput || document.getElementById('aiModalQuestionInput');
-      if (input) input.value = question;
-      sendAiModalQuestion(question);
-    };
+    const chip = modal.querySelector('.ai-chip-preset');
+    if (chip) chip.remove();
   }
 
   /** 导出文件名：<论文名>-双语精读稿.md（宿主只用它当默认名，用户可在另存为对话框里改） */
@@ -10182,7 +10186,7 @@
                 <div class="sent-en">${renderParaEnHtml(sent.text, para)}</div>
               </div>
               <div class="sent-row-actions">
-                <button class="btn-row-ai" data-sent-idx="${idx}" title="针对此句向 AI 导师提问">AI</button>
+                <button class="btn-row-ai" data-sent-idx="${idx}" title="针对此句向 AI 提问">AI</button>
                 <button class="btn-row-note" data-sent-idx="${idx}" title="对此句添加批注便签">记</button>
               </div>
             </div>`
@@ -10202,7 +10206,7 @@
             <div class="sent-en">${renderParaEnHtml(sent.text, para)}</div>
           </div>
           <div class="sent-row-actions">
-            <button class="btn-row-ai" data-sent-idx="${idx}" title="针对此句向 AI 导师提问">AI</button>
+            <button class="btn-row-ai" data-sent-idx="${idx}" title="针对此句向 AI 提问">AI</button>
             <button class="btn-row-note" data-sent-idx="${idx}" title="对此句添加批注便签">记</button>
           </div>
         </div>
@@ -10357,7 +10361,7 @@
               <button class="btn-card-mode btn-mode-paragraph" title="连贯全文通读模式">连贯段落</button>
             </div>
             <button class="btn-card-action btn-locate" title="在左侧原件中居中定位">定位</button>
-            <button class="btn-card-action btn-card-ai" title="针对此段向AI学术导师深度提问 (快捷键: Q)">问AI</button>
+            <button class="btn-card-action btn-card-ai" title="针对此段向 AI 提问 (快捷键: Q)">问AI</button>
             <button class="btn-card-action btn-card-note" title="为此段落添加文献笔记">笔记</button>
             <button class="btn-card-action btn-copy-card-zh" title="复制中文译文（未翻译时自动翻译）">译文</button>
             <button class="btn-card-action btn-copy-card-en" title="复制英文原文">原文</button>
@@ -10479,8 +10483,7 @@
             contextText: para.cleanText,
             page: currentPage,
             // 交出聚焦段落：若这句里含公式，collectFocusMath 会把对应的规范 LaTeX 一并送给模型
-            focusPara: para,
-            presetQuestion: `请结合论文上下文，深度剖析并解答此句的核心学术含义、技术动机与研究背景：\n"${sentText}"`,
+            focusPara: para
           });
           return;
         }
@@ -10664,11 +10667,7 @@
             contextText: para.cleanText,
             page: pageNum,
             focusPara: para,
-            noteType: isFormulaPara ? '公式' : '疑难待查',
-            presetQuestion: isFormulaPara
-              ? '请把这条公式讲透：先用 $$...$$ 写出规范形式，再逐符号列表说明（符号、读法、含义、形状或取值范围、在论文哪里定义），' +
-                '然后一句话说清它在做什么，最后代一个具体的小例子走一遍，并指出它和相邻公式的关系。'
-              : '请结合论文全文上下文，深度剖析本段落的核心论点、技术动机与研究逻辑。'
+            noteType: isFormulaPara ? '公式' : '疑难待查'
           });
         });
       }
@@ -10725,10 +10724,7 @@
             page: pageNum,
             focusPara: target,
             images: imgUrl && visionConfigured ? [imgUrl] : [],
-            noteType: '公式',
-            presetQuestion:
-              '请把这条公式讲透：先用 $$...$$ 写出规范形式，再逐符号列表说明（符号、读法、含义、形状或取值范围、在论文哪里定义），' +
-              '然后一句话说清它在做什么，最后代一个具体的小例子走一遍，并指出它和相邻公式的关系。'
+            noteType: '公式'
           });
           return;
         }
@@ -12653,8 +12649,7 @@
     openAiAssistantModal({
       selectedText: targetText,
       contextText: contextText,
-      page: currentSelectionInfo.page || currentPage,
-      presetQuestion: `请结合论文上下文，深度剖析此处技术要点与学术意图：“${targetText.slice(0, 180)}”`,
+      page: currentSelectionInfo.page || currentPage
     });
   }
 
@@ -12874,8 +12869,7 @@
       openAiAssistantModal({
         selectedText: targetText,
         contextText: targetPara ? targetPara.cleanText : targetText,
-        page: currentPage,
-        presetQuestion: targetText ? `请结合论文上下文，深度剖析此处学术意图与核心原理：“${targetText.slice(0, 180)}”` : '请结合本页论文上下文，深度剖析核心技术逻辑与学术创新点。',
+        page: currentPage
       });
       hideParaFocusBar();
     });
@@ -13036,8 +13030,7 @@
       openAiAssistantModal({
         selectedText: targetText,
         contextText: contextText,
-        page: currentPage,
-        presetQuestion: targetText ? `请结合论文上下文，深度剖析此处技术意图与学术要点：“${targetText.slice(0, 160)}”` : '请结合本页论文上下文，深度剖析当前段落的核心技术动机与原理。',
+        page: currentPage
       });
       hideContextMenu();
       hideSelectionToolbar();
@@ -13575,7 +13568,7 @@
           </div>
         </div>
         <div class="note-card-bottom">
-          <button class="btn-card-action btn-ask-ai-from-note" style="color: #6366f1; font-weight: 500;" title="针对此疑点向AI导师提问">
+          <button class="btn-card-action btn-ask-ai-from-note" style="color: #6366f1; font-weight: 500;" title="针对此疑点向 AI 提问">
             问AI
           </button>
           <button class="btn-card-action btn-edit-note" title="编辑批注内容">
@@ -13624,9 +13617,8 @@
           openAiAssistantModal({
             selectedText: annot.text,
             contextText: contextText,
-            presetQuestion: annot.note ? `针对我记录的疑点批注【${annot.note}】：请结合论文深度剖析该处原理与逻辑。` : '请针对此疑难点进行深度学术解析与背景动机推导。',
             page: annot.page,
-            noteType: '疑难待查',
+            noteType: '疑难待查'
           });
         });
       }
@@ -14055,10 +14047,7 @@
       contextText: entry.residue || entry.tex,
       page: entry.page,
       focusPara: synthetic,
-      noteType: '公式',
-      presetQuestion:
-        '请把这条公式讲透：先用 $$...$$ 写出规范形式，再逐符号列表说明（符号、读法、含义、形状或取值范围、在论文哪里定义），' +
-        '然后一句话说清它在做什么，最后代一个具体的小例子走一遍，并指出它和相邻公式的关系。'
+      noteType: '公式'
     });
   }
 
@@ -15821,7 +15810,7 @@ let aiPresetQuestion = '';
 
     if (aiConversation.length === 0) {
       wrap.innerHTML =
-        '<div class="ai-transcript-empty">可直接提问，或点上面的快捷提问。有预设分析时点「开始分析」——打开本窗口不会自动发起提问。</div>';
+        '<div class="ai-transcript-empty">输入您的问题并按 Enter 或点击「发送」开始与 AI 对话。</div>';
       return;
     }
 
@@ -15984,21 +15973,19 @@ let aiPresetQuestion = '';
     const contextChanged = prevKey !== newKey;
     renderAiModalImagePreview();
 
-    // 聚焦对象换了 → 开新话题；同一个对象 → 保留对话，方便连续追问
-    if (!options.keepConversation && contextChanged) {
+    // 每个文档的所有 AI 问答均为同一个会话，保留对话历史，支持多轮连续追问
+    if (options.clearConversation) {
       aiConversation = [];
     }
 
-    // 预设的分析问题只**预填**到输入框，不再自动发送：
-    // 很多时候读者只是想回来翻一下之前的问答，一打开就烧 token 去"深度剖析"既费钱又碍事。
-    aiPresetQuestion = options.presetQuestion || '';
+    aiPresetQuestion = '';
 
     const quoteEl = dom.aiModalQuote || document.getElementById('aiModalQuote');
     if (quoteEl) {
       quoteEl.textContent =
         currentAiContext.selectedText ||
         currentAiContext.contextText ||
-        '(未选定特定句子，将基于当前上下文解答)';
+        '(未选定特定句子，将基于文档全文解答)';
     }
 
     // 带上规范公式时给读者一个明确信号：这次提问会把"从页面图像转写的规范 LaTeX"一起交给模型，
@@ -16041,12 +16028,9 @@ let aiPresetQuestion = '';
 
     const input = dom.aiModalQuestionInput || document.getElementById('aiModalQuestionInput');
     if (input) {
-      // 已有对话时留空，方便直接追问；新话题才预填分析问题
-      input.value = aiConversation.length > 0 ? '' : aiPresetQuestion;
+      if (!input.value) input.value = '';
     }
-    // 有预设分析问题时，把它显示成一颗快捷提问芯片（原先那个「开始分析」按钮已移除：
-    // 它与「发送」重复，而且会无视用户在输入框里的修改）
-    renderPresetChip(dom.aiAssistantModal || document.getElementById('aiAssistantModal'), aiPresetQuestion);
+    renderPresetChip(dom.aiAssistantModal || document.getElementById('aiAssistantModal'));
 
     renderAiTranscript();
     setAiLoading(false);
@@ -16059,10 +16043,8 @@ let aiPresetQuestion = '';
     bindAiAssistantModalEvents();
 
     if (input) input.focus();
-    // 注意：这里**不再**主动调用 sendAiModalQuestion。
-    // 只有调用方显式要求自动发送时才会发问（保留该开关供将来自动化场景使用）。
     if (options.autoSend === true) {
-      sendAiModalQuestion(aiPresetQuestion || (input ? input.value : ''));
+      sendAiModalQuestion(input ? input.value : '');
     }
   }
 
@@ -16086,24 +16068,24 @@ let aiPresetQuestion = '';
     return AI_STYLES.some(s => s.key === v) ? v : 'standard';
   }
 
-  /** 切换风格：立即生效（本地 aiStyle）+ 写回设置（重载后保留） */
+  /** 切换长短：立即生效（本地 aiStyle）+ 写回设置（重载后保留） */
   function applyAiStyle(style) {
     const next = normalizeAiStyle(style);
     aiStyle = next;
     syncAiStyleButtons();
     vscode.postMessage({ type: 'setAnswerStyle', style: next });
     const item = AI_STYLES.find(s => s.key === next) || AI_STYLES[1];
-    showReaderToast(`回答风格：${item.label}（${item.tip}）`);
+    showReaderToast(`回答长短：${item.label}（${item.tip}）`);
   }
 
-  /** 生成一个「回答风格」切换控件；可反复调用，多处入口共用样式与逻辑 */
+  /** 生成一个「回答长短」切换控件；可反复调用，多处入口共用样式与逻辑 */
   function createAiStyleSwitch() {
     const wrap = document.createElement('div');
     wrap.className = 'ai-style-switch';
     wrap.setAttribute('role', 'group');
-    wrap.setAttribute('aria-label', '回答风格');
+    wrap.setAttribute('aria-label', '回答长短');
     wrap.innerHTML =
-      '<span class="ai-style-label">回答风格</span>' +
+      '<span class="ai-style-label">回答长短</span>' +
       AI_STYLES.map(s => `<button type="button" class="ai-style-btn" data-style="${s.key}" title="${s.tip}">${s.label}</button>`).join('');
     wrap.querySelectorAll('.ai-style-btn').forEach(btn => {
       btn.onclick = () => applyAiStyle(btn.getAttribute('data-style'));
@@ -16176,68 +16158,67 @@ let aiPresetQuestion = '';
   }
 
   /**
-   * 把**整篇文献**的文本抽出来（专家模式用）。
-   *
-   * 为什么必须现抽：宿主侧只有"用户翻过的页"（翻页时逐页 syncPageText 上来的），
-   * 检索式上下文更是只挑 6 段——而专家模式要的是**整篇**。
-   * 所以这里用 webview 手里本来就有的 pdf.js，把所有页的文本层拉一遍拼成一整份，
-   * 并缓存起来（同一篇只抽一次；换论文会重建 webview，缓存自然失效）。
+   * 把整篇文档的文本抽取出来，在对话最开始喂给模型。
    */
   let wholePaperTextCache = '';
-  async function collectWholePaperText() {
+  let wholePaperCollectingPromise = null;
+  async function collectWholePaperText(silent = false) {
     if (wholePaperTextCache) return wholePaperTextCache;
+    if (wholePaperCollectingPromise) return wholePaperCollectingPromise;
     if (!pdfDoc) return '';
-    const n = Math.max(1, Math.min(Number(totalPages) || 0, 120)); // 上限防呆：别把上千页的文档拖死
-    const chunks = [];
-    for (let p = 1; p <= n; p++) {
-      if (p === 1 || p % 5 === 0) setAiLoading(true, `专家模式：正在通读全文…（${p}/${n} 页）`);
-      try {
-        const page = await pdfDoc.getPage(p);
-        const tc = await page.getTextContent();
-        const items = (tc.items || []).filter(it => it && typeof it.str === 'string' && it.str.trim());
-        let out = '';
-        let line = '';
-        let lastY = null;
-        items.forEach(it => {
-          const y = Array.isArray(it.transform) ? Math.round(it.transform[5]) : null;
-          // 按 y 相近聚行：文本层是一堆碎片，换行必须自己还原，否则整页会粘成一坨
-          if (lastY !== null && y !== null && Math.abs(y - lastY) > 2.5 && line) {
-            out += `${line.trim()}\n`;
-            line = '';
-          }
-          line += it.str;
-          if (it.hasEOL && line) {
-            out += `${line.trim()}\n`;
-            line = '';
-          }
-          if (y !== null) lastY = y;
-        });
-        if (line.trim()) out += line.trim();
-        if (out.trim()) chunks.push(`【第 ${p} 页】\n${out.trim()}`);
-      } catch (e) {
-        console.warn(`[Viewer] 抽取第 ${p} 页文本失败（跳过该页）:`, e);
+    const n = Math.max(1, Math.min(Number(totalPages) || 0, 150));
+    wholePaperCollectingPromise = (async () => {
+      const chunks = [];
+      for (let p = 1; p <= n; p++) {
+        if (!silent && (p === 1 || p % 5 === 0)) setAiLoading(true, `正在读取文档全文…（${p}/${n} 页）`);
+        try {
+          const page = await pdfDoc.getPage(p);
+          const tc = await page.getTextContent();
+          const items = (tc.items || []).filter(it => it && typeof it.str === 'string' && it.str.trim());
+          let out = '';
+          let line = '';
+          let lastY = null;
+          items.forEach(it => {
+            const y = Array.isArray(it.transform) ? Math.round(it.transform[5]) : null;
+            if (lastY !== null && y !== null && Math.abs(y - lastY) > 2.5 && line) {
+              out += `${line.trim()}\n`;
+              line = '';
+            }
+            line += it.str;
+            if (it.hasEOL && line) {
+              out += `${line.trim()}\n`;
+              line = '';
+            }
+            if (y !== null) lastY = y;
+          });
+          if (line.trim()) out += line.trim();
+          if (out.trim()) chunks.push(`【第 ${p} 页】\n${out.trim()}`);
+        } catch (e) {
+          console.warn(`[Viewer] 抽取第 ${p} 页文本失败（跳过该页）:`, e);
+        }
       }
+      wholePaperTextCache = chunks.join('\n\n');
+      return wholePaperTextCache;
+    })();
+
+    try {
+      return await wholePaperCollectingPromise;
+    } finally {
+      wholePaperCollectingPromise = null;
     }
-    wholePaperTextCache = chunks.join('\n\n');
-    return wholePaperTextCache;
   }
 
   /** 统一的流式提问入口：弹窗与批注气泡共用同一套回调协议 */
   async function streamAiQuestion(opts) {
     aiPending.set(opts.requestId, opts);
 
-    /*
-     * 专家模式：先把**整篇文献**抽出来一起发过去（只抽一次，之后走缓存）。
-     * 放在这里而不是"翻页时顺手同步"，是因为专家模式要的是全篇，
-     * 而用户很可能只翻过其中几页——那些页面上根本没有的段落，模型也该看得到。
-     */
-    let fullText = '';
-    if ((aiStyle || '') === 'expert') {
+    // 文档全文在最开始就完整喂入，避免每次提问都要重新检索上下文
+    let fullText = wholePaperTextCache;
+    if (!fullText) {
       try {
         fullText = await collectWholePaperText();
-        if (fullText) showReaderToast(`专家模式：已通读全文 ${fullText.length} 字`);
       } catch (e) {
-        console.warn('[Viewer] 全文抽取失败（回退到分段检索）:', e);
+        console.warn('[Viewer] 全文抽取失败:', e);
       }
     }
 
@@ -16250,7 +16231,7 @@ let aiPresetQuestion = '';
       page: opts.page || currentPage,
       noteType: opts.noteType || '疑难待查',
       answerStyle: aiStyle || '',
-      fullText,
+      fullText: fullText || '',
       // 规范公式（2D 空间引擎或视觉模型转写的 LaTeX）：模型据此讲符号，而不是照残渣猜（见 collectFocusMath）
       focusMath: opts.focusMath || currentAiContext.focusMath || '',
       images: Array.isArray(opts.images) ? opts.images : (Array.isArray(currentAiContext.images) ? currentAiContext.images : []),
@@ -16263,7 +16244,7 @@ let aiPresetQuestion = '';
     const question = ((customQuestion || (input ? input.value : '') || '') + '').trim();
 
     if (!question) {
-      vscode.postMessage({ type: 'showInfo', message: '请输入你的学术疑问，或点击上方快捷提问' });
+      vscode.postMessage({ type: 'showInfo', message: '请输入你的学术疑问' });
       return;
     }
     if (aiPending.size > 0) {

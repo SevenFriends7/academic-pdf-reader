@@ -1794,25 +1794,23 @@ console.log('\n===== T15 AI 弹窗不自动分析 / 按钮不重复 =====');
     `仍有 ${(code.match(/autoSend: true/g) || []).length} 处 autoSend: true`
   );
   checkTrue('保留了 autoSend 开关本身（供将来自动化使用）', /options\.autoSend === true/.test(code));
-  checkTrue('预设问题只预填、不自动发送', /aiPresetQuestion = options\.presetQuestion/.test(code));
+  checkTrue('预设死板提示词已被彻底移除，输入框保持干净供用户自主输入', /input\.value\s*=\s*''/.test(code));
   checkTrue(
-    '已有对话时输入框留空，方便直接追问',
-    /input\.value = aiConversation\.length > 0 \? '' : aiPresetQuestion;/.test(code)
+    '单一持续会话：不随聚焦对象改变而清空 aiConversation',
+    !/if \(!options\.keepConversation && contextChanged\)\s*\{\s*aiConversation = \[\];\s*\}/.test(code) &&
+      /options\.clearConversation/.test(code)
   );
 
-  // 「开始分析」按钮与「发送」功能重叠（预设问题本来就预填进输入框），且会无视用户编辑 →
-  // 0.5.18 起移除，预设问题改成快捷提问芯片。这里把"不许再加回来"钉住。
+  // 「开始分析」按钮与预设死板芯片彻底移除
   checkTrue(
     '不再生成「开始分析」按钮（与「发送」重复）',
     !/id="btnAnalyzeAiModal"[^>]*class="btn-analyze-ai"/.test(code) && !/analyzeBtn\.onclick/.test(code)
   );
   checkTrue('旧版遗留的该按钮会被主动清掉（老 webview 缓存也不会残留）', /querySelector\('#btnAnalyzeAiModal'\)/.test(code) && /legacyAnalyzeBtn\.remove\(\)/.test(code));
   checkTrue(
-    '预设分析问题改为快捷提问芯片',
-    /function renderPresetChip\(/.test(code) && /ai-chip-preset/.test(code) && /renderPresetChip\(/.test(code)
+    '预置提示词芯片已被移除（不残留死板提示词）',
+    /function renderPresetChip\(/.test(code) && /chip\.remove\(\)/.test(code)
   );
-  checkTrue('芯片点击会把预设问题填进输入框再发送', /input\.value = question;[\s\S]{0,80}sendAiModalQuestion\(question\)/.test(code));
-  checkTrue('无预设时芯片会被移除', /if \(!question\) \{[\s\S]{0,80}chip\.remove\(\)/.test(code));
   const css = fs.readFileSync(path.join(path.dirname(VIEWER), 'viewer.css'), 'utf8');
   checkTrue('快捷芯片样式已定义', /\.ai-chip\s*\{/.test(css));
 })();
@@ -1990,7 +1988,7 @@ console.log('\n===== T18 回答风格切换控件 =====');
     '旧档位 reviewer（审稿）被归一为 expert（专家）',
     /if \(v === 'reviewer'\) return 'expert'/.test(code)
   );
-  checkTrue('切换后立刻给用户反馈', /showReaderToast\(`回答风格：/.test(code));
+  checkTrue('切换后立刻给用户反馈', /showReaderToast\(`回答(?:风格|长短)：/.test(code));
   checkTrue('有高亮当前档位的函数（作用于所有入口）', /function syncAiStyleButtons\(\)/.test(code) && /document\.querySelectorAll\('\.ai-style-btn'\)/.test(code));
   checkTrue(
     'modelInfo 到达后刷新高亮（且风格名先归一）',
@@ -2001,13 +1999,11 @@ console.log('\n===== T18 回答风格切换控件 =====');
     })()
   );
   checkTrue('提问请求带上所选风格', /answerStyle: aiStyle \|\| ''/.test(code));
-  // 专家模式：必须把**整篇文献**一起发过去（不是"翻过的页"）
   checkTrue(
-    '专家模式会先抽取整篇文献再提问',
-    /async function collectWholePaperText\(\)/.test(code) &&
-      /if \(\(aiStyle \|\| ''\) === 'expert'\)/.test(code) &&
-      /fullText = await collectWholePaperText\(\)/.test(code) &&
-      /answerStyle: aiStyle \|\| '',\s*\n\s*fullText,/.test(code)
+    '文档全文最开始即抽取并在提问时完整喂入（全风格覆盖，避免重复检索上下文）',
+    /async function collectWholePaperText\(/.test(code) &&
+      /fullText = await collectWholePaperText\(/.test(code) &&
+      /fullText: fullText \|\| ''/.test(code)
   );
   checkTrue('全文抽取走 pdf.js 逐页取文本层，并缓存（只抽一次）', /pdfDoc\.getPage\(p\)/.test(code) && /wholePaperTextCache = chunks\.join/.test(code));
   const ext = fs.readFileSync(path.join(path.dirname(VIEWER), '..', 'src', 'pdfEditorProvider.ts'), 'utf8');
@@ -2018,11 +2014,11 @@ console.log('\n===== T18 回答风格切换控件 =====');
   checkTrue('宿主把整篇文献透传给 AI（fullText）', /fullText: typeof fullText === 'string' \? fullText : ''/.test(ext));
   const translatorSrc = fs.readFileSync(path.join(path.dirname(VIEWER), '..', 'src', 'translator.ts'), 'utf8');
   checkTrue(
-    '专家模式：整篇上下文 + 不限篇幅 + 拆掉输出上限',
+    '全文文档上下文 + 详尽档位不限篇幅（16384上限）',
     /private buildWholePaperContext\(/.test(translatorSrc) &&
-      /if \(style === 'expert'\) return 16384/.test(translatorSrc) &&
-      /\*\*不限篇幅\*\*/.test(translatorSrc) &&
-      /const wholePaper = isExpert \? this\.buildWholePaperContext\(options\.fullText\) : ''/.test(translatorSrc)
+      /norm === 'expert'/.test(translatorSrc) &&
+      /return 16384/.test(translatorSrc) &&
+      /const wholePaper = this\.buildWholePaperContext\(options\.fullText/.test(translatorSrc)
   );
   const css = fs.readFileSync(path.join(path.dirname(VIEWER), 'viewer.css'), 'utf8');
   checkTrue('样式已定义（含 active 高亮）', /\.ai-style-btn\.active\s*\{/.test(css));

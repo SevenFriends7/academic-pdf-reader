@@ -1513,9 +1513,10 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
   }
 
   // ==========================================================================
-  // AI 学术问答（流式 + 多轮 + 全文上下文）
-  // 旧版这里曾返回一段硬编码的假解析，已彻底移除：失败必须如实报错。
+  // AI 学术问答（流式 + 多轮 + 全文文档级会话）
   // ==========================================================================
+
+  private cachedWholePaperText: string = '';
 
   public registerPageText(page: number, paragraphs: { type: string; text: string }[]): void {
     this.pageTextIndex.set(page, paragraphs || []);
@@ -1523,6 +1524,7 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
 
   public clearPageText(): void {
     this.pageTextIndex.clear();
+    this.cachedWholePaperText = '';
   }
 
   public cancelAiRequest(requestId: string): boolean {
@@ -1535,85 +1537,29 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
     return false;
   }
 
-  /** 从全文里挑出与当前问题最相关的段落（纯词频打分，不依赖外部服务） */
-  private retrieveContext(query: string, currentPage: number, limit = 6): string {
-    const stop = new Set(
-      ('the a an of to in and or for on with is are was were be been this that these those it its as by at from we our they their ' +
-        'which who whom whose not no can could may might will would should do does did have has had but if then than so such ' +
-        '请 这句 这个 什么 怎么 为什么 以及 但是 因为 所以 我们 他们 作者').split(/\s+/)
-    );
-    const terms = Array.from(
-      new Set(
-        (query || '')
-          .toLowerCase()
-          .replace(/[^a-z0-9\u4e00-\u9fa5\s]/g, ' ')
-          .split(/\s+/)
-          .filter(t => t.length > 2 && !stop.has(t))
-      )
-    ).slice(0, 40);
-    if (terms.length === 0) return '';
-
-    const scored: { page: number; idx: number; score: number; text: string }[] = [];
-    this.pageTextIndex.forEach((paras, page) => {
-      paras.forEach((p, idx) => {
-        const t = (p.text || '').toLowerCase();
-        if (!t) return;
-        let score = 0;
-        for (const term of terms) {
-          if (t.includes(term)) score += 1;
-        }
-        if (score <= 0) return;
-        // 同页加权，长段落轻微惩罚
-        const pageBoost = page === currentPage ? 1.35 : 1;
-        scored.push({ page, idx, score: score * pageBoost - Math.min(1.5, t.length / 2000), text: p.text });
-      });
-    });
-
-    scored.sort((a, b) => b.score - a.score);
-    const picked = scored.slice(0, limit);
-    if (picked.length === 0) return '';
-
-    // 每段截断：放宽到 1200 字——太短会把"论据所在的那半段"切掉，让 AI 看不到完整上下文
-    const MAX_PER_PARA = 1200;
-    return picked
-      .map(s => {
-        const text = s.text.length > MAX_PER_PARA ? `${s.text.slice(0, MAX_PER_PARA)}…（后略）` : s.text;
-        return `[第 ${s.page} 页·第 ${s.idx + 1} 段] ${text}`;
-      })
-      .join('\n\n');
-  }
-
   /**
-   * AI 回答的输出上限（token）——控制花销的硬闸门，但不能压得太死。
-   * 旧版统一给到 8192 / 16384，模型基本写满（单次回答动辄 1600+ 字）；
-   * 但一味砍短又会让回答"话太少、不够用"，所以按风格分档。
-   *
-   * **专家模式不设人为上限**（给到接口能接受的最大值）：它本来就是"读完全篇、把该讲的讲透"，
-   * 再卡一个 4096 就变成"起了个专家的头、只给标准的量"。
+   * AI 回答的输出上限（token）——按回答长短分档。
+   * 简短：1024 token；适中：3072 token；详尽：16384 token（不限篇幅）。
    */
   private assistantMaxTokens(style: string): number {
-    if (style === 'concise') return 1024; // 约 600 汉字以内
-    if (style === 'expert') return 16384; // 专家：不限篇幅（= 接口上限）
-    return 3072; // standard：约 800~1000 汉字，够把方法与推导讲清
+    const norm = this.normalizeAnswerStyle(style);
+    if (norm === 'concise') return 1024;
+    if (norm === 'expert') return 16384;
+    return 3072;
   }
 
   /**
-   * 回答风格归一。`reviewer`（审稿）已改名为 `expert`（专家）——
-   * 老设置里存的还是 'reviewer'，不归一就会落到"没有一档匹配"、悄悄退化成默认风格。
+   * 回答长短归一：concise（简短）、standard（适中）、expert/detailed（详尽）。
    */
   private normalizeAnswerStyle(style?: string): string {
     const v = String(style || '').trim();
-    if (v === 'reviewer') return 'expert';
+    if (v === 'reviewer' || v === 'detailed') return 'expert';
     if (v === 'concise' || v === 'standard' || v === 'expert') return v;
     return 'standard';
   }
 
   /**
-   * 专家模式的**全篇**上下文。
-   *
-   * 优先用 webview 现抽的整篇文本（它会用 pdf.js 把所有页都拉一遍，
-   * 包括用户没翻过的页）；拿不到就退化成宿主已有的逐页文本索引（= 翻过的页），
-   * 至少比"只给 6 段检索结果"强。
+   * 文档全文上下文：优先用 webview 提取并传入的完整文本；未传入时退回逐页文本拼接。
    */
   private buildWholePaperContext(fullText?: string): string {
     let text = String(fullText || '').trim();
@@ -1627,28 +1573,11 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
         .trim();
     }
     if (!text) return '';
-    // 60k 字符 ≈ 2~3 万 token，足够一篇常规论文（正文 8~20 页）；再长就截断并**如实说明**
-    const MAX = 60000;
+    const MAX = 100000;
     if (text.length > MAX) {
-      return `${text.slice(0, MAX)}\n\n（全文过长，已截断到前 ${MAX} 字；后面部分未提供）`;
+      return `${text.slice(0, MAX)}\n\n（文档过长，已截取前 ${MAX} 字符）`;
     }
     return text;
-  }
-
-  /** 聚焦公式时的回答要求：读者就是要读懂这一条式子本身，别跑题到论文背景 */
-  private buildFormulaFocusRequirement(focusMath: string): string {
-    return (
-      `【这是一条公式，读者就是要读懂它本身】请严格按下面顺序讲，不要先扯研究背景：\n` +
-      `1. 先用 \`$$...$$\` 写出**这条公式的规范形式**（用下面给的规范写法；上面从 PDF 文本层抽出的原文\n` +
-      `   可能是残渣，例如上标丢失、\`^\` 变成了 \`|\`，**不要照抄残渣**）；\n` +
-      `2. 一张**逐符号表**（Markdown 表格，列：符号 | 读法/含义 | 形状或取值范围 | 依据（页码/公式号/小节））；\n` +
-      `   公式里出现的每个符号都要有一行，包括下标/上标/运算符（如 \`tr\`、\`\\mid\`、\`\\odot\`）；\n` +
-      `3. 一句话说清**这条式子在做什么**（是定义新算子、还是把前式代入、还是等价改写）；\n` +
-      `4. **代一个具体的小例子走一遍**：给小的维度（如 $T=2,H=W=1,C=2$）或小矩阵，把每一步的数值算出来；\n` +
-      `5. 与相邻公式的关系：它由哪一式而来、下一式怎么用它；\n` +
-      `6. 若上面文本层的残渣与规范写法不一致，明确指出并以**规范写法**为准。\n` +
-      (focusMath ? `【这条公式的规范写法（视觉模型从页面图像转写）】\n\`\`\`latex\n${focusMath}\n\`\`\`` : '')
-    );
   }
 
   private buildAssistantPrompt(options: {
@@ -1656,87 +1585,37 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
     selectedText: string;
     contextParagraph?: string;
     page?: number;
-    noteType?: string;
-    retrieved?: string;
-    wholePaper?: string;
     answerStyle?: string;
-    /** 聚焦公式的规范 LaTeX（视觉模型转写）；非空即视为"公式类提问" */
     focusMath?: string;
   }): string {
     const parts: string[] = [];
-    parts.push(`你正在协助读者精读一篇学术论文（当前第 ${options.page || 1} 页）。`);
-
-    if (options.wholePaper && options.wholePaper.trim()) {
-      parts.push(
-        `【论文全文（自动从 PDF 文本层抽取，可能有排版错乱或个别字丢失；涉及本文事实时以它为准）】\n${options.wholePaper.trim()}`
-      );
-    }
 
     if (options.selectedText && options.selectedText.trim()) {
-      parts.push(`【读者聚焦的原文】\n${options.selectedText.trim()}`);
-      if (options.contextParagraph && options.contextParagraph.trim() && options.contextParagraph.trim() !== options.selectedText.trim()) {
-        parts.push(`【该句所在段落全文】\n${options.contextParagraph.trim().slice(0, 3000)}`);
-      }
+      parts.push(`【参考原文】\n${options.selectedText.trim()}`);
     } else if (options.contextParagraph && options.contextParagraph.trim()) {
-      parts.push(`【读者聚焦的段落】\n${options.contextParagraph.trim().slice(0, 3000)}`);
+      parts.push(`【参考段落】\n${options.contextParagraph.trim().slice(0, 3000)}`);
     }
 
-    if (options.retrieved && options.retrieved.trim()) {
-      parts.push(`【论文其它相关段落（自动检索，可能不完全相关，请自行判断是否采用）】\n${options.retrieved.trim()}`);
+    const focusMath = String(options.focusMath || '').trim();
+    if (focusMath) {
+      parts.push(`【参考公式】\n\`\`\`latex\n${focusMath}\n\`\`\``);
     }
-
-    parts.push(`【读者的疑问】\n${options.question.trim()}`);
 
     const style = this.normalizeAnswerStyle(options.answerStyle);
     if (style === 'concise') {
-      parts.push(
-        `【回答要求】\n用不超过 200 字直接回答问题本身。先给结论，再给一到两句依据。不要套模板、不要罗列无关背景、不要复述原文。\n` +
-          `注意：即使篇幅短，出现的术语/缩写也要用半句话说明白（读者基础可能一般）；问的是通用概念就直接用通用知识回答（不要因为论文里没写就拒答）；问的是本论文的具体内容则只依据上下文，不足就明说。`
-      );
+      parts.push(`【回答长短要求】：简短（请简明扼要，直接回答核心要点，控制篇幅）`);
     } else if (style === 'expert') {
-      parts.push(
-        `【回答要求】\n你手上已经有**这篇论文的全文**，请通读之后回答（需要时引用具体页码/小节/公式编号）。用 Markdown，分点作答。\n` +
-          `1. **不限篇幅**：不要为了简短而省略推导、前提条件、对比与边界情形——该讲多细就讲多细，几千字也可以。\n` +
-          `   宁可写长，也不要留一个"读者还得自己去猜"的结论。\n` +
-          `2. **深度优先**：先给结论，再把"为什么成立 / 在什么条件下成立 / 作者这一步可能被质疑在哪"讲透。\n` +
-          `3. **事实只依据全文**：涉及本论文的数据、结论、公式、实验设置，只能用上面给的全文；\n` +
-          `   全文里找不到就明说"全文未提供"，**严禁编造**。通用背景知识与本论文结论要分清来源、分开表述。\n` +
-          `4. 术语/符号第一次出现时用一句话解释清楚（读者基础可能一般）。\n` +
-          `5. 不要客套话、不要复述问题、不要在结尾写"小结/希望这能帮到你"。`
-      );
+      parts.push(`【回答长短要求】：详尽（请全面深入地充分展开解答，不限篇幅）`);
     } else {
-      parts.push(
-        `【回答要求】\n直接回答，Markdown。要求：
-1. **结论先行，但必须讲到能读懂**：先给结论，紧接着补齐理解它所需的前置概念。
-   假设读者基础一般——出现的术语/缩写/符号要用一句话解释清楚，抽象机制配一个具体例子。
-   一般 300~700 字；涉及推导、对比、机制拆解时可以更长（上限约 1000 字）。
-   不要罗列与问题无关的背景，不要复述原文，不要在结尾写"小结/希望这能帮到你"。
-2. **先分清问题类型**：
-   - 问**本论文的具体内容** → 只依据上面提供的上下文；不足以回答时明说"当前上下文未提供"，
-     并指出该看论文哪一部分，**严禁编造论文中不存在的内容、数据或结论**；
-   - 问**通用概念 / 术语 / 背景知识**，或临时起意想问问 → 用通用知识正面回答，
-     **不要因为"论文里没提到"就拒答**；但要标一句这是通用背景知识、不是本论文的结论。
-3. 涉及术语/缩写/公式时解释清楚（读者最常卡在这里）。
-4. 引用本论文原文时标注来自哪一段（如「第 3 页·第 2 段」）；引用通用知识不要伪装成论文引用。`
-      );
+      parts.push(`【回答长短要求】：适中（清晰全面，详略得当）`);
     }
-    // 三个档位都适用：数学写成 $...$，别用反引号（见 ANSWER_MATH_RULE 的注释）
-    parts.push(`【数学写法】\n${ANSWER_MATH_RULE}`);
-    /*
-     * 公式类提问：聚焦公式本身。
-     *
-     * 【为什么要单独一段】读者最常卡住的地方就是公式里的符号（用户原话："我现在读人工智能的文章
-     * 最重要的就是理解公式"）。而默认的回答要求是"结论先行 + 背景 + 动机"，模型很容易把一条公式
-     * 讲成一篇研究背景综述，符号反而没讲清。所以只要这次聚焦的是公式（webview 送来了规范 LaTeX），
-     * 就追加一段**强制顺序**的要求：规范式 → 逐符号表 → 这条式子做什么 → 代小例子走一遍 → 与相邻公式的关系。
-     */
-    const focusMath = String(options.focusMath || '').trim();
-    if (focusMath) parts.push(this.buildFormulaFocusRequirement(focusMath));
+
+    parts.push(options.question.trim());
     return parts.join('\n\n');
   }
 
   /**
-   * 流式学术问答。onDelta 收到增量文本；history 为之前的对话轮次（实现真多轮）。
+   * 流式学术问答。整个文档共享统一对话上下文，文档全文最开始即喂入模型。
    */
   public async streamAcademicAnswer(
     options: {
@@ -1748,11 +1627,8 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
       noteType?: string;
       history?: LlmTurn[];
       answerStyle?: string;
-      /** 专家模式：webview 现抽的**整篇文献**文本（所有页，含用户没翻过的页） */
       fullText?: string;
-      /** 聚焦公式的规范 LaTeX（视觉模型从页面图像转写）；非空即视为"公式类提问" */
       focusMath?: string;
-      /** 随本次提问附带的框选截图或公式裁图（启用多模态带图问 AI） */
       images?: LlmImage[];
     },
     onDelta: (chunk: string) => void
@@ -1782,106 +1658,66 @@ ${sentences.map((s, i) => `[${i + 1}] ${s}`).join('\n')}
     const ctrl = new AbortController();
     this.aiRequests.set(options.requestId, ctrl);
 
-    // 兜底默认必须与 package.json 里 aiAnswerStyle 的 default 一致（standard），
-    // 否则设置缺失时会悄悄退化成最省的 concise——回答短到基础一般的读者看不懂。
     const answerStyle = this.normalizeAnswerStyle(options.answerStyle || cfg.get<string>('aiAnswerStyle', 'standard'));
-    const isExpert = answerStyle === 'expert';
 
-    // 专家模式：把**整篇文献**塞进上下文（webview 现抽的全文优先）；
-    // 其余风格仍走"当前段 + 检索最相关的 6 段"——不是为了省钱才这么分，
-    // 而是短问答带上 3 万 token 的全文既慢又会让模型抓不住重点。
-    const wholePaper = isExpert ? this.buildWholePaperContext(options.fullText) : '';
-
-    const retrieved = isExpert
-      ? ''
-      : this.retrieveContext(
-          `${options.question} ${options.selectedText || ''}`.slice(0, 800),
-          options.page || 1,
-          answerStyle === 'concise' ? 4 : 6
-        );
+    // 全文文档上下文：从最开始就完整喂入，避免每次提问都要重新检索上下文
+    const wholePaper = this.buildWholePaperContext(options.fullText || this.cachedWholePaperText);
+    if (options.fullText && options.fullText.trim()) {
+      this.cachedWholePaperText = options.fullText.trim();
+    }
 
     const prompt = this.buildAssistantPrompt({
       ...options,
-      retrieved,
-      wholePaper,
       answerStyle
     });
 
-    const systemInstruction = `你是一名学术论文研究助手。读者既可能问论文里的内容，也可能只是看到了一个陌生概念、或者突然想问点别的——两类都要好好回答。
+    const docText = wholePaper ? `\n\n【文档全文】\n${wholePaper}` : '';
+    const systemInstruction = `你是一名专业严谨的技术与学术文档助手。当前文档的所有问答都在本同一个对话中进行。请根据提供的文档全文及上下文，自然、准确、客观地回答用户的问题。数学公式使用 LaTeX 规范排版（行内 $...$，独立行 $$...$$）。${docText}`;
 
-先判断问题属于哪一类（也可能两类都有，那就分开答）：
-
-A. **关于本论文特定内容**（作者做了什么、实验数据、某段论述的含义、方法细节……）
-   → 只能依据用户提供的论文原文与上下文作答；上下文没有的，明确说"当前上下文未提供"，绝不编造。
-   → 不确定的地方标注不确定性，不要用笃定语气描述你并不知道的论文内容。
-
-B. **通用概念 / 术语 / 背景知识**，或读者的发散思考、联想、假设
-   → 正常用你的通用知识回答，把概念本身讲清楚，该展开就展开，不要因为"论文里没写"就拒答。
-   → 但不要把自己的通用知识说成是"本论文指出/发现"；也不要替作者补充论文里不存在的实验、数据或结论。
-   → 涉及本论文时，两边的信息要分清来源。
-
-共同要求：
-- 直接输出 Markdown 正文，不要客套话、不要重复问题、不要在结尾写"小结/希望这能帮到你"这类空话。
-- **假设读者的基础一般**：不要默认对方熟悉这个细分方向的术语和套路。
-  涉及专业术语、缩写、符号时，先用一句话说明"它是什么、为什么需要它"，再进入分析；
-  抽象的机制尽量配一个具体例子（哪怕是最小化的例子）。**这是回答能不能被读懂的关键**。
-- **篇幅要给得住**：结论先行，然后补齐理解所必需的来龙去脉。
-  该展开就展开，但不要为了显得全面而罗列与问题无关的背景。` +
-      (isExpert
-        ? `
-
-【本次是「专家模式」】用户已经把手上的**论文全文**一并给你了（见上面的【论文全文】）。
-- 请先在脑子里通读全篇，再回答；需要时引用具体页码/小节/公式编号，让读者能按图索骥。
-- **不要自我限长**：该写多少就写多少（几千字都可以），不要因为"怕太长"而砍掉推导、条件或边界讨论。
-- 涉及本文事实时以全文为准；全文没有的就明说"全文未提供"，绝不编造。`
-        : '');
-
-    // 多轮：带最近 6 轮（每轮截断 1200 字）——太少会让"接着上一个问题问"失去上下文
+    // 多轮对话：保留前序历史，支持连续追问
     const turns: LlmTurn[] = [];
     (options.history || [])
-      .slice(-6)
-      .forEach(h => turns.push({ role: h.role, text: (h.text || '').slice(0, 1200) }));
+      .slice(-20)
+      .forEach(h => turns.push({ role: h.role, text: (h.text || '').slice(0, 4000) }));
     turns.push({ role: 'user', text: prompt });
 
     try {
-      // ---- OpenAI 兼容（若附带截图/公式裁图，则自动路由到独立视觉模型！）----
-        const endpoint = (
-          hasImages && visionCfg
-            ? visionCfg.endpoint
-            : cfg.get<string>('apiEndpoint', 'https://api.deepseek.com/v1') || ''
-        ).replace(/\/+$/, '');
-        const model =
-          hasImages && visionCfg
-            ? visionCfg.model
-            : (cfg.get<string>('aiModel', '') || '').trim() ||
-              (cfg.get<string>('modelName', 'deepseek-chat') || '').trim() ||
-              'deepseek-chat';
-        const startedAt = Date.now();
-        const res = await callOpenAICompatStream({
-          endpoint,
-          apiKey,
-          model,
-          systemInstruction,
-          turns,
-          images: hasImages ? options.images : undefined,
-          temperature: cfg.get<number>('aiTemperature', 0.4),
-          maxOutputTokens: this.assistantMaxTokens(answerStyle),
-          signal: ctrl.signal,
-          onDelta,
-          idleTimeoutMs: 90000,
-          totalTimeoutMs: 420000
-        });
+      const endpoint = (
+        hasImages && visionCfg
+          ? visionCfg.endpoint
+          : cfg.get<string>('apiEndpoint', 'https://api.deepseek.com/v1') || ''
+      ).replace(/\/+$/, '');
+      const model =
+        hasImages && visionCfg
+          ? visionCfg.model
+          : (cfg.get<string>('aiModel', '') || '').trim() ||
+            (cfg.get<string>('modelName', 'deepseek-chat') || '').trim() ||
+            'deepseek-chat';
+      const startedAt = Date.now();
+      const res = await callOpenAICompatStream({
+        endpoint,
+        apiKey,
+        model,
+        systemInstruction,
+        turns,
+        images: hasImages ? options.images : undefined,
+        temperature: cfg.get<number>('aiTemperature', 0.4),
+        maxOutputTokens: this.assistantMaxTokens(answerStyle),
+        signal: ctrl.signal,
+        onDelta,
+        idleTimeoutMs: 90000,
+        totalTimeoutMs: 420000
+      });
 
-        const answer = (res.text || '').trim();
-        if (!answer) throw new LlmError({ kind: 'empty', model, apiMessage: 'AI 返回空回答' });
+      const answer = (res.text || '').trim();
+      if (!answer) throw new LlmError({ kind: 'empty', model, apiMessage: 'AI 返回空回答' });
 
-        return {
-          answer,
-          model,
-          ttftMs: res.ttftMs,
-          totalMs: Date.now() - startedAt
-        };
-
+      return {
+        answer,
+        model,
+        ttftMs: res.ttftMs,
+        totalMs: Date.now() - startedAt
+      };
     } finally {
       this.aiRequests.delete(options.requestId);
     }

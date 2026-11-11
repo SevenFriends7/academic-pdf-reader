@@ -7,7 +7,7 @@
     "color": "#0b578a",
     "theme": "dark"
   },
-  "version": "2.0.7",
+  "version": "2.0.9",
   "publisher": "paper-reader",
   "license": "MIT",
   "repository": {
@@ -178,12 +178,12 @@
             "expert"
           ],
           "enumDescriptions": [
-            "标准（默认）：结论 + 前置概念解释，一般 300~700 字，需要时展开",
-            "极简速读：200 字内讲清，最省 token",
-            "专家：通读论文全文后不限篇幅深度作答（更慢、更费 token）"
+            "适中（默认）：篇幅适中，论述清晰，详略得当",
+            "简短：简明扼要，直接回答核心要点",
+            "详尽：充分展开，深入详细解析，不限篇幅"
           ],
-          "description": "AI 问答的回答风格",
-          "markdownDescription": "AI 问答的回答风格。**默认 standard**：会先解释术语与前置概念（假设读者基础一般），一般 300~700 字。想最省 token 可切 `concise`；想要更长的审稿式分析用 `reviewer`。三种风格都有硬性输出上限（1024 / 3072 / 4096 token）。"
+          "description": "AI 问答的回答长短",
+          "markdownDescription": "AI 问答的回答长短设置。`standard`（适中，默认）、`concise`（简短）、`expert`（详尽，不限篇幅）。"
         },
         "academicReader.apiEndpoint": {
           "type": "string",
@@ -340,6 +340,7 @@
     "compile:wasm": "node esbuild-wasm.js",
     "watch": "node esbuild.js --watch",
     "package": "node package-vsix.js",
+    "package:market": "node package-market-vsix.js",
     "vsix": "npx --yes @vscode/vsce package --no-dependencies --baseContentUrl https://github.com/SevenFriends7/academic-pdf-reader/blob/main/ --baseImagesUrl https://fastly.jsdelivr.net/gh/SevenFriends7/academic-pdf-reader@main/",
     "ls:pack": "npx --yes @vscode/vsce ls",
     "login": "npx --yes @vscode/vsce login paper-reader",

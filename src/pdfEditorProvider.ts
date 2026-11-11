@@ -1540,9 +1540,6 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
     <div class="header-right">
       <div class="tab-switch">
         <button id="tabTransBtn" class="tab-btn active" title="段落双语对照">对照翻译</button>
-        <button id="tabIndexBtn" class="tab-btn" title="全文公式与符号索引（读论文时查符号最常用）">
-          公式·符号 (<span id="indexCount">0</span>)
-        </button>
         <button id="tabNotesBtn" class="tab-btn" title="查看文献高亮与批注">
           批注笔记 (<span id="notesCount">0</span>)
         </button>
@@ -1625,30 +1622,7 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
         </div>
       </div>
 
-      <!-- 视图 2: 全文公式与符号索引 -->
-      <div id="indexView" class="pane-view">
-        <div class="pane-view-header">
-          <div class="header-info">
-            <span class="badge badge-accent">公式·符号索引</span>
-            <span class="subtitle" id="indexSubtitle">读过的页会自动收录</span>
-          </div>
-          <div class="view-switch-tools">
-            <button id="indexFilterFormula" class="view-toggle-btn active" title="只列公式">公式</button>
-            <button id="indexFilterSymbol" class="view-toggle-btn" title="只列符号">符号</button>
-          </div>
-        </div>
-        <div class="index-toolbar">
-          <input id="indexSearchInput" class="index-search-input" type="search" placeholder="搜索符号或公式，例如 W^l、\alpha、AttID" />
-        </div>
-        <div id="indexListContainer" class="index-list-container">
-          <div class="empty-state">
-            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4h16v16H4z"/><path d="M8 9h8M8 13h5"/></svg>
-            <p>还没有可索引的公式。<br>翻过几页（视觉模型判过版式的页）就会自动收录在这里。</p>
-          </div>
-        </div>
-      </div>
-
-      <!-- 视图 3: 文献批注与笔记列表 -->
+      <!-- 视图 2: 文献批注与笔记列表 -->
       <div id="notesView" class="pane-view">        <div class="pane-view-header">
           <div class="header-info">
             <span class="badge badge-accent">文献批注库</span>
@@ -1703,7 +1677,7 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
       批注
       <kbd class="kbd-badge">N</kbd>
     </button>
-    <button id="btnSelectionAi" class="action-btn" style="color: #6366f1;" title="针对选中文本向 AI 学术导师提问 (快捷键: Q)">
+    <button id="btnSelectionAi" class="action-btn" style="color: #6366f1;" title="针对选中文本向 AI 问答提问 (快捷键: Q)">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2 2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z"/><rect width="18" height="12" x="3" y="6" rx="2"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><path d="M9 15h6"/></svg>
       问AI
       <kbd class="kbd-badge">Q</kbd>
@@ -1772,7 +1746,7 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
       <textarea id="annotTextInput" placeholder="记录你的文献理解、公式推导、实验疑点或创新灵感..." rows="4"></textarea>
     </div>
     <div class="annot-ai-bar">
-      <button id="btnAskAiPopover" class="btn-ask-ai" type="button" title="结合选句与论文上下文，向 AI 导师请教解答疑难">
+      <button id="btnAskAiPopover" class="btn-ask-ai" type="button" title="结合选句与论文上下文，向 AI 请教解答疑难">
         AI 提问
       </button>
       <span id="annotAiStatusHint" class="ai-status-hint"></span>
@@ -1799,7 +1773,7 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
     </div>
   </div>
 
-  <!-- 核心：AI 学术文献导师问答弹窗 (AI Academic Assistant Dialog)
+  <!-- 核心：AI 问答弹窗 (AI Assistant Dialog)
        ⚠️ 这里的结构必须与 media/viewer.js 的 ensureAiModalControls() 保持一致：
        所有「问AI」入口（划词浮条 / 右键菜单 / 段落聚焦条 / 译文卡片 / 笔记卡片 / 快捷键 Q）
        最终都打开这一个弹窗，**回答风格切换必须出现在它的固定头部里**，
@@ -1809,7 +1783,7 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
     <div class="ai-modal-card">
       <div class="ai-modal-header">
         <div class="ai-modal-title">
-          <span>AI 学术文献导师</span>
+          <span>AI 问答</span>
           <span class="ai-model-tag" id="aiModalModelTag">未连接</span>
           <!-- 扩展版本号：打开即显示（由 viewer.js 依据 window.__EXT_VERSION__ 填值），截图即可确认跑的哪一版 -->
           <span class="ai-modal-version" id="aiModalVersion"></span>
@@ -1832,28 +1806,21 @@ export class PdfDualReaderProvider implements vscode.CustomReadonlyEditorProvide
           <!-- 框选截图或公式原图附件预览（多模态带图提问） -->
           <div class="ai-image-preview" id="aiModalImagePreview" style="display: none;"></div>
         </div>
-        <div class="ai-prompt-chips">
-          <button type="button" class="ai-chip" data-q="这句话的真实技术意图与核心动机是什么？请用通俗中文讲透。">核心动机</button>
-          <button type="button" class="ai-chip" data-q="作者在此处与以往前人方法有何本质区别？优势在哪里？">与前人区别</button>
-          <button type="button" class="ai-chip" data-q="这句话里涉及的术语、公式或方法背后的数学原理是什么？">术语与公式</button>
-          <!-- 公式专用：逐符号讲透（聚焦公式本身，不跑题到论文背景） -->
-          <button type="button" class="ai-chip ai-chip-math" data-q="请把这条公式讲透：先用 $$...$$ 写出规范形式，再逐符号列表说明（符号、含义、形状或取值范围、在哪里定义），然后说清它在做什么，最后代一个具体的小例子走一遍。">讲透这条公式</button>
-          <button type="button" class="ai-chip" data-q="我对这里的结论存有疑难，请结合上下文帮我深度剖析推导过程。">推导过程</button>
-        </div>
+        <div class="ai-prompt-chips" style="display: none;"></div>
         <div id="aiModalTranscript" class="ai-transcript">
-          <div class="ai-transcript-empty">可直接提问，或点上面的快捷提问。有预设分析时已替你填进输入框，点「发送」才开始——打开本窗口不会自动发起提问。</div>
+          <div class="ai-transcript-empty">输入您的问题并按 Enter 或点击「发送」开始与 AI 对话。</div>
         </div>
         <div id="aiModalLoading" class="ai-modal-loading" style="display: none;">
           <span class="ai-loading-text">正在连接...</span>
         </div>
         <div class="ai-question-input-wrapper">
-          <textarea id="aiModalQuestionInput" placeholder="输入你的疑问，回车发送（Shift+回车换行）；可继续追问" rows="2"></textarea>
+          <textarea id="aiModalQuestionInput" placeholder="输入你的疑问，回车发送（Shift+回车换行）；支持连续多轮追问" rows="2"></textarea>
           <div class="ai-send-group">
             <button id="btnStopAiModalQuestion" class="btn-stop-ai" type="button" style="display: none;">停止</button>
             <button id="btnSendAiModalQuestion" class="btn-send-ai">发送</button>
           </div>
         </div>
-        <div class="ai-scope-hint">问本论文的内容会严格依据原文（查不到就说查不到）；问概念、术语或临时想到的问题，会直接用通用知识回答并标明不是论文结论。</div>
+        <div class="ai-scope-hint">文档全文已载入，所有问答共享同一对话上下文；支持连续多轮交流。</div>
       </div>
     </div>
   </div>

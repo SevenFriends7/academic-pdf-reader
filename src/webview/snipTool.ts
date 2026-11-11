@@ -430,15 +430,11 @@ export class PdfSnipToolController {
       } else if (act === 'translate') {
         this.triggerTranslateAction(snip);
       } else if (act === 'ask-ai') {
-        const presetQ = snip.localLatex
-          ? '请结合这张公式/图表截图，把其中的每个符号含义、推导直觉和作用讲透。'
-          : '请结合这张论文局部截图，帮我解读其中的核心机制与关键信息。';
         this.bridge.openAiWithImage({
           imageDataUrl: snip.imageDataUrl,
           page: snip.pageNum,
           focusMath: snip.localLatex || undefined,
           selectedText: snip.localText || `第 ${snip.pageNum} 页框选截图`,
-          presetQuestion: presetQ,
         });
         this.cancelActiveSnip();
       } else if (act === 'copy-img') {
